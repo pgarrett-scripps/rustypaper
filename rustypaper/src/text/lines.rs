@@ -425,10 +425,11 @@ pub fn split_at_gutters(page: &PageRaw, lines: Vec<Line>, gutters: &[(f32, f32)]
 ///
 /// A whitespace glyph is a word boundary stated outright, so it beats any gap measurement. That
 /// matters more than it sounds: across the corpus, LaTeX output contains almost no real space
-/// characters (9 to 236 per document) while pdfium *generates* 5 000 to 8 500 per document from
-/// the font's advance widths — information the public API does not otherwise expose. Measured
-/// against those, pure gap analysis mis-segments kerned pairs such as `learning framework`,
-/// where the ink gap is 0.18 em against a 0.30 em typical space.
+/// characters (9 to 236 per document), and both backends *generate* thousands more from the
+/// font's advance widths — 5 000 to 8 500 per document on pdfium, which is information its
+/// public API does not otherwise expose. Measured against those, pure gap analysis mis-segments
+/// kerned pairs such as `learning framework`, where the ink gap is 0.18 em against a 0.30 em
+/// typical space.
 fn compact_spaces(page: &PageRaw, line: &mut Line) {
     let mut compacted: Vec<Placed> = Vec::with_capacity(line.glyphs.len());
     let mut pending_break = false;

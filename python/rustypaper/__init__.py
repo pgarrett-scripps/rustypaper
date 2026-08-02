@@ -48,9 +48,10 @@ def to_document(path: str | Path, caveman: str | None = None) -> dict[str, Any]:
     ``bbox`` and ``size``. This is the real output of the pipeline — Markdown is one rendering
     of it.
 
-    ``caveman`` is ``"off"`` (the default), ``"light"`` or ``"hard"`` — see
-    :mod:`rustypaper.compress` in the Rust crate for what each level drops.
-    Mathematics, tables and bibliography entries are exempt at every level.
+    ``caveman`` is ``"off"`` (the default), ``"light"`` or ``"hard"``. ``light`` drops articles,
+    copulas and stock phrases; ``hard`` also drops prepositions, pronouns and filler, for about
+    a quarter fewer words. Mathematics, tables and bibliography entries are exempt at every
+    level.
     """
     return json.loads(to_json(str(path), caveman))
 

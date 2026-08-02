@@ -1,7 +1,8 @@
 # Working on this repository
 
-Notes for AI coding agents. Human-facing docs are `README.md` (what it does) and
-`docs/ARCHITECTURE.md` (how, and what was learned the hard way).
+Notes for AI coding agents. Human-facing docs are `README.md` (what it does), `docs/ARCHITECTURE.md`
+(how, and what was learned the hard way), `eval/README.md` (what the quality numbers mean) and
+`RELEASING.md` (cutting a version).
 
 ## Build and test
 
@@ -10,6 +11,7 @@ scripts/fetch-corpus.sh    # 10 arXiv PDFs, not committed; corpus tests skip wit
 scripts/build.sh           # cargo build --release AND install the Python extension
 cargo test --release
 python3 -m unittest discover -s eval/tests
+PYTHONPATH=python pytest python/tests -q   # the Python surface; needs the corpus
 
 scripts/fetch-pdfium.sh    # only for the optional pdfium backend, below
 ```
@@ -46,19 +48,19 @@ cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline
 Exits non-zero if any paper regresses by more than 0.005. Refresh `baseline.json` deliberately,
 with `--json > baseline.json`, only when a change is an intended improvement.
 
-Current, by backend:
+Current, by backend, over the nine scorable papers:
 
-| backend | prose bigram | equation recall | equation fidelity | corpus tests |
-| --- | --- | --- | --- | --- |
-| pdfium | 0.894 | 0.375 | 0.557 | 31/31 |
-| rustium (default) | 0.891 | 0.375 | 0.549 | 31/31 |
+| backend | prose bigram | equation recall | equation fidelity | tables | corpus tests |
+| --- | --- | --- | --- | --- | --- |
+| rustium (default) | 0.891 | 0.370 | 0.547 | 26/44 | 31/31 |
+| pdfium | 0.894 | 0.384 | 0.557 | 32/44 | 31/31 |
 
-`baseline.json` holds the pdfium numbers. The maths numbers are the project's weak point on
-either backend and are the honest place to work next; the two backends are otherwise within
-0.003 of each other and both pass the whole corpus.
+`baseline.json` holds the rustium numbers, because that is what a default build and CI measure.
+Prose is within 0.003 across backends; maths and tables are further apart, and are the project's
+weak point on either. That is the honest place to work next.
 
-rustium converts the corpus in 2.06 s to pdfium's 1.94 s, in 63 MB of resident memory to
-pdfium's 95 MB.
+rustium converts the corpus in 2.1 s to pdfium's 2.0 s, in 64 MB of resident memory to
+pdfium's 93 MB.
 
 ## Rules that have earned their place
 

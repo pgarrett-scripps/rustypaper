@@ -5,9 +5,10 @@
 //! comparison against other tools, notebook work — is scripting, and Rust is the wrong language
 //! for that while being the right one for the per-glyph algorithms underneath.
 //!
-//! Conversion releases the GIL. pdfium itself is serialised by a lock inside `rustypaper`, so
-//! calling from several Python threads is safe but not parallel; other Python threads do keep
-//! running.
+//! Conversion releases the GIL, so other Python threads keep running. On the default backend
+//! conversions also run in parallel with each other. A build using the optional `pdfium` feature
+//! serialises them behind a lock inside `rustypaper`, because pdfium is not thread-safe: still
+//! safe to call from several threads, but not faster for it.
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyIOError, PyValueError};
@@ -51,9 +52,10 @@ fn caveman_level(caveman: Option<&str>) -> PyResult<Option<rustypaper::compress:
 /// Converts a PDF to Markdown.
 ///
 /// `caveman` strips grammatical scaffolding for models that charge by the
-/// token — see [`rustypaper::compress`] for what each level drops. It is exposed
-/// here because the callers that care about token cost are the scripting ones,
-/// which is the whole reason this binding exists.
+/// token: `"off"`, `"light"` (articles, copulas, stock phrases) or `"hard"`
+/// (also prepositions, pronouns and filler, for about a quarter fewer words).
+/// It is exposed here because the callers that care about token cost are the
+/// scripting ones, which is the whole reason this binding exists.
 #[pyfunction]
 #[pyo3(signature = (path, caveman = None))]
 fn to_markdown(py: Python<'_>, path: &str, caveman: Option<&str>) -> PyResult<String> {

@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! PDF --[backend]--> PageRaw (glyphs, paths, images)
-//!     --[text]-----> lines and words, with Unicode repaired
+//!     --[text]-----> lines and words
 //!     --[layout]---> columns, reading order, typed blocks
 //!     --[math/table/refs]--> a Document
 //!     --[emit]-----> Markdown / Typst / JSON / text

@@ -1,7 +1,8 @@
 # rustypaper
 
-Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON. Fast,
-CPU-only, no models.
+Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst, JSON and plain
+text. Headings, reading order, figures, tables, equations and references, on a CPU, with no
+models and no native libraries.
 
 The good open-source converters (Marker, MinerU, Docling, Nougat) are Python stacks that want a
 GPU; GROBID is CPU-only and fast but is a JVM service that emits TEI and ignores maths. The Rust
@@ -28,7 +29,8 @@ pip install rustypaper        # the Python bindings
 **Nothing else to install.** The default build reads PDFs with
 [rustium-pdf](https://github.com/pgarrett-scripps/rustium-pdf), a pure-Rust interpreter, so
 there is no native library to fetch, point an environment variable at, or match versions with.
-The CLI is a single static binary and the wheel is self-contained.
+`ldd` on the binary shows libc, libm and libgcc and nothing else; the wheel is the extension
+module and the Python package around it, with no C library travelling beside it.
 
 pdfium — the Chromium PDF engine, behind FFI — remains available as an opt-in feature. It is
 the reference the pure-Rust backend is measured against, and an escape hatch for documents
@@ -51,7 +53,7 @@ scripts/build.sh            # cargo build --release, plus installing the Python 
 ./target/release/rustypaper convert corpus/resnet.pdf
 ./target/release/rustypaper convert corpus/resnet.pdf --format typst --assets figures/
 ./target/release/rustypaper convert corpus/*.pdf --out out/        # batch
-./target/release/rustypaper convert paper.pdf --caveman=hard       # -25% words for LLM ingestion
+./target/release/rustypaper convert paper.pdf --caveman=hard       # -24% words for LLM ingestion
 
 # Diagnostics.
 ./target/release/rustypaper probe corpus/resnet.pdf --pages   # counts, fonts, detected gutters
@@ -66,8 +68,8 @@ first thing to check when text comes out wrong.
 ## Design
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the pipeline, the coordinate convention,
-and the eight things M0 and M1 discovered the hard way — most importantly that pdfium-render's
-`thread_safe` feature does no locking at all.
+the two backends behind the `PageSource` trait, and the things the corpus taught this converter
+the hard way.
 
 The short version: the backend produces a `PageRaw` of glyphs, paths and images, and every later
 stage is a pass over an IR. The `Document` JSON is the contract; Markdown, Typst and plain text
@@ -75,16 +77,17 @@ are renderings of it.
 
 | | |
 |---|---|
-| speed | 3.8–7.0 ms/page, single process |
+| speed | 2.5–8.7 ms/page, single process |
 | corpus | 10 papers: ML, pure maths, physics, biology, statistics |
-| memory | 17–31 MB peak for a whole paper |
-| footprint | a 2.3 MB static binary, no native library, no models |
+| memory | 13–30 MB peak for a whole paper |
+| footprint | a 3.2 MB binary, no native library, no models |
 
-Unicode repair turned out not to be needed — glyph-name fallback already resolves TeX
-ligatures, so the tables the plan budgeted for were dropped. De-hyphenation could not work the
-way the plan assumed either: soft line-break hyphens are removed before the text reaches the
-pipeline, so there is no hyphen to key off. Words split across a break are rejoined using the document's own vocabulary instead,
-which needs no word list and knows the paper's jargon.
+Unicode repair turned out not to be needed — glyph-name fallback already resolves TeX ligatures,
+so the tables the plan budgeted for were dropped. De-hyphenation could not work the way the plan
+assumed either: pdfium removes soft line-break hyphens before the text reaches the pipeline, so
+on that backend there is no hyphen to key off. Words split across a break are rejoined using the
+document's own vocabulary instead, which needs no word list and knows the paper's jargon. The
+default backend does leave the hyphen in, and it is preferred when it is there.
 
 Maths is reconstructed geometrically, MaxTract-style, from exact glyph identities and positions
 rather than by OCR — a born-digital PDF hands you perfect character information, so image-to-
@@ -121,7 +124,8 @@ doc = rustypaper.to_document('corpus/resnet.pdf')   # the document model as a di
 ```
 
 `ScannedDocument` is raised for image-only PDFs, so callers can route those to an OCR pipeline
-instead. Conversion releases the GIL.
+instead. Conversion releases the GIL, and on the default backend several threads convert in
+parallel.
 
 ## Evaluation
 
@@ -134,14 +138,14 @@ rather than scored.
 cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval
 ```
 
-Current scores across the nine scorable papers:
+Current scores on the default backend, across the nine scorable papers:
 
 | metric | value | what it says |
 |---|---|---|
-| prose bigram recall | **0.894** | prose comes out right, in the right order |
-| equation recall | **0.375** | most display equations are *not* found |
-| equation fidelity | **0.557** | those that are found are roughly half right |
-| tables | 57 found / 44 in source | badly distributed: 0 on one paper, over-detected on another |
+| prose bigram recall | **0.891** | prose comes out right, in the right order |
+| equation recall | **0.370** | most display equations are *not* found |
+| equation fidelity | **0.547** | those that are found are roughly half right |
+| tables | 26 found / 44 in source | badly distributed: 8 of ResNet's 17, none of statistics' 2, two invented on papers with none |
 
 The maths numbers are the honest state of the differentiator, and they are the project's
 weakest point — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). See
@@ -154,6 +158,7 @@ wrong primary measure here.
 cargo test                                    # unit, robustness and corpus tests; corpus tests
                                               # skip if corpus/ is empty
 python3 -m unittest discover -s eval/tests    # the eval harness's own tests
+PYTHONPATH=python pytest python/tests -q      # the Python surface, against the corpus
 cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
 ```
 

@@ -9,7 +9,7 @@ env:
   CARGO_TERM_COLOR: always
   # Pin the pdfium build, for the one job that still needs it. The default
   # build does not: it is pure Rust, which is what makes the crate a single
-  # static binary and the wheel self-contained.
+  # binary with no C library beside it, and the wheel self-contained.
   PDFIUM_RELEASE: chromium/7961
 
 jobs:

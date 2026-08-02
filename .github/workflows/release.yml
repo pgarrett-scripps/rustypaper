@@ -7,8 +7,9 @@ name: Release
 # unpublished, only yanked. The first job compares them and stops.
 #
 # rustium-pdf must already be on crates.io at the version this depends on.
-# cargo resolves a path dependency locally and the registry cannot, so a
-# publish that works here fails there with a message about a missing crate.
+# It is resolved from the registry rather than by path, so the failure this
+# guards against is a `[patch.crates-io]` override left in the manifest:
+# it resolves here and cannot resolve on the index.
 
 on:
   push:

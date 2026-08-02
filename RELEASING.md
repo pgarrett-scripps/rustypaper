@@ -1,19 +1,23 @@
 # Releasing
 
-One project, one version, one tag. `v0.1.0` publishes the crate to crates.io
-and the wheels to PyPI, both named `rustypaper`.
+One project, one version, one tag. Pushing `vX.Y.Z` publishes the crate to
+crates.io and the wheels to PyPI, both named `rustypaper`.
+
+Published so far: `rustypaper` 0.1.0 and 0.1.1 on crates.io, 0.1.1 on PyPI as
+five platform wheels and an sdist. `rustium-pdf` 0.1.0 on crates.io.
 
 ## Order matters
 
-`rustium-pdf` goes first. rustypaper depends on it, and while a local build
-resolves that through `path = "../rustium-pdf"`, the registry has no such
-path — it resolves `version = "0.1.0"` and fails if that version is not
-there yet.
+`rustium-pdf` goes first. rustypaper resolves it from the registry as
+`version = "0.1.0"`, so `cargo publish` fails outright if that version is not
+on the index yet. Nothing here resolves it by path — a `[patch.crates-io]`
+override during development must not be committed, or the publish will carry
+a dependency the registry cannot see.
 
 ```
 rustium-pdf  v0.1.0  →  crates.io
                             │
-rustypaper   v0.1.0  ───────┴──→  crates.io  +  PyPI
+rustypaper   v0.1.1  ───────┴──→  crates.io  +  PyPI
 ```
 
 `rustypaper-py` is marked `publish = false`: it is a cdylib built by maturin
@@ -24,12 +28,11 @@ into the wheel, not a crate anyone consumes.
 1. Bump `version` in the workspace `Cargo.toml` and in `python/pyproject.toml`.
    They are separate files and nothing forces them to agree; the release
    workflow checks the tag against the first one only.
-2. Update `CHANGELOG.md`.
-3. Commit, then tag and push:
+2. Commit, then tag and push:
 
    ```sh
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v0.1.2
+   git push origin v0.1.2
    ```
 
 The workflow re-runs the tests, checks the tag against the manifest, does a
@@ -41,7 +44,7 @@ run it from the Actions tab with **dry run** left on.
 | Where | What | Why |
 |---|---|---|
 | Repository secrets | `CARGO_REGISTRY_TOKEN` | A crates.io API token scoped to publish-update. crates.io also supports OIDC trusted publishing, which removes the stored secret — worth switching to after the first release. |
-| pypi.org | A **pending publisher** for `rustypaper` | Trusted publishing: PyPI accepts a short-lived token from this workflow rather than a stored API token. It has to be added as *pending* because the project does not exist there yet. Owner `pgarrett-scripps`, repository `rustypaper`, workflow `release.yml`, environment `pypi`. All four claims must match exactly; one disagreeing claim fails as `invalid-publisher`, which reads like a missing publisher rather than a mismatched one. |
+| pypi.org | A **trusted publisher** for `rustypaper` | PyPI accepts a short-lived token from this workflow rather than a stored API token. Owner `pgarrett-scripps`, repository `rustypaper`, workflow `release.yml`, environment `pypi`. All four claims must match exactly; one disagreeing claim fails as `invalid-publisher`, which reads like a missing publisher rather than a mismatched one. Before the first upload it has to be added as a *pending* publisher, since the project does not exist on PyPI until then; that step is done. |
 | Repository environments | An environment named `pypi` | What the PyPI publisher binds to. Add required reviewers here if a release should need approval. |
 
 ## What ships

@@ -1,9 +1,9 @@
 //! Unicode to LaTeX for mathematical symbols.
 //!
 //! Born-digital PDFs hand us the actual character a glyph stands for, so this is a lookup rather
-//! than recognition. pdfium's glyph-name fallback resolves TeX's Computer Modern encodings to
-//! sensible Unicode — the corpus yields `α β θ × · √ ≤ ∞ ∈ ∇ ∆ −` and so on — which means the
-//! job here is to name them again in LaTeX.
+//! than recognition. Both backends resolve TeX's Computer Modern encodings to sensible Unicode
+//! through a glyph-name fallback — the corpus yields `α β θ × · √ ≤ ∞ ∈ ∇ ∆ −` and so on — which
+//! means the job here is to name them again in LaTeX.
 
 /// The LaTeX for a mathematical character, or `None` when the character can be written as-is.
 pub fn latex(c: char) -> Option<&'static str> {

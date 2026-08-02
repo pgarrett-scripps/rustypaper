@@ -373,7 +373,6 @@ fn extract_bibliography(document: &mut doc::Document) {
     }
 }
 
-/// The horizontal extent of a page's text, used as the column a display equation is centred in.
 /// The column a line sits in, given the page's text extent and its gutters.
 ///
 /// Gutters split the extent into bands; the line belongs to the band its horizontal midpoint
@@ -413,6 +412,7 @@ fn column_of(line: ir::Rect, extent: ir::Rect, gutters: &[(f32, f32)]) -> ir::Re
     }
 }
 
+/// The horizontal extent of a page's text, used as the column when the page has no gutters.
 fn text_extent(lines: &[text::lines::Line]) -> ir::Rect {
     lines
         .iter()
@@ -469,7 +469,6 @@ fn apply_inline_math(
     line.words = rebuilt;
 }
 
-/// Places display equations into the document at their position in reading order.
 /// Inserts a block at its position in reading order.
 ///
 /// Tables, equations and uncaptioned figures are all lifted out of the line stream before
