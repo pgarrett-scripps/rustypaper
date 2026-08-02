@@ -68,11 +68,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # Set CARGO_REGISTRY_TOKEN in repository secrets, from an API token on
-      # crates.io scoped to publish-update. crates.io also supports GitHub
-      # OIDC trusted publishing, which removes the long-lived secret; switch
-      # once the first release has gone out under a token.
-      - run: cargo publish -p rustypaper --locked
+      # CARGO_REGISTRY_TOKEN is a crates.io API token scoped to
+      # publish-update. crates.io also supports GitHub OIDC trusted
+      # publishing, which removes the long-lived secret — worth switching to.
+      #
+      # Idempotent on purpose. crates.io and PyPI are separate uploads in one
+      # release, so a failure on either side means re-running the workflow with
+      # the other side already done — and cargo treats republishing a version
+      # as an error rather than a no-op.
+      - name: Publish, unless this version is already on the index
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          if curl -sf -A "rustypaper-release" \
+               "https://crates.io/api/v1/crates/rustypaper/$version" >/dev/null; then
+            echo "rustypaper $version is already on crates.io; nothing to do."
+            exit 0
+          fi
+          cargo publish -p rustypaper --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -130,12 +142,15 @@ jobs:
     needs: [verify, wheels, sdist]
     if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    environment: release
+    environment: pypi
     permissions:
       # Trusted publishing: PyPI accepts a short-lived OIDC token from this
-      # workflow instead of an API token stored here. Configure the publisher
-      # at pypi.org/manage/account/publishing/ — for a project that does not
-      # exist yet, add it as a *pending* publisher before the first release.
+      # workflow instead of an API token stored here. The publisher is
+      # configured at pypi.org/manage/account/publishing/ and its four claims
+      # must match exactly — owner, repository, workflow filename, and the
+      # environment named above. A mismatch on any one of them fails as
+      # `invalid-publisher`, which reads like a missing publisher rather than
+      # a disagreeing one.
       id-token: write
     steps:
       - uses: actions/download-artifact@v4

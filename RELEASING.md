@@ -41,8 +41,8 @@ run it from the Actions tab with **dry run** left on.
 | Where | What | Why |
 |---|---|---|
 | Repository secrets | `CARGO_REGISTRY_TOKEN` | A crates.io API token scoped to publish-update. crates.io also supports OIDC trusted publishing, which removes the stored secret — worth switching to after the first release. |
-| pypi.org | A **pending publisher** for `rustypaper` | Trusted publishing: PyPI accepts a short-lived token from this workflow rather than a stored API token. It has to be added as *pending* because the project does not exist there yet. Owner `pgarrett-scripps`, repository `rustypaper`, workflow `release.yml`, environment `release`. |
-| Repository environments | An environment named `release` | What the PyPI publisher binds to. Add required reviewers here if a release should need approval. |
+| pypi.org | A **pending publisher** for `rustypaper` | Trusted publishing: PyPI accepts a short-lived token from this workflow rather than a stored API token. It has to be added as *pending* because the project does not exist there yet. Owner `pgarrett-scripps`, repository `rustypaper`, workflow `release.yml`, environment `pypi`. All four claims must match exactly; one disagreeing claim fails as `invalid-publisher`, which reads like a missing publisher rather than a mismatched one. |
+| Repository environments | An environment named `pypi` | What the PyPI publisher binds to. Add required reviewers here if a release should need approval. |
 
 ## What ships
 
