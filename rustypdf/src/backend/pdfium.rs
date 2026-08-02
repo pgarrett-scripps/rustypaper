@@ -46,6 +46,33 @@ fn pdfium() -> Result<&'static Pdfium> {
             if let Ok(dir) = std::env::var("PDFIUM_DYNAMIC_LIB_PATH") {
                 attempts.push(Pdfium::pdfium_platform_library_name_at_path(&dir));
             }
+
+            // Relative to the executable, before relative to the working
+            // directory. The cwd-relative paths below only find the vendored
+            // library when the process happens to be started from the repo
+            // root, so `rp2m` invoked by absolute path from anywhere else —
+            // which is how anything other than a developer shell calls it —
+            // failed to find pdfium at all.
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(bin) = exe.parent() {
+                    // `../../vendor/...` covers a cargo build tree, where the
+                    // binary lands in `target/release/` and the vendored
+                    // library sits at the workspace root; `lib` and `` cover
+                    // an installed layout where they are siblings.
+                    for rel in [
+                        "vendor/pdfium/lib",
+                        "../vendor/pdfium/lib",
+                        "../../vendor/pdfium/lib",
+                        "lib",
+                        "",
+                    ] {
+                        attempts.push(Pdfium::pdfium_platform_library_name_at_path(
+                            &bin.join(rel),
+                        ));
+                    }
+                }
+            }
+
             for dir in ["./vendor/pdfium/lib", "../vendor/pdfium/lib", "./lib", "."] {
                 attempts.push(Pdfium::pdfium_platform_library_name_at_path(dir));
             }

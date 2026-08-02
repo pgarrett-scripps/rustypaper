@@ -25,3 +25,7 @@ build-backend = "maturin"
 [tool.maturin]
 manifest-path = "../rustypdf-py/Cargo.toml"
 module-name = "_rustypdf"
+# pdfium is loaded at runtime, so it has to travel inside the wheel — without
+# it `pip install rustypdf` produces a package that imports and then fails on
+# the first conversion.
+include = [{ path = "rustypdf/*pdfium*", format = "wheel" }]

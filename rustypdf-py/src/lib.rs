@@ -30,11 +30,39 @@ fn to_py_err(error: rustypdf::Error) -> PyErr {
     }
 }
 
+/// Parses the `caveman` argument shared by the conversion entry points.
+///
+/// Spelled as a string rather than an enum because the caller is Python: an
+/// enum would have to be constructed and imported, where the levels are
+/// already named in the CLI and the docs. `None` and `"off"` both mean no
+/// compression, so a caller can pass a config value straight through without
+/// special-casing the disabled state.
+fn caveman_level(caveman: Option<&str>) -> PyResult<Option<rustypdf::compress::Level>> {
+    match caveman {
+        None | Some("off") | Some("none") => Ok(None),
+        Some("light") => Ok(Some(rustypdf::compress::Level::Light)),
+        Some("hard") => Ok(Some(rustypdf::compress::Level::Hard)),
+        Some(other) => Err(PyValueError::new_err(format!(
+            "unknown caveman level {other:?}; expected \"off\", \"light\" or \"hard\""
+        ))),
+    }
+}
+
 /// Converts a PDF to Markdown.
+///
+/// `caveman` strips grammatical scaffolding for models that charge by the
+/// token — see [`rustypdf::compress`] for what each level drops. It is exposed
+/// here because the callers that care about token cost are the scripting ones,
+/// which is the whole reason this binding exists.
 #[pyfunction]
-fn to_markdown(py: Python<'_>, path: &str) -> PyResult<String> {
+#[pyo3(signature = (path, caveman = None))]
+fn to_markdown(py: Python<'_>, path: &str, caveman: Option<&str>) -> PyResult<String> {
+    let options = rustypdf::Options {
+        caveman: caveman_level(caveman)?,
+        ..Default::default()
+    };
     py.detach(|| {
-        rustypdf::convert(path)
+        rustypdf::convert_with(path, &options)
             .map(|doc| rustypdf::emit::markdown::render(&doc))
             .map_err(to_py_err)
     })
@@ -44,10 +72,19 @@ fn to_markdown(py: Python<'_>, path: &str) -> PyResult<String> {
 ///
 /// The Python wrapper parses this into a dict. Passing JSON across the boundary keeps the
 /// binding free of a serde-to-Python bridge, and the cost is irrelevant next to conversion.
+///
+/// Takes `caveman` for the same reason `to_markdown` does, and so that a
+/// caller inspecting the document model sees the same text the Markdown
+/// rendering would carry.
 #[pyfunction]
-fn to_json(py: Python<'_>, path: &str) -> PyResult<String> {
+#[pyo3(signature = (path, caveman = None))]
+fn to_json(py: Python<'_>, path: &str, caveman: Option<&str>) -> PyResult<String> {
+    let options = rustypdf::Options {
+        caveman: caveman_level(caveman)?,
+        ..Default::default()
+    };
     py.detach(|| {
-        let doc = rustypdf::convert(path).map_err(to_py_err)?;
+        let doc = rustypdf::convert_with(path, &options).map_err(to_py_err)?;
         serde_json::to_string(&doc).map_err(|e| PyValueError::new_err(e.to_string()))
     })
 }
@@ -70,3 +107,4 @@ fn _rustypdf(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(extract_json, module)?)?;
     Ok(())
 }
+
