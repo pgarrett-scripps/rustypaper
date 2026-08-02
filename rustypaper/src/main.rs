@@ -157,8 +157,8 @@ fn dump(out: &mut impl Write, pdf: PathBuf, page: Option<usize>, pretty: bool) -
             write_json(out, &(fonts, raw), pretty)
         }
         None => {
-            let doc =
-                rustypaper::extract(&pdf).with_context(|| format!("extracting {}", pdf.display()))?;
+            let doc = rustypaper::extract(&pdf)
+                .with_context(|| format!("extracting {}", pdf.display()))?;
             write_json(out, &doc, pretty)
         }
     }

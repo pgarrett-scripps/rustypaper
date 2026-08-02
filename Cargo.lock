@@ -756,6 +756,8 @@ dependencies = [
 [[package]]
 name = "rustium-pdf"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d83a8fe91ad1fdf2aecf5201f32614462fea77586689338fec260d484d25928"
 dependencies = [
  "aes",
  "cbc",

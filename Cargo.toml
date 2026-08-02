@@ -14,10 +14,13 @@ repository = "https://github.com/pgarrett-scripps/rustypaper"
 # writes it while the workspace entry omits it is silently ignored, and every binary quietly
 # gets both backends compiled in.
 rustypaper = { path = "rustypaper", version = "0.1.0", default-features = false }
-# The pure-Rust PDF backend. `version` is what makes this publishable — cargo refuses to
-# publish a crate carrying a bare path dependency, since nobody else has that path — while
-# `path` keeps local builds reading the checkout next door rather than the registry.
-rustium = { package = "rustium-pdf", version = "0.1.0", path = "../rustium-pdf" }
+# The pure-Rust PDF backend, from the registry. Deliberately not a path dependency: a path
+# only resolves where the sibling checkout happens to exist, which is this machine and not a
+# CI runner, and `cargo fmt --all` walks into it whether it is there or not. To develop the
+# two together, add a temporary override rather than committing one:
+#     [patch.crates-io]
+#     rustium-pdf = { path = "../rustium-pdf" }
+rustium = { package = "rustium-pdf", version = "0.1.0" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
