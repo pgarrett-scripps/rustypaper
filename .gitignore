@@ -3,3 +3,7 @@
 /corpus/*.pdf
 /corpus/*.tar.gz
 *_assets/
+/corpus/.sources
+python/_rustypdf.so
+__pycache__/
+*.pyc

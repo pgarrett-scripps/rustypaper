@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["rustypdf", "rustypdf-cli"]
+members = ["rustypdf", "rustypdf-cli", "rustypdf-py"]
 
 [workspace.package]
 version = "0.1.0"
@@ -26,7 +26,6 @@ thiserror = "2"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
 
 # Benchmarks and the eval harness need real optimisation but also usable backtraces.
 [profile.bench]

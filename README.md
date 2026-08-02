@@ -69,10 +69,44 @@ pretending.
 | **M5** | References, citation linking, CSL-JSON | |
 | **M6** | Typst emitter, performance pass, batch mode | |
 
+## Python
+
+The core is Rust; the tooling around it is Python, because evaluation, corpus management and
+comparison against other converters are scripting jobs.
+
+```sh
+cargo build --release                      # also builds the extension module
+cp target/release/lib_rustypdf.so python/_rustypdf.so
+PYTHONPATH=python python3 -c "
+import rustypdf
+print(rustypdf.to_markdown('corpus/resnet.pdf')[:80])
+doc = rustypdf.to_document('corpus/resnet.pdf')   # the document model as a dict
+"
+```
+
+`ScannedDocument` is raised for image-only PDFs, so callers can route those to an OCR pipeline
+instead. Conversion releases the GIL.
+
+## Evaluation
+
+Quality is measured, not eyeballed. arXiv ships every paper's LaTeX source, which gives free
+ground truth for exactly this document class.
+
+```sh
+cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval
+```
+
+Current mean bigram recall is **0.862** across the scorable corpus. See
+[`eval/README.md`](eval/README.md) for what the metrics mean and why plain edit distance is the
+wrong primary measure here.
+
 ## Testing
 
 ```sh
-cargo test            # unit tests always run; corpus tests skip if corpus/ is empty
+cargo test                                    # unit tests always run; corpus tests skip if
+                                              # corpus/ is empty
+python3 -m unittest discover -s eval/tests    # the eval harness's own tests
+cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval --baseline baseline.json
 ```
 
 Integration tests live in `rustypdf/tests/corpus.rs` and run against real papers. They skip

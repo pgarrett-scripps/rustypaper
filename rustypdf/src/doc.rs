@@ -36,11 +36,15 @@ const TITLE_SIZE_RATIO: f32 = 1.15;
 /// Only this many opening blocks are considered as title candidates.
 const TITLE_SEARCH_BLOCKS: usize = 4;
 
+/// Serialised with an internal tag so that the JSON reads `{"type": "heading", "level": 2}`
+/// rather than `{"Heading": 2}`. The document model is the contract other tools consume, so it
+/// is worth being pleasant in languages that are not Rust.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum BlockKind {
     Title,
     /// Section heading; level 1 is a top-level section.
-    Heading(u8),
+    Heading { level: u8 },
     Paragraph,
     /// A figure or table caption.
     Caption,
@@ -141,7 +145,7 @@ fn build_block(group: &[&Line], page: usize, stats: Stats, column_width: f32) ->
         BlockKind::Caption
     } else if is_heading(group, &text, stats, column_width) {
         // Level is assigned once the whole document's headings are known.
-        BlockKind::Heading(1)
+        BlockKind::Heading { level: 1 }
     } else {
         BlockKind::Paragraph
     };
@@ -265,14 +269,14 @@ fn promote_title(blocks: &mut [Block], stats: Stats) {
 fn assign_heading_levels(blocks: &mut [Block], stats: Stats) {
     let mut sizes: Vec<f32> = blocks
         .iter()
-        .filter(|b| matches!(b.kind, BlockKind::Heading(_)))
+        .filter(|b| matches!(b.kind, BlockKind::Heading { .. }))
         .map(|b| b.size)
         .collect();
     sizes.sort_by(|a, b| b.total_cmp(a));
     sizes.dedup_by(|a, b| (*a - *b).abs() < 0.25);
 
     for block in blocks.iter_mut() {
-        if !matches!(block.kind, BlockKind::Heading(_)) {
+        if !matches!(block.kind, BlockKind::Heading { .. }) {
             continue;
         }
         let level = match numbering_depth(&block.text) {
@@ -285,7 +289,7 @@ fn assign_heading_levels(blocks: &mut [Block], stats: Stats) {
                 (rank + 1).min(6) as u8
             }
         };
-        block.kind = BlockKind::Heading(level.max(1));
+        block.kind = BlockKind::Heading { level: level.max(1) };
         let _ = stats;
     }
 }
@@ -369,9 +373,9 @@ mod tests {
         ];
         let doc = assemble(&[page], stats());
         let kinds: Vec<&BlockKind> = doc.blocks.iter().map(|b| &b.kind).collect();
-        assert_eq!(kinds[0], &BlockKind::Heading(1));
+        assert_eq!(kinds[0], &BlockKind::Heading { level: 1 });
         assert_eq!(kinds[1], &BlockKind::Paragraph);
-        assert_eq!(kinds[2], &BlockKind::Heading(2));
+        assert_eq!(kinds[2], &BlockKind::Heading { level: 2 });
     }
 
     #[test]
@@ -391,7 +395,7 @@ mod tests {
         let doc = assemble(&[page], stats());
         assert_eq!(doc.blocks[0].kind, BlockKind::Title);
         assert!(
-            matches!(doc.blocks[2].kind, BlockKind::Heading(_)),
+            matches!(doc.blocks[2].kind, BlockKind::Heading { .. }),
             "expected a heading, got {:?}",
             doc.blocks[2].kind
         );

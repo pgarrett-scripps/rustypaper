@@ -21,7 +21,7 @@ fn render_block(out: &mut String, block: &Block) {
             out.push_str("# ");
             out.push_str(&escape(&block.text));
         }
-        BlockKind::Heading(level) => {
+        BlockKind::Heading { level } => {
             // Level 1 headings sit under the title, so they render as `##`.
             for _ in 0..=level.clamp(1, 5) {
                 out.push('#');
@@ -84,9 +84,9 @@ mod tests {
             title: Some("A Paper".into()),
             blocks: vec![
                 block(BlockKind::Title, "A Paper"),
-                block(BlockKind::Heading(1), "1 Introduction"),
+                block(BlockKind::Heading { level: 1 }, "1 Introduction"),
                 block(BlockKind::Paragraph, "Some body text."),
-                block(BlockKind::Heading(2), "1.1 Background"),
+                block(BlockKind::Heading { level: 2 }, "1.1 Background"),
                 block(BlockKind::Caption, "Figure 1. A plot."),
             ],
         };
