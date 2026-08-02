@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path
 
 try:  # pragma: no cover - depends on the environment
-    import rustypdf as _module
+    import rustypaper as _module
 
     BACKEND = "extension"
 except ImportError:  # pragma: no cover
@@ -19,9 +19,9 @@ except ImportError:  # pragma: no cover
     BACKEND = "cli"
 
 REPO = Path(__file__).resolve().parents[2]
-CLI = REPO / "target" / "release" / "rp2m"
-BUILT_EXTENSION = REPO / "target" / "release" / "lib_rustypdf.so"
-INSTALLED_EXTENSION = REPO / "python" / "_rustypdf.so"
+CLI = REPO / "target" / "release" / "rustypaper"
+BUILT_EXTENSION = REPO / "target" / "release" / "lib_rustypaper.so"
+INSTALLED_EXTENSION = REPO / "python" / "_rustypaper.so"
 
 
 def _warn_if_stale() -> None:
@@ -62,12 +62,12 @@ def to_document(pdf: Path) -> dict:
 def _run(args: list[str]) -> str:
     if not CLI.exists():
         raise RuntimeError(
-            f"neither the rustypdf extension nor {CLI} is available; "
+            f"neither the rustypaper extension nor {CLI} is available; "
             "run `cargo build --release`"
         )
     result = subprocess.run(
         [str(CLI), *args], capture_output=True, text=True, cwd=REPO, check=False
     )
     if result.returncode != 0:
-        raise RuntimeError(f"rp2m failed: {result.stderr.strip()}")
+        raise RuntimeError(f"rustypaper failed: {result.stderr.strip()}")
     return result.stdout

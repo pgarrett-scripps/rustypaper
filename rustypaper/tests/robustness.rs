@@ -8,7 +8,7 @@ use std::io::Write;
 
 /// Writes `bytes` to a temporary file and returns its path.
 fn scratch(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("rustypdf-robustness-{name}"));
+    let path = std::env::temp_dir().join(format!("rustypaper-robustness-{name}"));
     let mut file = std::fs::File::create(&path).expect("create scratch file");
     file.write_all(bytes).expect("write scratch file");
     path
@@ -42,7 +42,7 @@ fn garbage_is_rejected_without_panicking() {
 
     for (name, bytes) in cases {
         let path = scratch(name, &bytes);
-        let result = rustypdf::convert(&path);
+        let result = rustypaper::convert(&path);
         assert!(
             result.is_err(),
             "{name}: garbage was accepted as a document"
@@ -58,9 +58,9 @@ fn garbage_is_rejected_without_panicking() {
 
 #[test]
 fn a_missing_file_is_an_error_not_a_panic() {
-    let missing = std::env::temp_dir().join("rustypdf-does-not-exist-9d3f.pdf");
+    let missing = std::env::temp_dir().join("rustypaper-does-not-exist-9d3f.pdf");
     let _ = std::fs::remove_file(&missing);
-    assert!(rustypdf::convert(&missing).is_err());
+    assert!(rustypaper::convert(&missing).is_err());
 }
 
 /// A file truncated part-way through is the commonest real corruption.
@@ -77,7 +77,7 @@ fn truncated_documents_do_not_panic() {
         let cut = whole.len() * fraction / 100;
         let path = scratch(&format!("truncated-{fraction}"), &whole[..cut]);
         // Either outcome is acceptable; what matters is that neither panics.
-        let _ = rustypdf::convert(&path);
+        let _ = rustypaper::convert(&path);
         let _ = std::fs::remove_file(&path);
     }
 }
@@ -97,7 +97,7 @@ fn bit_flips_do_not_panic() {
         let mut damaged = whole.clone();
         damaged[offset] ^= 0xFF;
         let path = scratch(&format!("flipped-{step}"), &damaged);
-        let _ = rustypdf::convert(&path);
+        let _ = rustypaper::convert(&path);
         let _ = std::fs::remove_file(&path);
     }
 }
@@ -105,14 +105,14 @@ fn bit_flips_do_not_panic() {
 /// A page-range request outside the document must be an error.
 #[test]
 fn out_of_range_pages_are_rejected() {
-    use rustypdf::backend::{open as open_backend, PageSource};
+    use rustypaper::backend::{open as open_backend, PageSource};
 
     let Some(path) = corpus("unet.pdf") else {
         eprintln!("skipping: corpus absent");
         return;
     };
     let backend = open_backend(&path).expect("open");
-    let mut fonts = rustypdf::ir::FontTable::new();
+    let mut fonts = rustypaper::ir::FontTable::new();
     assert!(backend.page(usize::MAX, &mut fonts).is_err());
     assert!(backend.page(backend.page_count(), &mut fonts).is_err());
 }

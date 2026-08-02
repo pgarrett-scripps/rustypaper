@@ -42,7 +42,7 @@ fn pdfium() -> Result<&'static Pdfium> {
             // Relative to the executable, before relative to the working
             // directory. The cwd-relative paths below only find the vendored
             // library when the process happens to be started from the repo
-            // root, so `rp2m` invoked by absolute path from anywhere else —
+            // root, so `rustypaper` invoked by absolute path from anywhere else —
             // which is how anything other than a developer shell calls it —
             // failed to find pdfium at all.
             if let Ok(exe) = std::env::current_exe() {

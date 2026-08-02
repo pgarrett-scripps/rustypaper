@@ -4,8 +4,8 @@
 /corpus/*.tar.gz
 *_assets/
 /corpus/.sources
-python/rustypdf/_rustypdf.so
+python/rustypaper/_rustypaper*.so
 __pycache__/
 *.pyc
 /out
-python/rustypdf/libpdfium.so
+python/rustypaper/libpdfium.so

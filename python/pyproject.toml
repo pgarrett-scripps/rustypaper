@@ -1,5 +1,5 @@
 [project]
-name = "rustypdf"
+name = "rustypaper"
 version = "0.1.0"
 description = "Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON."
 readme = "../README.md"
@@ -13,23 +13,23 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/pgarrett-scripps/rustypdf"
+Repository = "https://github.com/pgarrett-scripps/rustypaper"
 
 # Built with maturin from the workspace root:
-#   maturin build -m rustypdf-py/Cargo.toml
+#   maturin build -m rustypaper-py/Cargo.toml
 # `scripts/build.sh` is the no-maturin path: cargo produces an importable .so directly.
 [build-system]
 requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [tool.maturin]
-manifest-path = "../rustypdf-py/Cargo.toml"
-module-name = "rustypdf._rustypdf"
+manifest-path = "../rustypaper-py/Cargo.toml"
+module-name = "rustypaper._rustypaper"
 # Where the pure-Python half lives. Without this maturin ships only the
-# compiled extension, so `pip install rustypdf` yields an importable
-# `_rustypdf` and no `rustypdf` — the package the docs tell people to import.
+# compiled extension, so `pip install rustypaper` yields an importable
+# `_rustypaper` and no `rustypaper` — the package the docs tell people to import.
 python-source = "."
-# pdfium is loaded at runtime rather than linked, so it has to travel inside
-# the wheel — without it `pip install rustypdf` produces a package that
-# imports cleanly and then fails on the first conversion.
-include = [{ path = "rustypdf/*pdfium*", format = "wheel" }]
+# Nothing to bundle. The default backend is pure Rust, so the extension is
+# self-contained and the wheel is the extension plus this package — no C
+# library travelling beside it, no per-platform copy to keep in step. A
+# wheel built with `--features pdfium` would need one; we do not build those.

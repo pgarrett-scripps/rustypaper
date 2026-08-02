@@ -5,13 +5,13 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use rustypdf::backend::PageSource;
-use rustypdf::ir::{FontTable, PathKind};
-use rustypdf::text::lines::build_lines;
+use rustypaper::backend::PageSource;
+use rustypaper::ir::{FontTable, PathKind};
+use rustypaper::text::lines::build_lines;
 
 #[derive(Parser)]
 #[command(
-    name = "rp2m",
+    name = "rustypaper",
     version,
     about = "Convert scientific PDFs to structured text"
 )]
@@ -39,11 +39,11 @@ enum Caveman {
     Hard,
 }
 
-impl From<Caveman> for rustypdf::compress::Level {
+impl From<Caveman> for rustypaper::compress::Level {
     fn from(value: Caveman) -> Self {
         match value {
-            Caveman::Light => rustypdf::compress::Level::Light,
-            Caveman::Hard => rustypdf::compress::Level::Hard,
+            Caveman::Light => rustypaper::compress::Level::Light,
+            Caveman::Hard => rustypaper::compress::Level::Hard,
         }
     }
 }
@@ -151,14 +151,14 @@ fn is_broken_pipe(error: &anyhow::Error) -> bool {
 fn dump(out: &mut impl Write, pdf: PathBuf, page: Option<usize>, pretty: bool) -> Result<()> {
     match page {
         Some(index) => {
-            let backend = rustypdf::backend::open(&pdf)?;
+            let backend = rustypaper::backend::open(&pdf)?;
             let mut fonts = FontTable::new();
             let raw = backend.page(index, &mut fonts)?;
             write_json(out, &(fonts, raw), pretty)
         }
         None => {
             let doc =
-                rustypdf::extract(&pdf).with_context(|| format!("extracting {}", pdf.display()))?;
+                rustypaper::extract(&pdf).with_context(|| format!("extracting {}", pdf.display()))?;
             write_json(out, &doc, pretty)
         }
     }
@@ -176,7 +176,7 @@ fn write_json(mut w: impl Write, value: &impl serde::Serialize, pretty: bool) ->
 
 fn probe(out: &mut impl Write, pdf: PathBuf, per_page: bool) -> Result<()> {
     let started = Instant::now();
-    let doc = rustypdf::extract(&pdf).with_context(|| format!("extracting {}", pdf.display()))?;
+    let doc = rustypaper::extract(&pdf).with_context(|| format!("extracting {}", pdf.display()))?;
     let elapsed = started.elapsed();
 
     let pages = doc.pages.len();
@@ -245,13 +245,13 @@ fn probe(out: &mut impl Write, pdf: PathBuf, per_page: bool) -> Result<()> {
                 },
                 {
                     let lines = build_lines(page);
-                    rustypdf::layout::columns::page_gutters(page, &lines)
+                    rustypaper::layout::columns::page_gutters(page, &lines)
                         .iter()
                         .map(|(a, b)| (a.round() as i32, b.round() as i32))
                         .collect::<Vec<_>>()
                 },
             )?;
-            for region in rustypdf::figure::regions(page) {
+            for region in rustypaper::figure::regions(page) {
                 let pct =
                     100.0 * region.bbox.width() * region.bbox.height() / (page.width * page.height);
                 writeln!(
@@ -273,7 +273,7 @@ fn probe(out: &mut impl Write, pdf: PathBuf, per_page: bool) -> Result<()> {
 }
 
 fn text(out: &mut impl Write, pdf: PathBuf, only: Option<usize>, geometry: bool) -> Result<()> {
-    let doc = rustypdf::extract(&pdf).with_context(|| format!("extracting {}", pdf.display()))?;
+    let doc = rustypaper::extract(&pdf).with_context(|| format!("extracting {}", pdf.display()))?;
 
     for page in &doc.pages {
         if only.is_some_and(|p| p != page.index) {
@@ -339,12 +339,12 @@ fn convert(
             (None, false) => None,
         };
 
-        let options = rustypdf::Options {
+        let options = rustypaper::Options {
             assets,
             figure_dpi,
             caveman: caveman.map(Into::into),
         };
-        let doc = match rustypdf::convert_with(pdf, &options) {
+        let doc = match rustypaper::convert_with(pdf, &options) {
             Ok(doc) => doc,
             // One unreadable file must not abandon the rest of a batch.
             Err(e) if batch => {
@@ -356,10 +356,10 @@ fn convert(
         };
 
         let rendered = match format {
-            Format::Md => rustypdf::emit::markdown::render(&doc),
+            Format::Md => rustypaper::emit::markdown::render(&doc),
             Format::Json => serde_json::to_string_pretty(&doc)? + "\n",
-            Format::Typst => rustypdf::emit::typst::render(&doc),
-            Format::Text => rustypdf::emit::text::render(&doc),
+            Format::Typst => rustypaper::emit::typst::render(&doc),
+            Format::Text => rustypaper::emit::text::render(&doc),
         };
 
         match &dest {

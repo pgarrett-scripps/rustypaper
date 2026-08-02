@@ -62,4 +62,4 @@ jobs:
       - name: Check for quality regressions
         if: steps.corpus.outcome == 'success'
         working-directory: eval
-        run: PYTHONPATH=.:../python python3 -m rp2m_eval --baseline baseline.json
+        run: PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json

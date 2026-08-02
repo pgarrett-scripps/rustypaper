@@ -15,7 +15,7 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="rp2m_eval", description=__doc__)
+    parser = argparse.ArgumentParser(prog="rustypaper_eval", description=__doc__)
     parser.add_argument("--corpus", type=Path, default=REPO / "corpus")
     parser.add_argument("--cache", type=Path, default=REPO / "corpus" / ".sources")
     parser.add_argument("--only", help="substring of a paper filename")

@@ -1,5 +1,5 @@
 [package]
-name = "rustypdf"
+name = "rustypaper"
 description = "Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON. Fast, CPU-only, no models."
 version.workspace = true
 edition.workspace = true
@@ -11,6 +11,12 @@ keywords = ["pdf", "markdown", "typst", "science"]
 categories = ["text-processing", "science"]
 exclude = ["tests/corpus.rs"]
 
+# One crate, one name: the library and the command line tool are the same package, because
+# two crates cannot share a name on crates.io and this project has exactly one.
+[[bin]]
+name = "rustypaper"
+path = "src/main.rs"
+
 [features]
 # Pure Rust throughout: no C library to ship, find or version-match. This is the default, and
 # the reason the crate can be a single static binary.
@@ -21,6 +27,11 @@ rustium = ["dep:rustium"]
 pdfium = ["dep:pdfium-render"]
 
 [dependencies]
+# Used by the binary only, but cargo has no way to say so for a bin inside a library crate.
+# They are small and pure Rust, so the cost to a library consumer is compile time, not weight.
+anyhow.workspace = true
+clap.workspace = true
+
 image.workspace = true
 pdfium-render = { workspace = true, optional = true }
 rayon.workspace = true

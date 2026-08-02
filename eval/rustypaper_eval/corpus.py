@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import detex
 
-USER_AGENT = "rustypdf-eval/0.1 (https://github.com/pgarrett-scripps/rustypdf)"
+USER_AGENT = "rustypaper-eval/0.1 (https://github.com/pgarrett-scripps/rustypaper)"
 
 #: arXiv id -> local pdf name. Pinned to a version so scores stay comparable across commits.
 PAPERS: dict[str, str] = {

@@ -1,4 +1,4 @@
-# rustypdf
+# rustypaper
 
 Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON. Fast,
 CPU-only, no models.
@@ -14,11 +14,11 @@ crates that exist are generic text extractors with no notion of a paper. This ai
 ## Install
 
 ```sh
-cargo install rp2m          # the command-line tool
+cargo install rustypaper          # the command-line tool
 ```
 
 ```toml
-rustypdf = "0.1"            # the library
+rustypaper = "0.1"            # the library
 ```
 
 **pdfium is required and is not bundled.** It is a native library (BSD-3-Clause, the PDF engine
@@ -38,15 +38,15 @@ scripts/build.sh            # cargo build --release, plus installing the Python 
 
 ```sh
 # Convert.
-./target/release/rp2m convert corpus/resnet.pdf
-./target/release/rp2m convert corpus/resnet.pdf --format typst --assets figures/
-./target/release/rp2m convert corpus/*.pdf --out out/        # batch
-./target/release/rp2m convert paper.pdf --caveman=hard       # -25% words for LLM ingestion
+./target/release/rustypaper convert corpus/resnet.pdf
+./target/release/rustypaper convert corpus/resnet.pdf --format typst --assets figures/
+./target/release/rustypaper convert corpus/*.pdf --out out/        # batch
+./target/release/rustypaper convert paper.pdf --caveman=hard       # -25% words for LLM ingestion
 
 # Diagnostics.
-./target/release/rp2m probe corpus/resnet.pdf --pages   # counts, fonts, detected gutters
-./target/release/rp2m text  corpus/resnet.pdf --geometry # reconstructed lines
-./target/release/rp2m dump  corpus/resnet.pdf --page 0 --pretty
+./target/release/rustypaper probe corpus/resnet.pdf --pages   # counts, fonts, detected gutters
+./target/release/rustypaper text  corpus/resnet.pdf --geometry # reconstructed lines
+./target/release/rustypaper dump  corpus/resnet.pdf --page 0 --pretty
 ```
 
 `probe` prints per-page counts, the font histogram and the detected gutters. Gutters are the
@@ -104,9 +104,9 @@ comparison against other converters are scripting jobs.
 ```sh
 scripts/build.sh
 PYTHONPATH=python python3 -c "
-import rustypdf
-print(rustypdf.to_markdown('corpus/resnet.pdf')[:80])
-doc = rustypdf.to_document('corpus/resnet.pdf')   # the document model as a dict
+import rustypaper
+print(rustypaper.to_markdown('corpus/resnet.pdf')[:80])
+doc = rustypaper.to_document('corpus/resnet.pdf')   # the document model as a dict
 "
 ```
 
@@ -121,7 +121,7 @@ the subset of papers that have it. PDF-only submissions have none, and are repor
 rather than scored.
 
 ```sh
-cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval
+cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval
 ```
 
 Current scores across the nine scorable papers:
@@ -144,10 +144,10 @@ wrong primary measure here.
 cargo test                                    # unit, robustness and corpus tests; corpus tests
                                               # skip if corpus/ is empty
 python3 -m unittest discover -s eval/tests    # the eval harness's own tests
-cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval --baseline baseline.json
+cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
 ```
 
-Integration tests live in `rustypdf/tests/corpus.rs` and run against real papers. They skip
+Integration tests live in `rustypaper/tests/corpus.rs` and run against real papers. They skip
 rather than fail when the corpus is absent, so a fresh clone is green.
 
 ## Licence

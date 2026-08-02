@@ -1,22 +1,23 @@
 [workspace]
 resolver = "2"
-members = ["rustypdf", "rustypdf-cli", "rustypdf-py"]
+members = ["rustypaper", "rustypaper-py"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/pgarrett-scripps/rustypdf"
+repository = "https://github.com/pgarrett-scripps/rustypaper"
 
 [workspace.dependencies]
 # `default-features = false` has to live here, not on the inheriting members: a member that
 # writes it while the workspace entry omits it is silently ignored, and every binary quietly
 # gets both backends compiled in.
-rustypdf = { path = "rustypdf", version = "0.1.0", default-features = false }
-# The pure-Rust PDF backend. A path dependency outside the repo while both crates are moving
-# together daily; this has to become a version dependency before either can be published.
-rustium = { package = "rustium-pdf", path = "../rustium-pdf" }
+rustypaper = { path = "rustypaper", version = "0.1.0", default-features = false }
+# The pure-Rust PDF backend. `version` is what makes this publishable — cargo refuses to
+# publish a crate carrying a bare path dependency, since nobody else has that path — while
+# `path` keeps local builds reading the checkout next door rather than the registry.
+rustium = { package = "rustium-pdf", version = "0.1.0", path = "../rustium-pdf" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

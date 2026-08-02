@@ -2,8 +2,8 @@
 
 ## Order matters
 
-`rp2m` depends on `rustypdf`, so the library goes first and the CLI cannot be packaged until it
-is on the index. `rustypdf-py` is marked `publish = false` — it is a cdylib built by maturin, not
+`rustypaper` depends on `rustypaper`, so the library goes first and the CLI cannot be packaged until it
+is on the index. `rustypaper-py` is marked `publish = false` — it is a cdylib built by maturin, not
 a crate anyone consumes.
 
 ```sh
@@ -11,16 +11,16 @@ scripts/fetch-pdfium.sh
 cargo test --release
 cargo clippy --all-targets -- -D warnings
 cargo fmt --all --check
-cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval --baseline baseline.json && cd ..
+cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json && cd ..
 
-cargo publish -p rustypdf
-cargo publish -p rp2m          # only once rustypdf is live on the index
+cargo publish -p rustypaper
+cargo publish -p rustypaper          # only once rustypaper is live on the index
 ```
 
 ## Python wheel
 
 ```sh
-maturin build -m rustypdf-py/Cargo.toml --release
+maturin build -m rustypaper-py/Cargo.toml --release
 ```
 
 ## What is deliberately not in the package

@@ -29,7 +29,7 @@ Two implement `PageSource`, chosen by cargo feature:
 
 ```sh
 cargo test --release                                            # rustium
-cargo test --release -p rustypdf --no-default-features --features pdfium
+cargo test --release -p rustypaper --no-default-features --features pdfium
 ```
 
 pdfium currently scores better — see the table below — so measure any backend change against
@@ -40,7 +40,7 @@ both before concluding anything.
 Quality is a number here, and every change to a pass should be justified by it:
 
 ```sh
-cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval --baseline baseline.json
+cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
 ```
 
 Exits non-zero if any paper regresses by more than 0.005. Refresh `baseline.json` deliberately,
@@ -70,8 +70,8 @@ pdfium's 95 MB.
   `docs/ARCHITECTURE.md` for six real bugs that only appeared when the corpus widened.
 - **Prefer an absent field to a wrong one.** Reference parsing omits authors it cannot parse;
   maths falls back to a rendered crop rather than emitting confident-looking wrong LaTeX.
-- **Check which extension Python actually imported**, with `rustypdf._rustypdf.__file__`. The
-  module is built `abi3`, and CPython prefers `_rustypdf.abi3.so` over a plain `_rustypdf.so`
+- **Check which extension Python actually imported**, with `rustypaper._rustypaper.__file__`. The
+  module is built `abi3`, and CPython prefers `_rustypaper.abi3.so` over a plain `_rustypaper.so`
   when both exist. `build.sh` used to install the plain name, so an old abi3 build beside it was
   loaded instead — silently, for every eval run. A whole backend comparison was measured against
   the wrong binary before this surfaced. `build.sh` now writes the abi3 name and deletes the

@@ -19,7 +19,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
 
-rustypdf = pytest.importorskip("rustypdf")
+rustypaper = pytest.importorskip("rustypaper")
 
 CORPUS = sorted((ROOT / "corpus").glob("*.pdf"))
 pytestmark = pytest.mark.skipif(
@@ -39,25 +39,25 @@ def test_levels_shrink_monotonically(paper: str) -> None:
     the word lists change — what must hold is that a stronger level is never
     larger, and that light and hard are not silently no-ops.
     """
-    off = rustypdf.to_markdown(paper)
-    light = rustypdf.to_markdown(paper, "light")
-    hard = rustypdf.to_markdown(paper, "hard")
+    off = rustypaper.to_markdown(paper)
+    light = rustypaper.to_markdown(paper, "light")
+    hard = rustypaper.to_markdown(paper, "hard")
 
     assert len(off) > len(light) > len(hard), (len(off), len(light), len(hard))
-    assert rustypdf.to_markdown(paper, "off") == off
-    assert rustypdf.to_markdown(paper, "none") == off
+    assert rustypaper.to_markdown(paper, "off") == off
+    assert rustypaper.to_markdown(paper, "none") == off
 
 
 def test_unknown_level_raises(paper: str) -> None:
     """A typo must fail, not fall through to no compression."""
     with pytest.raises(ValueError, match="ligth"):
-        rustypdf.to_markdown(paper, "ligth")
+        rustypaper.to_markdown(paper, "ligth")
 
 
 def test_document_model_takes_the_same_levels(paper: str) -> None:
     """`to_document` compresses too, so the two views cannot disagree."""
-    full = rustypdf.to_document(paper)
-    light = rustypdf.to_document(paper, "light")
+    full = rustypaper.to_document(paper)
+    light = rustypaper.to_document(paper, "light")
 
     assert len(full["blocks"]) == len(light["blocks"]), "compression dropped blocks"
     joined = lambda d: "".join(b.get("text") or "" for b in d["blocks"])  # noqa: E731
@@ -70,8 +70,8 @@ def test_content_words_survive_light(paper: str) -> None:
     The title is the cheapest thing to check that on: it is content words
     almost end to end, so if compression is reaching them it shows up here.
     """
-    full = rustypdf.to_document(paper)["title"] or ""
-    light = rustypdf.to_document(paper, "light")["title"] or ""
+    full = rustypaper.to_document(paper)["title"] or ""
+    light = rustypaper.to_document(paper, "light")["title"] or ""
     if not full:
         pytest.skip("this corpus paper has no detected title")
 

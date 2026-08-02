@@ -37,7 +37,7 @@ pub enum Error {
     /// nothing to work with on an image-only page.
     #[error(
         "{path} looks like a scanned document ({scanned}/{total} pages have no extractable \
-         text); rustypdf handles born-digital PDFs only"
+         text); rustypaper handles born-digital PDFs only"
     )]
     Scanned {
         path: PathBuf,

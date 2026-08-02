@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rp2m_eval import detex, formula, score  # noqa: E402
+from rustypaper_eval import detex, formula, score  # noqa: E402
 
 
 class TestDetex(unittest.TestCase):

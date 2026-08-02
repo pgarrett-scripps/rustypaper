@@ -6,10 +6,10 @@
 
 use std::path::PathBuf;
 
-use rustypdf::backend::open as open_backend;
-use rustypdf::backend::PageSource;
-use rustypdf::ir::{FontTable, PathKind, Rect};
-use rustypdf::text::lines::build_lines;
+use rustypaper::backend::open as open_backend;
+use rustypaper::backend::PageSource;
+use rustypaper::ir::{FontTable, PathKind, Rect};
+use rustypaper::text::lines::build_lines;
 
 fn corpus(name: &str) -> Option<PathBuf> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -38,7 +38,7 @@ macro_rules! paper {
 #[test]
 fn extracts_a_two_column_paper() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::extract(&path).expect("extraction failed");
+    let doc = rustypaper::extract(&path).expect("extraction failed");
 
     assert_eq!(doc.pages.len(), 12);
     let glyphs: usize = doc.pages.iter().map(|p| p.glyphs.len()).sum();
@@ -56,7 +56,7 @@ fn extracts_a_two_column_paper() {
 #[test]
 fn glyphs_land_inside_the_page() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::extract(&path).expect("extraction failed");
+    let doc = rustypaper::extract(&path).expect("extraction failed");
 
     // The single most valuable invariant for the coordinate transform: if the y-flip or the
     // rotation handling were wrong, glyphs would sit outside the page box.
@@ -82,13 +82,13 @@ fn glyphs_land_inside_the_page() {
 #[test]
 fn reading_order_is_not_assumed_but_text_runs_top_down() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::extract(&path).expect("extraction failed");
+    let doc = rustypaper::extract(&path).expect("extraction failed");
 
     // The title is the largest *horizontal* text on page 1 — the sideways arXiv stamp is not
     // running text and layout never sees it. This is the assumption the heading classifier will
     // rest on, so it is worth pinning now.
     let page = &doc.pages[0];
-    let rotated: std::collections::HashSet<usize> = rustypdf::text::lines::rotated_glyphs(page)
+    let rotated: std::collections::HashSet<usize> = rustypaper::text::lines::rotated_glyphs(page)
         .into_iter()
         .collect();
     let upright = |i: &usize| !rotated.contains(i);
@@ -114,7 +114,7 @@ fn reading_order_is_not_assumed_but_text_runs_top_down() {
     );
 }
 
-fn median_size(page: &rustypdf::ir::PageRaw) -> f32 {
+fn median_size(page: &rustypaper::ir::PageRaw) -> f32 {
     let mut sizes: Vec<f32> = page.glyphs.iter().map(|g| g.size).collect();
     assert!(!sizes.is_empty());
     sizes.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -124,7 +124,7 @@ fn median_size(page: &rustypdf::ir::PageRaw) -> f32 {
 #[test]
 fn math_papers_use_tex_math_fonts() {
     let path = paper!("adam.pdf");
-    let doc = rustypdf::extract(&path).expect("extraction failed");
+    let doc = rustypaper::extract(&path).expect("extraction failed");
 
     // Math detection seeds on these font families, so their presence is a precondition for the
     // whole geometric reconstruction approach.
@@ -142,7 +142,7 @@ fn math_papers_use_tex_math_fonts() {
 #[test]
 fn booktabs_rules_are_detected() {
     let path = paper!("bert.pdf");
-    let doc = rustypdf::extract(&path).expect("extraction failed");
+    let doc = rustypaper::extract(&path).expect("extraction failed");
 
     let rules = doc
         .pages
@@ -232,7 +232,7 @@ fn crops_are_clamped_to_the_page() {
 #[test]
 fn words_are_segmented_correctly_on_body_text() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::extract(&path).expect("extraction failed");
+    let doc = rustypaper::extract(&path).expect("extraction failed");
 
     let text: String = build_lines(&doc.pages[0])
         .iter()
@@ -259,10 +259,10 @@ fn words_are_segmented_correctly_on_body_text() {
 #[test]
 fn the_rotated_arxiv_stamp_is_excluded() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::extract(&path).expect("extraction failed");
+    let doc = rustypaper::extract(&path).expect("extraction failed");
     let page = &doc.pages[0];
 
-    let rotated = rustypdf::text::lines::rotated_glyphs(page);
+    let rotated = rustypaper::text::lines::rotated_glyphs(page);
     assert!(!rotated.is_empty(), "resnet has a sideways arXiv stamp");
     // pdfium reports a scaled size of 0 for purely rotated text; the backend must have
     // substituted a usable size rather than letting a zero reach layout.
@@ -284,7 +284,7 @@ fn the_rotated_arxiv_stamp_is_excluded() {
 fn tex_ligatures_survive_extraction() {
     for name in ["resnet.pdf", "adam.pdf", "bert.pdf", "transformer.pdf"] {
         let path = paper!(name);
-        let doc = rustypdf::extract(&path).expect("extraction failed");
+        let doc = rustypaper::extract(&path).expect("extraction failed");
         let text: String = doc
             .pages
             .iter()
@@ -311,8 +311,8 @@ fn tex_ligatures_survive_extraction() {
 #[test]
 fn converts_a_two_column_paper_in_reading_order() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
-    let md = rustypdf::emit::markdown::render(&doc);
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let md = rustypaper::emit::markdown::render(&doc);
 
     assert_eq!(
         doc.title.as_deref(),
@@ -343,10 +343,10 @@ fn converts_a_two_column_paper_in_reading_order() {
 fn single_column_papers_are_not_split_into_columns() {
     for name in ["adam.pdf", "transformer.pdf"] {
         let path = paper!(name);
-        let doc = rustypdf::extract(&path).expect("extraction failed");
+        let doc = rustypaper::extract(&path).expect("extraction failed");
         for page in &doc.pages {
             let lines = build_lines(page);
-            let found = rustypdf::layout::columns::page_gutters(page, &lines);
+            let found = rustypaper::layout::columns::page_gutters(page, &lines);
             assert!(found.is_empty(), "{name} page {}: {found:?}", page.index);
         }
     }
@@ -360,8 +360,8 @@ fn single_column_papers_are_not_split_into_columns() {
 #[test]
 fn hyphenated_line_breaks_are_rejoined() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
-    let md = rustypdf::emit::markdown::render(&doc);
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let md = rustypaper::emit::markdown::render(&doc);
 
     assert!(
         md.contains("learning residual functions"),
@@ -378,12 +378,12 @@ fn hyphenated_line_breaks_are_rejoined() {
 #[test]
 fn figures_are_detected_and_captioned() {
     let path = paper!("transformer.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
 
-    let figures: Vec<&rustypdf::doc::Block> = doc
+    let figures: Vec<&rustypaper::doc::Block> = doc
         .blocks
         .iter()
-        .filter(|b| b.kind == rustypdf::doc::BlockKind::Figure)
+        .filter(|b| b.kind == rustypaper::doc::BlockKind::Figure)
         .collect();
 
     assert!(
@@ -403,10 +403,10 @@ fn figures_are_detected_and_captioned() {
 fn figure_regions_stay_within_the_page() {
     for name in ["resnet.pdf", "bert.pdf", "transformer.pdf", "adam.pdf"] {
         let path = paper!(name);
-        let doc = rustypdf::extract(&path).expect("extraction failed");
+        let doc = rustypaper::extract(&path).expect("extraction failed");
         for page in &doc.pages {
             let page_area = page.width * page.height;
-            for region in rustypdf::figure::regions(page) {
+            for region in rustypaper::figure::regions(page) {
                 assert!(
                     page.bounds().contains(&region.bbox),
                     "{name} page {}: region {:?} escapes the page",
@@ -429,16 +429,16 @@ fn figure_regions_stay_within_the_page() {
 #[test]
 fn figures_are_extracted_to_disk() {
     let path = paper!("resnet.pdf");
-    let dir = std::env::temp_dir().join("rustypdf-test-assets");
+    let dir = std::env::temp_dir().join("rustypaper-test-assets");
     let _ = std::fs::remove_dir_all(&dir);
 
-    let options = rustypdf::Options {
+    let options = rustypaper::Options {
         assets: Some(dir.clone()),
         figure_dpi: 72.0,
         caveman: None,
     };
-    let doc = rustypdf::convert_with(&path, &options).expect("conversion failed");
-    let md = rustypdf::emit::markdown::render(&doc);
+    let doc = rustypaper::convert_with(&path, &options).expect("conversion failed");
+    let md = rustypaper::emit::markdown::render(&doc);
 
     let written: Vec<_> = std::fs::read_dir(&dir)
         .expect("assets directory")
@@ -458,12 +458,12 @@ fn figures_are_extracted_to_disk() {
 #[test]
 fn lists_and_footnotes_are_classified() {
     let path = paper!("bert.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
 
     let lists = doc
         .blocks
         .iter()
-        .filter(|b| matches!(b.kind, rustypdf::doc::BlockKind::ListItem { .. }))
+        .filter(|b| matches!(b.kind, rustypaper::doc::BlockKind::ListItem { .. }))
         .count();
     assert!(
         lists >= 3,
@@ -473,7 +473,7 @@ fn lists_and_footnotes_are_classified() {
     let footnotes = doc
         .blocks
         .iter()
-        .filter(|b| b.kind == rustypdf::doc::BlockKind::Footnote)
+        .filter(|b| b.kind == rustypaper::doc::BlockKind::Footnote)
         .count();
     assert!(footnotes >= 5, "expected footnotes, got {footnotes}");
 }
@@ -482,9 +482,9 @@ fn lists_and_footnotes_are_classified() {
 #[test]
 fn tables_are_reconstructed() {
     let path = paper!("transformer.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
 
-    let tables: Vec<&rustypdf::doc::TableData> =
+    let tables: Vec<&rustypaper::doc::TableData> =
         doc.blocks.iter().filter_map(|b| b.table.as_ref()).collect();
     assert!(
         tables.len() >= 3,
@@ -515,7 +515,7 @@ fn tables_are_reconstructed() {
     assert!(width >= 3);
     assert!(layers.rows.iter().all(|r| r.len() == width), "ragged rows");
 
-    let md = rustypdf::emit::markdown::render(&doc);
+    let md = rustypaper::emit::markdown::render(&doc);
     assert!(
         md.contains("| Sequential Operations |"),
         "the wrapped header was not flattened into one row"
@@ -526,12 +526,12 @@ fn tables_are_reconstructed() {
 #[test]
 fn table_content_is_removed_from_the_prose() {
     let path = paper!("transformer.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
 
     let prose: String = doc
         .blocks
         .iter()
-        .filter(|b| b.kind == rustypdf::doc::BlockKind::Paragraph)
+        .filter(|b| b.kind == rustypaper::doc::BlockKind::Paragraph)
         .map(|b| b.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
@@ -547,8 +547,8 @@ fn table_content_is_removed_from_the_prose() {
 fn emitted_tables_are_well_formed_gfm() {
     for name in ["transformer.pdf", "resnet.pdf", "bert.pdf"] {
         let path = paper!(name);
-        let doc = rustypdf::convert(&path).expect("conversion failed");
-        let md = rustypdf::emit::markdown::render(&doc);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        let md = rustypaper::emit::markdown::render(&doc);
 
         let mut expected: Option<usize> = None;
         for line in md.lines() {
@@ -569,12 +569,12 @@ fn emitted_tables_are_well_formed_gfm() {
 #[test]
 fn display_equations_are_reconstructed() {
     let path = paper!("adam.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
 
-    let equations: Vec<&rustypdf::doc::MathData> = doc
+    let equations: Vec<&rustypaper::doc::MathData> = doc
         .blocks
         .iter()
-        .filter(|b| b.kind == rustypdf::doc::BlockKind::Equation)
+        .filter(|b| b.kind == rustypaper::doc::BlockKind::Equation)
         .filter_map(|b| b.math.as_ref())
         .collect();
 
@@ -613,7 +613,7 @@ fn display_equations_are_reconstructed() {
 #[test]
 fn inline_maths_does_not_swallow_prose() {
     let path = paper!("adam.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
 
     // Length is not the measure — a real formula can be long. What must not happen is English
     // getting pulled in, which is what an unbounded span looks like.
@@ -651,8 +651,8 @@ fn inline_maths_does_not_swallow_prose() {
 fn no_degenerate_latex_is_emitted() {
     for name in ["adam.pdf", "transformer.pdf", "resnet.pdf", "bert.pdf"] {
         let path = paper!(name);
-        let doc = rustypdf::convert(&path).expect("conversion failed");
-        let md = rustypdf::emit::markdown::render(&doc);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        let md = rustypaper::emit::markdown::render(&doc);
         for bad in [r"\sqrt{}", r"\frac{}{}", "^{}", "_{}"] {
             assert!(!md.contains(bad), "{name} emitted {bad}");
         }
@@ -663,9 +663,9 @@ fn no_degenerate_latex_is_emitted() {
 #[test]
 fn references_are_parsed() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
 
-    let refs: Vec<&rustypdf::refs::Reference> = doc
+    let refs: Vec<&rustypaper::refs::Reference> = doc
         .blocks
         .iter()
         .filter_map(|b| b.reference.as_ref())
@@ -704,7 +704,7 @@ fn references_are_parsed() {
 fn every_paper_yields_references() {
     for name in ["resnet.pdf", "bert.pdf", "transformer.pdf", "adam.pdf"] {
         let path = paper!(name);
-        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let doc = rustypaper::convert(&path).expect("conversion failed");
         let count = doc.blocks.iter().filter(|b| b.reference.is_some()).count();
         assert!(count > 0, "{name}: no bibliography found");
     }
@@ -714,8 +714,8 @@ fn every_paper_yields_references() {
 #[test]
 fn citations_link_to_their_entries() {
     let path = paper!("resnet.pdf");
-    let doc = rustypdf::convert(&path).expect("conversion failed");
-    let md = rustypdf::emit::markdown::render(&doc);
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let md = rustypaper::emit::markdown::render(&doc);
 
     assert!(md.contains("(#ref-"), "no citation links were emitted");
     assert!(md.contains("<a id=\"ref-"), "no anchors were emitted");
@@ -743,11 +743,11 @@ fn citations_link_to_their_entries() {
 fn all_emitters_render_the_corpus() {
     for name in ["resnet.pdf", "bert.pdf", "transformer.pdf", "adam.pdf"] {
         let path = paper!(name);
-        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let doc = rustypaper::convert(&path).expect("conversion failed");
 
-        let md = rustypdf::emit::markdown::render(&doc);
-        let typ = rustypdf::emit::typst::render(&doc);
-        let txt = rustypdf::emit::text::render(&doc);
+        let md = rustypaper::emit::markdown::render(&doc);
+        let typ = rustypaper::emit::typst::render(&doc);
+        let txt = rustypaper::emit::text::render(&doc);
         let json = serde_json::to_string(&doc).expect("the document model must serialise");
 
         for (format, output) in [("markdown", &md), ("typst", &typ), ("text", &txt)] {
@@ -792,13 +792,13 @@ fn every_paper_converts_with_plausible_structure() {
 
     for name in PAPERS {
         let path = paper!(name);
-        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let doc = rustypaper::convert(&path).expect("conversion failed");
 
         assert!(!doc.blocks.is_empty(), "{name}: no blocks");
         assert!(
             doc.blocks
                 .iter()
-                .any(|b| matches!(b.kind, rustypdf::doc::BlockKind::Heading { .. })),
+                .any(|b| matches!(b.kind, rustypaper::doc::BlockKind::Heading { .. })),
             "{name}: no headings at all"
         );
         assert!(
@@ -831,12 +831,12 @@ fn output_is_not_shattered_into_fragments() {
         "resnet.pdf",
     ] {
         let path = paper!(name);
-        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let doc = rustypaper::convert(&path).expect("conversion failed");
 
         let fragments = doc
             .blocks
             .iter()
-            .filter(|b| b.kind == rustypdf::doc::BlockKind::Paragraph)
+            .filter(|b| b.kind == rustypaper::doc::BlockKind::Paragraph)
             .filter(|b| b.text.split_whitespace().count() <= 3)
             .count();
         let share = fragments as f32 / doc.blocks.len().max(1) as f32;
@@ -860,7 +860,7 @@ fn titles_are_found_in_every_template() {
         "optics.pdf",
     ] {
         let path = paper!(name);
-        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let doc = rustypaper::convert(&path).expect("conversion failed");
         let title = doc.title.unwrap_or_default();
         assert!(
             title.split_whitespace().count() >= 2,

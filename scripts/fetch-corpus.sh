@@ -40,7 +40,7 @@ for entry in "${PAPERS[@]}"; do
     continue
   fi
   echo "fetch   $name  ($why)"
-  curl -fsSL --retry 3 -A "rustypdf-corpus/0.1" -o "$out" "https://arxiv.org/pdf/$id"
+  curl -fsSL --retry 3 -A "rustypaper-corpus/0.1" -o "$out" "https://arxiv.org/pdf/$id"
   # arXiv rate-limits; be a good citizen.
   sleep 3
 done

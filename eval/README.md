@@ -6,7 +6,7 @@ than eyeballed.
 ```sh
 cargo build --release                        # the converter, and optionally the bindings
 python3 -m unittest discover -s eval/tests   # the harness's own tests
-cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval
+cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval
 ```
 
 ```
@@ -60,7 +60,7 @@ show; an absolute number means little.
 `baseline.json` pins current scores. In CI, or before a commit that touches layout:
 
 ```sh
-cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval --baseline baseline.json
+cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
 ```
 
 Exits non-zero if any paper drops by more than 0.5 points. Refresh it deliberately, with
