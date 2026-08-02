@@ -433,6 +433,7 @@ fn figures_are_extracted_to_disk() {
     let options = rustypdf::Options {
         assets: Some(dir.clone()),
         figure_dpi: 72.0,
+        caveman: None,
     };
     let doc = rustypdf::convert_with(&path, &options).expect("conversion failed");
     let md = rustypdf::emit::markdown::render(&doc);

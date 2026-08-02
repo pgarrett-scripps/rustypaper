@@ -13,7 +13,7 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/tygarrett/rustypdf2markdown"
+Repository = "https://github.com/pgarrett-scripps/rustypdf2markdown"
 
 # Built with maturin from the workspace root:
 #   maturin build -m rustypdf-py/Cargo.toml

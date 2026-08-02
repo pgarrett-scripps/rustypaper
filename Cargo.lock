@@ -616,6 +616,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp2m"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rustypdf",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -631,17 +642,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
-]
-
-[[package]]
-name = "rustypdf-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "rustypdf",
- "serde",
- "serde_json",
 ]
 
 [[package]]

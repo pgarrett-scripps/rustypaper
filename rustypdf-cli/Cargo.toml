@@ -1,6 +1,6 @@
 [package]
-name = "rustypdf-cli"
-description = "Command-line interface for rustypdf."
+name = "rp2m"
+description = "Convert born-digital scientific PDFs to Markdown, Typst, JSON or text. Fast, CPU-only, no models."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

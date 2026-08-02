@@ -6,6 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# A cdylib for Python; it is built by maturin, not consumed as a crate.
+publish = false
 
 [lib]
 # The module Python imports is `_rustypdf`; the `rustypdf` package around it is pure Python.

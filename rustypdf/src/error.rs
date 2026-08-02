@@ -14,8 +14,12 @@ pub enum Error {
     /// The pdfium shared library could not be located or loaded.
     #[error(
         "could not load pdfium: {0}\n\
-         hint: run `scripts/fetch-pdfium.sh`, or set PDFIUM_DYNAMIC_LIB_PATH to the directory \
-         containing libpdfium.so"
+         \n\
+         pdfium is a native library and is not bundled with this crate. Either:\n\
+         \x20 - download a build from https://github.com/bblanchon/pdfium-binaries/releases\n\
+         \x20   and set PDFIUM_DYNAMIC_LIB_PATH to the directory holding libpdfium.so, or\n\
+         \x20 - install it from your package manager, or\n\
+         \x20 - run `scripts/fetch-pdfium.sh` if you have the repository checked out"
     )]
     PdfiumUnavailable(String),
 

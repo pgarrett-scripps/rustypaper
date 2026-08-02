@@ -1,6 +1,6 @@
 [package]
 name = "rustypdf"
-description = "Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON."
+description = "Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON. Fast, CPU-only, no models."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

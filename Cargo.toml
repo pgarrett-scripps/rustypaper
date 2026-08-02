@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/tygarrett/rustypdf2markdown"
+repository = "https://github.com/pgarrett-scripps/rustypdf2markdown"
 
 [workspace.dependencies]
 rustypdf = { path = "rustypdf", version = "0.1.0" }

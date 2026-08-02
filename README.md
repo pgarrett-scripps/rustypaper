@@ -11,6 +11,23 @@ crates that exist are generic text extractors with no notion of a paper. This ai
 > Status: **feature complete**. Converts one- and two-column papers to Markdown, Typst, plain
 > text or JSON, with reading order, figures, tables, mathematics and references.
 
+## Install
+
+```sh
+cargo install rp2m          # the command-line tool
+```
+
+```toml
+rustypdf = "0.1"            # the library
+```
+
+**pdfium is required and is not bundled.** It is a native library (BSD-3-Clause, the PDF engine
+from Chromium), so it cannot ship inside a crate. Grab a build from
+[bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and point
+`PDFIUM_DYNAMIC_LIB_PATH` at the directory containing `libpdfium.so`, or install it from your
+package manager. From a checkout, `scripts/fetch-pdfium.sh` does it for you. The error message
+says all of this if you forget.
+
 ## Getting started
 
 ```sh
