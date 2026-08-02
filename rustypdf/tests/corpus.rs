@@ -766,3 +766,107 @@ fn all_emitters_render_the_corpus() {
         );
     }
 }
+
+/// Every paper in the corpus converts, and produces the structure a paper has.
+///
+/// The corpus deliberately spans pure maths, physics, biology, statistics and machine learning,
+/// in templates from `amsart` to Springer LNCS. A converter tuned on one family of conference
+/// templates passes its own tests and fails on everything else, which is what this guards.
+#[test]
+fn every_paper_converts_with_plausible_structure() {
+    const PAPERS: [&str; 10] = [
+        "resnet.pdf",
+        "bert.pdf",
+        "transformer.pdf",
+        "adam.pdf",
+        "numbertheory.pdf",
+        "optics.pdf",
+        "biology.pdf",
+        "statistics.pdf",
+        "unet.pdf",
+        "gan.pdf",
+    ];
+
+    for name in PAPERS {
+        let path = paper!(name);
+        let doc = rustypdf::convert(&path).expect("conversion failed");
+
+        assert!(!doc.blocks.is_empty(), "{name}: no blocks");
+        assert!(
+            doc.blocks
+                .iter()
+                .any(|b| matches!(b.kind, rustypdf::doc::BlockKind::Heading { .. })),
+            "{name}: no headings at all"
+        );
+        assert!(
+            doc.blocks.iter().any(|b| b.reference.is_some()),
+            "{name}: no bibliography"
+        );
+
+        // Text must dominate. A document that is mostly captions or fragments has gone wrong
+        // somewhere upstream, whatever the individual passes report.
+        let words: usize = doc
+            .blocks
+            .iter()
+            .map(|b| b.text.split_whitespace().count())
+            .sum();
+        assert!(words > 1_000, "{name}: only {words} words recovered");
+    }
+}
+
+/// Blocks must not shatter into fragments.
+///
+/// A physics paper with page-long derivations produced 109 blocks of three words or fewer out of
+/// 442 — a quarter of the document — because a row carrying a fraction and a summation spans
+/// three font sizes and assembly split on every one of them.
+#[test]
+fn output_is_not_shattered_into_fragments() {
+    for name in [
+        "optics.pdf",
+        "numbertheory.pdf",
+        "biology.pdf",
+        "resnet.pdf",
+    ] {
+        let path = paper!(name);
+        let doc = rustypdf::convert(&path).expect("conversion failed");
+
+        let fragments = doc
+            .blocks
+            .iter()
+            .filter(|b| b.kind == rustypdf::doc::BlockKind::Paragraph)
+            .filter(|b| b.text.split_whitespace().count() <= 3)
+            .count();
+        let share = fragments as f32 / doc.blocks.len().max(1) as f32;
+        assert!(
+            share < 0.12,
+            "{name}: {fragments} of {} blocks are fragments ({:.0}%)",
+            doc.blocks.len(),
+            share * 100.0
+        );
+    }
+}
+
+/// A title set at body size, distinguished only by capitals and position, must still be found.
+#[test]
+fn titles_are_found_in_every_template() {
+    for name in [
+        "numbertheory.pdf",
+        "unet.pdf",
+        "gan.pdf",
+        "statistics.pdf",
+        "optics.pdf",
+    ] {
+        let path = paper!(name);
+        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let title = doc.title.unwrap_or_default();
+        assert!(
+            title.split_whitespace().count() >= 2,
+            "{name}: title is {title:?}"
+        );
+        // A section heading is not a title.
+        assert!(
+            !title.starts_with("1 ") && !title.starts_with("1. "),
+            "{name}: promoted a numbered section to the title: {title:?}"
+        );
+    }
+}

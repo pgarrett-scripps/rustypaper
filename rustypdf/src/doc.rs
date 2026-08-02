@@ -47,6 +47,16 @@ const FOOTNOTE_MIN_Y_FRACTION: f32 = 0.68;
 /// How many blocks either side of a list item to search for a sibling item.
 const LIST_SIBLING_RANGE: usize = 2;
 
+/// A block of at most this many words is a fragment rather than a paragraph.
+const FRAGMENT_MAX_WORDS: usize = 3;
+
+/// A fragment rejoins the block above it only within this multiple of the leading.
+const FRAGMENT_MAX_GAP: f32 = 1.6;
+
+/// Two blocks are on the same visual row when they overlap vertically by this fraction of the
+/// shorter one's height.
+const FRAGMENT_ROW_OVERLAP: f32 = 0.5;
+
 /// Serialised with an internal tag so that the JSON reads `{"type": "heading", "level": 2}`
 /// rather than `{"Heading": 2}`. The document model is the contract other tools consume, so it
 /// is worth being pleasant in languages that are not Rust.
@@ -182,6 +192,7 @@ pub fn assemble(
         }
     }
 
+    coalesce_fragments(&mut blocks, stats);
     demote_lonely_list_items(&mut blocks);
     promote_title(&mut blocks, stats);
     assign_heading_levels(&mut blocks, stats);
@@ -450,6 +461,72 @@ fn numbered_heading(text: &str) -> bool {
         .chars()
         .next()
         .is_some_and(|c| c.is_alphabetic())
+}
+
+/// Merges stranded fragments back into the block above them.
+///
+/// Blocks split whenever the font size changes by more than a fraction of a point, which is
+/// right for prose but wrong inside a long derivation: a line carrying a fraction, a summation
+/// sign and a subscript spans three sizes and shatters into three blocks. On a physics paper
+/// with page-long derivations that left a quarter of all blocks holding three words or fewer —
+/// `we have`, `∑`, `$ab$`.
+///
+/// A fragment rejoins the block above when it is short, sits directly beneath it, and shares
+/// its horizontal extent. Prose is unaffected because prose blocks are not short.
+fn coalesce_fragments(blocks: &mut Vec<Block>, stats: Stats) {
+    let mut merged: Vec<Block> = Vec::with_capacity(blocks.len());
+
+    for block in blocks.drain(..) {
+        let joins = merged.last().is_some_and(|previous| {
+            if !is_fragment(&block)
+                || previous.page != block.page
+                || !matches!(previous.kind, BlockKind::Paragraph)
+                || !matches!(block.kind, BlockKind::Paragraph)
+            {
+                return false;
+            }
+
+            // A fragment that opens a sentence is a new element, not a continuation. Templates
+            // that set `References` at body size make it a one-word paragraph, and absorbing it
+            // into the paragraph above cost a whole paper its bibliography — the heading is what
+            // the bibliography pass looks for.
+            let opens_element = block.text.chars().next().is_some_and(char::is_uppercase)
+                && previous.text.ends_with(['.', ':', '?', '!']);
+            if opens_element || crate::refs::is_bibliography_heading(&block.text) {
+                return false;
+            }
+
+            // Stacked: a continuation directly beneath, sharing the column.
+            let below = block.bbox.y0 - previous.bbox.y1 <= stats.leading * FRAGMENT_MAX_GAP
+                && previous.bbox.x_overlap(&block.bbox) > 0.0;
+
+            // Side by side: the same visual row. A line of a derivation carrying a fraction and
+            // a summation sits on three baselines at three sizes, so line building sees three
+            // lines and block assembly splits them on size — leaving `we have`, `∑` and `$ab$`
+            // as separate blocks strung along one row.
+            let shortest = previous.bbox.height().min(block.bbox.height()).max(1.0);
+            let beside = previous.bbox.y_overlap(&block.bbox) >= shortest * FRAGMENT_ROW_OVERLAP
+                && block.bbox.x0 >= previous.bbox.x0;
+
+            below || beside
+        });
+
+        match joins {
+            true => {
+                let previous = merged.last_mut().expect("checked above");
+                previous.text.push(' ');
+                previous.text.push_str(&block.text);
+                previous.bbox = previous.bbox.union(&block.bbox);
+            }
+            false => merged.push(block),
+        }
+    }
+
+    *blocks = merged;
+}
+
+fn is_fragment(block: &Block) -> bool {
+    block.text.split_whitespace().count() <= FRAGMENT_MAX_WORDS
 }
 
 /// Turns list items with no siblings back into paragraphs.
@@ -767,6 +844,133 @@ mod tests {
         // A bare capital with no full stop opens a title, it does not label a section.
         assert!(!numbered_heading("A Neural Algorithm of Artistic Style"));
         assert!(!numbered_heading("I Introduction is not a label"));
+    }
+
+    #[test]
+    fn a_fragment_directly_below_rejoins_the_block_above() {
+        let page = vec![
+            line("A Paper About Things", 40.0, 20.0, 72.0, 400.0),
+            line(
+                "The paragraph text runs on here for a while.",
+                100.0,
+                10.0,
+                72.0,
+                400.0,
+            ),
+            // A stray fragment one line below, sharing the column.
+            line("and so", 112.0, 7.0, 72.0, 110.0),
+        ];
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
+        assert!(
+            doc.blocks.iter().any(|b| b.text.ends_with("and so")),
+            "the fragment did not rejoin: {:?}",
+            doc.blocks.iter().map(|b| &b.text).collect::<Vec<_>>()
+        );
+    }
+
+    /// The case that motivates it: a derivation whose row sits on three baselines at three
+    /// sizes, which line building sees as three lines and assembly splits on size.
+    #[test]
+    fn fragments_on_the_same_row_are_gathered() {
+        let page = vec![
+            line("A Paper About Things", 40.0, 20.0, 72.0, 400.0),
+            line("we have", 300.0, 10.0, 100.0, 150.0),
+            line("N", 297.0, 7.0, 160.0, 168.0),
+            line("= 1", 303.0, 9.4, 175.0, 200.0),
+        ];
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
+        let gathered = doc
+            .blocks
+            .iter()
+            .any(|b| b.text.contains("we have") && b.text.contains("= 1"));
+        assert!(
+            gathered,
+            "the row was not gathered: {:?}",
+            doc.blocks.iter().map(|b| &b.text).collect::<Vec<_>>()
+        );
+    }
+
+    /// Prose must be left alone: only *short* blocks are fragments.
+    #[test]
+    fn full_paragraphs_are_never_merged() {
+        let page = vec![
+            line("A Paper About Things", 40.0, 20.0, 72.0, 400.0),
+            line(
+                "The first paragraph says something at length here.",
+                100.0,
+                10.0,
+                72.0,
+                400.0,
+            ),
+            line(
+                "The second paragraph says something else entirely.",
+                140.0,
+                10.0,
+                72.0,
+                400.0,
+            ),
+        ];
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
+        let paragraphs = doc
+            .blocks
+            .iter()
+            .filter(|b| b.kind == BlockKind::Paragraph)
+            .count();
+        assert_eq!(paragraphs, 2, "two paragraphs were merged into one");
+    }
+
+    #[test]
+    fn a_fragment_far_below_stays_separate() {
+        let page = vec![
+            line("A Paper About Things", 40.0, 20.0, 72.0, 400.0),
+            line(
+                "The paragraph text runs on here for a while.",
+                100.0,
+                10.0,
+                72.0,
+                400.0,
+            ),
+            // Half a page down, and not on the same row.
+            line("stray", 500.0, 10.0, 72.0, 110.0),
+        ];
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
+        assert!(
+            doc.blocks.iter().any(|b| b.text == "stray"),
+            "a distant fragment was absorbed"
+        );
+    }
+
+    /// A body-size `References` heading is a one-word paragraph. Absorbing it into the block
+    /// above costs the document its whole bibliography, because that heading is what the
+    /// bibliography pass looks for.
+    #[test]
+    fn a_heading_sized_like_body_text_is_not_absorbed() {
+        let page = vec![
+            line("A Paper About Things", 40.0, 20.0, 72.0, 400.0),
+            line(
+                "The last paragraph of the paper ends here.",
+                300.0,
+                10.0,
+                72.0,
+                400.0,
+            ),
+            // Set apart by more than the block gap, so these really are separate blocks and the
+            // coalescing pass is what decides their fate.
+            line("References", 345.0, 10.0, 72.0, 130.0),
+            line(
+                "[1] A. Author. A title. Venue, 2016.",
+                390.0,
+                10.0,
+                72.0,
+                400.0,
+            ),
+        ];
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
+        assert!(
+            doc.blocks.iter().any(|b| b.text == "References"),
+            "the heading was absorbed: {:?}",
+            doc.blocks.iter().map(|b| &b.text).collect::<Vec<_>>()
+        );
     }
 
     /// A title set at body size, distinguished only by position and case, as `amsart` does.

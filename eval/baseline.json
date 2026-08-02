@@ -7,19 +7,98 @@
       "blocks": {
         "caption": 6,
         "figure": 5,
-        "footnote": 37,
-        "heading": 19,
+        "footnote": 31,
+        "heading": 18,
         "list_item": 16,
-        "paragraph": 147,
-        "reference": 18,
+        "paragraph": 144,
+        "reference": 17,
         "table": 6,
         "title": 1
       },
       "coverage": 0.9228,
-      "output_words": 10307,
+      "output_words": 10306,
       "reference_words": 7305,
-      "seconds": 0.112,
+      "seconds": 0.111,
       "similarity": 0.6958
+    },
+    "biology.pdf": {
+      "arxiv_id": "2607.28053v1",
+      "bigram_recall": 0.9183,
+      "blocks": {
+        "caption": 1,
+        "equation": 30,
+        "figure": 8,
+        "footnote": 14,
+        "heading": 33,
+        "list_item": 7,
+        "paragraph": 193,
+        "reference": 1,
+        "table": 9,
+        "title": 1
+      },
+      "coverage": 0.9649,
+      "output_words": 9835,
+      "reference_words": 6618,
+      "seconds": 0.249,
+      "similarity": 0.7528
+    },
+    "gan.pdf": {
+      "arxiv_id": "1406.2661v1",
+      "bigram_recall": 0.8863,
+      "blocks": {
+        "caption": 3,
+        "equation": 11,
+        "figure": 3,
+        "footnote": 4,
+        "heading": 11,
+        "paragraph": 56,
+        "reference": 31,
+        "table": 3,
+        "title": 1
+      },
+      "coverage": 0.9619,
+      "output_words": 4478,
+      "reference_words": 2666,
+      "seconds": 0.072,
+      "similarity": 0.7063
+    },
+    "numbertheory.pdf": {
+      "arxiv_id": "2607.28606v1",
+      "bigram_recall": 0.8928,
+      "blocks": {
+        "equation": 118,
+        "footnote": 4,
+        "heading": 17,
+        "paragraph": 211,
+        "reference": 21,
+        "table": 1,
+        "title": 1
+      },
+      "coverage": 0.9895,
+      "output_words": 5093,
+      "reference_words": 4003,
+      "seconds": 0.088,
+      "similarity": 0.8443
+    },
+    "optics.pdf": {
+      "arxiv_id": "2607.28558v1",
+      "bigram_recall": 0.86,
+      "blocks": {
+        "caption": 1,
+        "equation": 35,
+        "figure": 14,
+        "footnote": 33,
+        "heading": 5,
+        "list_item": 5,
+        "paragraph": 242,
+        "reference": 15,
+        "title": 1
+      },
+      "coverage": 0.9282,
+      "output_words": 7166,
+      "reference_words": 5602,
+      "seconds": 0.143,
+      "similarity": 0.7898
     },
     "resnet.pdf": {
       "arxiv_id": "1512.03385v1",
@@ -28,18 +107,36 @@
         "caption": 9,
         "equation": 2,
         "figure": 6,
-        "footnote": 10,
-        "heading": 18,
-        "paragraph": 131,
+        "footnote": 9,
+        "heading": 16,
+        "paragraph": 111,
         "reference": 50,
         "table": 7,
         "title": 1
       },
       "coverage": 0.9679,
-      "output_words": 10557,
+      "output_words": 10537,
       "reference_words": 6021,
-      "seconds": 0.116,
-      "similarity": 0.6538
+      "seconds": 0.12,
+      "similarity": 0.6542
+    },
+    "statistics.pdf": {
+      "arxiv_id": "2607.28455v1",
+      "bigram_recall": 0.9156,
+      "blocks": {
+        "caption": 2,
+        "equation": 15,
+        "figure": 4,
+        "heading": 26,
+        "paragraph": 77,
+        "reference": 27,
+        "title": 1
+      },
+      "coverage": 0.9533,
+      "output_words": 7450,
+      "reference_words": 6384,
+      "seconds": 0.104,
+      "similarity": 0.8754
     },
     "transformer.pdf": {
       "arxiv_id": "1706.03762v7",
@@ -49,18 +146,38 @@
         "equation": 6,
         "figure": 6,
         "footnote": 4,
-        "heading": 27,
+        "heading": 24,
         "list_item": 3,
-        "paragraph": 85,
-        "reference": 41,
+        "paragraph": 81,
+        "reference": 40,
         "table": 4,
         "title": 1
       },
       "coverage": 0.9209,
-      "output_words": 6243,
+      "output_words": 6233,
       "reference_words": 4369,
-      "seconds": 0.199,
-      "similarity": 0.7056
+      "seconds": 0.2,
+      "similarity": 0.7063
+    },
+    "unet.pdf": {
+      "arxiv_id": "1505.04597v1",
+      "bigram_recall": 0.9407,
+      "blocks": {
+        "caption": 2,
+        "equation": 1,
+        "figure": 4,
+        "footnote": 3,
+        "heading": 9,
+        "paragraph": 27,
+        "reference": 14,
+        "table": 2,
+        "title": 1
+      },
+      "coverage": 0.9815,
+      "output_words": 3209,
+      "reference_words": 2347,
+      "seconds": 0.037,
+      "similarity": 0.7999
     }
   },
   "scorer": "difflib",
@@ -72,15 +189,15 @@
         "equation": 44,
         "figure": 4,
         "footnote": 16,
-        "heading": 19,
-        "paragraph": 196,
+        "heading": 17,
+        "paragraph": 175,
         "reference": 19,
         "table": 3,
         "title": 1
       },
-      "output_words": 5492,
+      "output_words": 5487,
       "reason": "arXiv source carries no LaTeX prose",
-      "seconds": 0.101
+      "seconds": 0.102
     }
   }
 }

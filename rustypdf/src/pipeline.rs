@@ -540,6 +540,13 @@ fn attach_figures(
 fn drop_text_inside_figures(document: &mut doc::Document, regions: &[(usize, ir::Rect)]) {
     const MIN_CONTAINED: f32 = 0.8;
     const MAX_WORDS: usize = 12;
+    /// How far outside a figure its own labels can sit, in points.
+    ///
+    /// A plot's axis labels are *outside* the plotted area by construction — below the x-axis,
+    /// left of the y-axis — and the region is built from the artwork, so containment alone never
+    /// catches them. On a physics paper whose figures are small insets this left a hundred
+    /// fragments like `z z` and `Kt=Kx+Ky y` scattered through the prose.
+    const MARGIN: f32 = 18.0;
 
     document.blocks.retain(|block| {
         if matches!(block.kind, doc::BlockKind::Caption | doc::BlockKind::Figure) {
@@ -551,9 +558,21 @@ fn drop_text_inside_figures(document: &mut doc::Document, regions: &[(usize, ir:
         let area = (block.bbox.width() * block.bbox.height()).max(f32::EPSILON);
         !regions.iter().any(|(page, region)| {
             *page == block.page && {
+                let padded = ir::Rect {
+                    x0: region.x0 - MARGIN,
+                    y0: region.y0 - MARGIN,
+                    x1: region.x1 + MARGIN,
+                    y1: region.y1 + MARGIN,
+                };
+                // The block's centre, not just its area. A label that straddles the boundary —
+                // which is exactly where an axis label sits — never reaches an area threshold
+                // however far the region is padded.
+                let (cx, cy) = (block.bbox.center_x(), block.bbox.center_y());
+                let centred =
+                    cx >= padded.x0 && cx <= padded.x1 && cy >= padded.y0 && cy <= padded.y1;
                 let overlap =
-                    region.x_overlap(&block.bbox).max(0.0) * region.y_overlap(&block.bbox).max(0.0);
-                overlap / area >= MIN_CONTAINED
+                    padded.x_overlap(&block.bbox).max(0.0) * padded.y_overlap(&block.bbox).max(0.0);
+                centred || overlap / area >= MIN_CONTAINED
             }
         })
     });
