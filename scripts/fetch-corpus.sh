@@ -13,10 +13,23 @@ mkdir -p "$DEST"
 
 # id                       filename                       why it is in the corpus
 PAPERS=(
+  # Machine learning preprints: the templates most PDFs in this space use.
   "1706.03762v7|transformer.pdf|single column, wide tables, inline math"
   "1512.03385v1|resnet.pdf|two column, full-width figures, numbered equations"
   "1412.6980v9|adam.pdf|algorithm floats, heavy display math"
   "1810.04805v2|bert.pdf|two column, dense tables, footnotes"
+
+  # Other fields, other LaTeX classes. Machine learning uses a narrow set of conference
+  # templates, and a converter tuned only on those learns their quirks rather than the general
+  # shape of a paper.
+  "2607.28606v1|numbertheory.pdf|pure maths: theorem environments, display-heavy"
+  "2607.28558v1|optics.pdf|physics: long derivations, subscript-dense notation"
+  "2607.28053v1|biology.pdf|life sciences: model tables, mixed figures"
+  "2607.28455v1|statistics.pdf|statistics: dense result tables"
+
+  # Older submissions, built by older toolchains.
+  "1505.04597v1|unet.pdf|Springer LNCS class, single column"
+  "1406.2661v1|gan.pdf|2014 NeurIPS template, algorithm blocks"
 )
 
 for entry in "${PAPERS[@]}"; do

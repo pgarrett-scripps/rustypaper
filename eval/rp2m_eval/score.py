@@ -19,6 +19,7 @@ if _rapidfuzz is None:
 
 
 _PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
+_MATH = re.compile(r"\$\$.*?\$\$|\$[^$\n]*\$", re.DOTALL)
 
 
 def normalise(text: str) -> list[str]:
@@ -27,9 +28,16 @@ def normalise(text: str) -> list[str]:
     Case, punctuation and Unicode form are discarded because none of them is what the converter
     is being judged on, and all of them differ for uninteresting reasons between LaTeX source
     and rendered output — a source ``--`` is an en dash on the page, ``\\%`` is ``%``, and so on.
+
+    Mathematics is removed for the same reason, and this one is not cosmetic. ``detex`` strips
+    formulae from the reference, so a converter that *correctly* recovers `$x^2$` inserts tokens
+    where the reference has none and breaks the bigram either side of every formula. Measured on
+    the Transformer paper, whose appendix is dense with inline maths, that artefact alone
+    accounted for most of the missing runs. Stripping both sides compares like with like.
     """
-    text = unicodedata.normalize("NFKC", text).lower()
-    text = _PUNCT.sub(" ", text)
+    text = unicodedata.normalize("NFKC", text)
+    text = _MATH.sub(" ", text)
+    text = _PUNCT.sub(" ", text.lower())
     return text.split()
 
 

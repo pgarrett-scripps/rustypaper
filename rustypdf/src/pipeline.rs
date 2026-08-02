@@ -245,24 +245,75 @@ fn extract_bibliography(document: &mut doc::Document) {
         .map(|i| first + 1 + i)
         .unwrap_or(document.blocks.len());
 
-    let mut entries: Vec<doc::Block> = Vec::new();
+    // The whole bibliography is split at once, not block by block.
+    //
+    // Paragraph assembly gives it back as one block per column, and entry numbering runs
+    // *across* those blocks — ResNet's first column ends at [27] and its second begins at [28].
+    // Splitting each block independently restarts the sequence and finds nothing in the second,
+    // which cost more than half of that paper's entries.
+    let mut joined = String::new();
+    let mut origins: Vec<(usize, &doc::Block)> = Vec::new();
     for (n, block) in document.blocks[first..end].iter().enumerate() {
         if block.kind != doc::BlockKind::Paragraph {
-            entries.push(block.clone());
             continue;
         }
         let body = if n == 0 {
-            &block.text[strip..]
+            &block.text[strip.min(block.text.len())..]
         } else {
             &block.text
         };
-        for text in refs::split_entries(body) {
-            let parsed = refs::parse(&text);
-            let mut entry = doc::Block::new(doc::BlockKind::Reference, block.page, block.bbox)
-                .with_text(text)
-                .with_size(block.size);
-            entry.reference = Some(parsed);
-            entries.push(entry);
+        if !joined.is_empty() {
+            joined.push(' ');
+        }
+        origins.push((joined.len(), block));
+        joined.push_str(body);
+    }
+
+    // Where there are no labels there is nothing to split on, and the joined text is one giant
+    // entry. Falling back to one entry per column block is arbitrary, but a bibliography in
+    // column-sized pieces is more use to a caller than a single undifferentiated blob.
+    let split = refs::split_entries(&joined);
+    let split = if split.len() > 1 {
+        split
+    } else {
+        origins
+            .iter()
+            .map(|(_, b)| b.text.trim().to_owned())
+            .filter(|t| !t.is_empty())
+            .collect()
+    };
+
+    let mut entries: Vec<doc::Block> = Vec::new();
+    let mut cursor = 0usize;
+    for text in split {
+        // Attribute the entry to whichever block it started in, so page numbers stay right.
+        let at = joined[cursor..]
+            .find(&text)
+            .map(|i| cursor + i)
+            .unwrap_or(cursor);
+        cursor = at + text.len();
+        let source = origins
+            .iter()
+            .rev()
+            .find(|(offset, _)| *offset <= at)
+            .map(|(_, b)| *b);
+
+        let parsed = refs::parse(&text);
+        let (page, bbox, size) = match source {
+            Some(b) => (b.page, b.bbox, b.size),
+            None => (0, ir::Rect::from_corners(0.0, 0.0, 0.0, 0.0), 0.0),
+        };
+        let mut entry = doc::Block::new(doc::BlockKind::Reference, page, bbox)
+            .with_text(text)
+            .with_size(size);
+        entry.reference = Some(parsed);
+        entries.push(entry);
+    }
+
+    // Anything that was not a paragraph keeps its place.
+    for block in &document.blocks[first..end] {
+        if block.kind != doc::BlockKind::Paragraph {
+            entries.push(block.clone());
         }
     }
 

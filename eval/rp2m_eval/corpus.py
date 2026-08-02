@@ -20,10 +20,20 @@ USER_AGENT = "rustypdf-eval/0.1 (https://github.com/tygarrett/rustypdf2markdown)
 
 #: arXiv id -> local pdf name. Pinned to a version so scores stay comparable across commits.
 PAPERS: dict[str, str] = {
+    # Machine learning preprints.
     "1706.03762v7": "transformer.pdf",
     "1512.03385v1": "resnet.pdf",
     "1412.6980v9": "adam.pdf",
     "1810.04805v2": "bert.pdf",
+    # Other fields and other LaTeX classes, so that the converter is not tuned to the handful of
+    # conference templates machine learning happens to use.
+    "2607.28606v1": "numbertheory.pdf",
+    "2607.28558v1": "optics.pdf",
+    "2607.28053v1": "biology.pdf",
+    "2607.28455v1": "statistics.pdf",
+    # Older submissions, built by older toolchains.
+    "1505.04597v1": "unet.pdf",
+    "1406.2661v1": "gan.pdf",
 }
 
 

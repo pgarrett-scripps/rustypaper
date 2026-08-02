@@ -42,8 +42,14 @@ and the eight things M0 and M1 discovered the hard way — most importantly that
 `thread_safe` feature does no locking at all.
 
 The short version: the backend produces a `PageRaw` of glyphs, paths and images, and every later
-stage is a pass over an IR. The `Document` JSON is the contract; Markdown and Typst are
-renderings of it.
+stage is a pass over an IR. The `Document` JSON is the contract; Markdown, Typst and plain text
+are renderings of it.
+
+| | |
+|---|---|
+| speed | 3.8–7.0 ms/page, single process |
+| memory | 17–31 MB peak for a whole paper |
+| footprint | 2.3 MB binary + 7.3 MB pdfium, no models |
 
 Unicode repair turned out not to be needed — pdfium's glyph-name fallback already resolves TeX
 ligatures, so the tables the plan budgeted for were dropped. De-hyphenation could not work the
@@ -99,7 +105,7 @@ rather than scored.
 cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval
 ```
 
-Current mean bigram recall is **0.875** across the scorable corpus. See
+Current mean bigram recall is **0.878** across the scorable corpus. See
 [`eval/README.md`](eval/README.md) for what the metrics mean and why plain edit distance is the
 wrong primary measure here.
 

@@ -31,8 +31,9 @@ const MAX_NUMBERING_COMPONENT: usize = 3;
 /// Deepest plausible section numbering, as in `A.3.2.1`.
 const MAX_NUMBERING_DEPTH: usize = 4;
 
-/// The title must be at least this much larger than body text.
-const TITLE_SIZE_RATIO: f32 = 1.15;
+/// A title is between this many words and [`TITLE_MAX_WORDS`].
+const TITLE_MIN_WORDS: usize = 2;
+const TITLE_MAX_WORDS: usize = 25;
 
 /// Only this many opening blocks are considered as title candidates.
 const TITLE_SEARCH_BLOCKS: usize = 4;
@@ -421,13 +422,25 @@ fn numbered_heading(text: &str) -> bool {
     if components.is_empty() || components.len() > MAX_NUMBERING_DEPTH {
         return false;
     }
+
+    // A lettered component is a single capital — appendices run `A`, `B`, `C`. Allowing longer
+    // runs of capitals made every word of a title set in caps look like a label, so
+    // `ON DIOPHANTINE SETS...` parsed as section `ON`.
     let plausible = components.iter().all(|part| {
         !part.is_empty()
-            && part.len() <= MAX_NUMBERING_COMPONENT
-            && (part.chars().all(|c| c.is_ascii_digit())
-                || part.chars().all(|c| c.is_ascii_uppercase()))
+            && ((part.len() <= MAX_NUMBERING_COMPONENT && part.chars().all(|c| c.is_ascii_digit()))
+                || (part.len() == 1 && part.chars().all(|c| c.is_ascii_uppercase())))
     });
     if !plausible {
+        return false;
+    }
+
+    // A lettered label must carry its full stop. Appendices are written `A.` or `A.1`, never a
+    // bare `A` — and a bare one would make every title beginning `A ...` a numbered heading.
+    let lettered = components
+        .iter()
+        .any(|p| p.chars().all(|c| c.is_ascii_uppercase()));
+    if lettered && !head.contains('.') {
         return false;
     }
 
@@ -465,28 +478,71 @@ fn demote_lonely_list_items(blocks: &mut [Block]) {
     }
 }
 
-/// The largest text near the top of the first page is the title.
+/// Promotes the document's title.
 ///
-/// Restricted to the opening blocks of page 1 so that a paper whose first page begins with a
-/// section heading, or one with no title at all, cannot have a mid-page heading promoted.
+/// Size alone is not enough. A `amsart` paper sets its title in capitals at *body size* and
+/// distinguishes it by position and case, so requiring the title to be larger than the body
+/// found no title at all on a pure-maths paper. What holds across templates is that the title is
+/// among the opening blocks of page one, is a few words long, is set no smaller than the body,
+/// and does not end in a full stop.
+///
+/// Length breaks ties. A running head such as `Preprint` sits above the title at the same size,
+/// and picking on size alone chose whichever came last.
 fn promote_title(blocks: &mut [Block], stats: Stats) {
-    let Some((index, _)) = blocks
+    let candidate = blocks
         .iter()
         .enumerate()
         .take(TITLE_SEARCH_BLOCKS)
-        .filter(|(_, b)| b.page == 0 && b.size >= stats.body_size * TITLE_SIZE_RATIO)
-        .max_by(|(_, a), (_, b)| a.size.total_cmp(&b.size))
-    else {
-        return;
-    };
-    blocks[index].kind = BlockKind::Title;
+        .filter(|(_, b)| b.page == 0 && b.size >= stats.body_size)
+        .filter(|(_, b)| {
+            let words = b.text.split_whitespace().count();
+            (TITLE_MIN_WORDS..=TITLE_MAX_WORDS).contains(&words)
+                && !b.text.ends_with('.')
+                // A numbered block is a section heading. Papers do not number their titles, and
+                // without this a document opening with `1 Introduction` promotes it.
+                && !numbered_heading(&b.text)
+        })
+        .max_by(|(_, a), (_, b)| {
+            a.size.total_cmp(&b.size).then_with(|| {
+                a.text
+                    .split_whitespace()
+                    .count()
+                    .cmp(&b.text.split_whitespace().count())
+            })
+        })
+        .map(|(i, _)| i);
+
+    if let Some(index) = candidate {
+        blocks[index].kind = BlockKind::Title;
+    }
 }
 
-/// Ranks heading sizes so that larger headings nest outside smaller ones.
+/// Assigns heading levels.
 ///
-/// Section numbering is preferred where present — `3.2` is unambiguously a level below `3` —
-/// and size rank is the fallback for unnumbered templates.
+/// Section numbering is authoritative where it exists — `3.2` is unambiguously one level below
+/// `3` — and it also calibrates the headings that have no number. `Abstract` is set at exactly
+/// the size of `1 Introduction` and belongs at the same level, but ranking sizes in isolation
+/// gave it level 3; matching it against the size of a heading whose level *is* known fixes that.
+/// Size rank remains the fallback for templates that number nothing.
 fn assign_heading_levels(blocks: &mut [Block], stats: Stats) {
+    let _ = stats;
+
+    // Sizes whose level is known from numbering.
+    let mut calibrated: Vec<(f32, u8)> = Vec::new();
+    for block in blocks.iter() {
+        if !matches!(block.kind, BlockKind::Heading { .. }) {
+            continue;
+        }
+        if let Some(depth) = numbering_depth(&block.text) {
+            if !calibrated
+                .iter()
+                .any(|(size, _)| (*size - block.size).abs() < 0.25)
+            {
+                calibrated.push((block.size, depth));
+            }
+        }
+    }
+
     let mut sizes: Vec<f32> = blocks
         .iter()
         .filter(|b| matches!(b.kind, BlockKind::Heading { .. }))
@@ -499,20 +555,23 @@ fn assign_heading_levels(blocks: &mut [Block], stats: Stats) {
         if !matches!(block.kind, BlockKind::Heading { .. }) {
             continue;
         }
-        let level = match numbering_depth(&block.text) {
-            Some(depth) => depth,
-            None => {
+        let level = numbering_depth(&block.text)
+            .or_else(|| {
+                calibrated
+                    .iter()
+                    .find(|(size, _)| (*size - block.size).abs() < 0.25)
+                    .map(|(_, depth)| *depth)
+            })
+            .unwrap_or_else(|| {
                 let rank = sizes
                     .iter()
                     .position(|s| (s - block.size).abs() < 0.25)
                     .unwrap_or(0);
                 (rank + 1).min(6) as u8
-            }
-        };
+            });
         block.kind = BlockKind::Heading {
             level: level.max(1),
         };
-        let _ = stats;
     }
 }
 
@@ -696,7 +755,89 @@ mod tests {
         assert!(!numbered_heading("3.14159 is pi"));
         assert!(numbered_heading("3.2 Ablation studies"));
         assert!(numbered_heading("A.1 Proofs"));
+        assert!(numbered_heading("B. Further results"));
         assert!(!numbered_heading("However the result holds"));
+    }
+
+    /// Capitalised words are not section labels, however short.
+    #[test]
+    fn words_set_in_capitals_are_not_numbering() {
+        assert!(!numbered_heading("ON DIOPHANTINE SETS OVER THE RATIONALS"));
+        assert!(!numbered_heading("IN THIS PAPER we show"));
+        // A bare capital with no full stop opens a title, it does not label a section.
+        assert!(!numbered_heading("A Neural Algorithm of Artistic Style"));
+        assert!(!numbered_heading("I Introduction is not a label"));
+    }
+
+    /// A title set at body size, distinguished only by position and case, as `amsart` does.
+    #[test]
+    fn a_title_at_body_size_is_still_found() {
+        let page = vec![
+            line("Preprint", 40.0, 10.0, 250.0, 300.0),
+            line(
+                "ON DIOPHANTINE SETS OVER THE RATIONALS",
+                70.0,
+                10.0,
+                150.0,
+                440.0,
+            ),
+            line("A. Author", 95.0, 9.0, 250.0, 330.0),
+            line(
+                "Body text that runs on for a while here.",
+                130.0,
+                10.0,
+                72.0,
+                540.0,
+            ),
+            line("1 Introduction", 170.0, 10.0, 72.0, 200.0),
+            line("More body text follows on here.", 200.0, 10.0, 72.0, 540.0),
+        ];
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
+        assert_eq!(
+            doc.title.as_deref(),
+            Some("ON DIOPHANTINE SETS OVER THE RATIONALS"),
+            "a one-word running head above it should not win on length"
+        );
+        // And the numbered section must remain a heading.
+        assert!(doc
+            .blocks
+            .iter()
+            .any(|b| b.text == "1 Introduction" && matches!(b.kind, BlockKind::Heading { .. })));
+    }
+
+    /// An unnumbered heading takes its level from numbered headings of the same size.
+    #[test]
+    fn unnumbered_headings_are_calibrated_against_numbered_ones() {
+        let page = vec![
+            line("A Paper About Things", 40.0, 20.0, 72.0, 400.0),
+            line("Abstract", 80.0, 12.0, 72.0, 160.0),
+            line("Body text that continues on.", 110.0, 10.0, 72.0, 540.0),
+            line("1 Introduction", 140.0, 12.0, 72.0, 200.0),
+            line("More body text follows here.", 170.0, 10.0, 72.0, 540.0),
+            line("1.1 Background", 200.0, 10.5, 72.0, 200.0),
+            line("Yet more body text here.", 230.0, 10.0, 72.0, 540.0),
+        ];
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
+
+        let level = |text: &str| {
+            doc.blocks
+                .iter()
+                .find(|b| b.text == text)
+                .map(|b| b.kind.clone())
+        };
+        assert_eq!(
+            level("1 Introduction"),
+            Some(BlockKind::Heading { level: 1 })
+        );
+        assert_eq!(
+            level("Abstract"),
+            Some(BlockKind::Heading { level: 1 }),
+            "Abstract is set at the same size as a level-1 section"
+        );
+        assert_eq!(
+            level("1.1 Background"),
+            Some(BlockKind::Heading { level: 2 })
+        );
     }
 
     #[test]

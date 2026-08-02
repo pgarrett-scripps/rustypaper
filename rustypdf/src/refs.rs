@@ -131,24 +131,14 @@ fn group_by(starts: &[bool]) -> Vec<Vec<usize>> {
 /// and they are unambiguous: `[` digits `]` occurs nowhere else in a reference list.
 pub fn split_entries(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
-    let mut starts = Vec::new();
 
-    for (i, c) in chars.iter().enumerate() {
-        if *c != '[' {
-            continue;
-        }
-        let mut j = i + 1;
-        while j < chars.len() && chars[j].is_ascii_digit() {
-            j += 1;
-        }
-        // At least one digit, a closing bracket, and not mid-word.
-        if j > i + 1 && j < chars.len() && chars[j] == ']' {
-            let before_ok = i == 0 || chars[i - 1].is_whitespace();
-            if before_ok {
-                starts.push(i);
-            }
-        }
-    }
+    let bracketed = label_positions(&chars, true);
+    let numbered = label_positions(&chars, false);
+    let starts = if bracketed.len() >= numbered.len() {
+        bracketed
+    } else {
+        numbered
+    };
 
     if starts.len() < 2 {
         let trimmed = text.trim();
@@ -169,6 +159,63 @@ pub fn split_entries(text: &str) -> Vec<String> {
         }
     }
     entries
+}
+
+/// Finds the offsets where entry labels begin, in `[n]` or `n.` form.
+///
+/// Only *sequential* labels count: the first must be 1, and each one after it must be the
+/// previous plus one. That is what makes bare `n.` numbering safe to split on at all — a
+/// bibliography is full of numbers followed by full stops (`pp. 2852-2860 (2012)`), and the only
+/// thing distinguishing an entry label from any of them is that the labels count up.
+fn label_positions(chars: &[char], bracketed: bool) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut expected = 1u32;
+
+    let mut i = 0;
+    while i < chars.len() {
+        let open = if bracketed { chars[i] == '[' } else { true };
+        let at_boundary = i == 0 || chars[i - 1].is_whitespace();
+        if !open || !at_boundary {
+            i += 1;
+            continue;
+        }
+
+        let digits_at = if bracketed { i + 1 } else { i };
+        let mut j = digits_at;
+        while j < chars.len() && chars[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j == digits_at || j - digits_at > 3 {
+            i += 1;
+            continue;
+        }
+
+        let closes = if bracketed {
+            chars.get(j) == Some(&']')
+        } else {
+            // `12.` followed by a space, so a decimal such as `1.5` cannot match.
+            chars.get(j) == Some(&'.') && chars.get(j + 1).is_some_and(|c| c.is_whitespace())
+        };
+        if !closes {
+            i += 1;
+            continue;
+        }
+
+        let value: u32 = chars[digits_at..j]
+            .iter()
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0);
+        if value == expected {
+            starts.push(i);
+            expected += 1;
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+
+    starts
 }
 
 /// Parses one entry.
@@ -570,6 +617,27 @@ mod tests {
         assert!(entries[0].starts_with("[1]"));
         assert!(entries[1].starts_with("[2]"));
         assert!(entries[2].ends_with("2018."));
+    }
+
+    /// Springer and many journals number entries `1.` rather than `[1]`.
+    #[test]
+    fn numbered_entries_split_on_sequential_labels() {
+        let text = "1. Ciresan, D.C., Schmidhuber, J.: Deep neural networks. In: NIPS. \
+                    pp. 2852-2860 (2012) 2. Dosovitskiy, A.: Another title. (2015) \
+                    3. Long, J.: A third. (2015)";
+        let entries = split_entries(text);
+        assert_eq!(entries.len(), 3, "got {entries:?}");
+        assert!(entries[0].starts_with("1. Ciresan"));
+        assert!(entries[1].starts_with("2. Dosovitskiy"));
+        // The page range and the year inside entry 1 must not have split it.
+        assert!(entries[0].contains("2852-2860"));
+    }
+
+    /// Numbers that do not count up are page ranges and years, not labels.
+    #[test]
+    fn out_of_sequence_numbers_are_not_labels() {
+        let text = "1. A. Author. A title. pp. 10. 1998. Later work. 7. Not an entry.";
+        assert_eq!(split_entries(text).len(), 1);
     }
 
     #[test]

@@ -85,6 +85,15 @@ class TestScore(unittest.TestCase):
         self.assertEqual(score.coverage(reference, interleaved), 1.0)
         self.assertLess(score.bigram_recall(reference, interleaved), 0.25)
 
+    def test_maths_is_stripped_from_both_sides(self):
+        # detex removes formulae from the reference, so recovering them must not be punished.
+        self.assertEqual(score.normalise("we set $x^2$ here"), ["we", "set", "here"])
+        self.assertEqual(score.normalise("a $$E=mc^2$$ b"), ["a", "b"])
+        self.assertEqual(
+            score.bigram_recall("the value is bounded", "the value $\\alpha$ is bounded"),
+            1.0,
+        )
+
     def test_empty_reference_is_zero_not_an_error(self):
         self.assertEqual(score.bigram_recall("", "anything"), 0.0)
         self.assertEqual(score.coverage("", "anything"), 0.0)

@@ -117,23 +117,62 @@ them so that copy-paste rejoins words. The artifact is therefore `learn ing`, no
 M2's de-hyphenation cannot key off a trailing hyphen and has to notice a line ending mid-word,
 then consult the document's own vocabulary.
 
+## Findings from the later milestones
+
+### A clipped path reports the bounds of its unclipped geometry
+
+One path in BERT ran from y=-38870 to y=39239 on an 842pt page. Figure regions merge nearby
+graphics, so that single object dragged a region to 6012% of the page, and suppressing text
+inside figures then removed every block on it. Object bounds are clipped to the page at the
+backend boundary, and a region covering more than 85% of a page is rejected outright.
+
+### Word breaks, column profiles and cut selection all needed the *other* primitive
+
+Three separate passes were first written against the intuitive input and had to be moved:
+
+| pass | wrong input | right input |
+|---|---|---|
+| word segmentation | measured gaps | pdfium's generated space glyphs |
+| column profile | line extents | glyph extents |
+| XY-cut | every whitespace gap | only the widest |
+
+The common thread is that the intuitive primitive is downstream of the thing being decided. A
+line cannot reveal a gutter it spans; a gap cannot reveal a word break the font already knows.
+
+### Confidence has to cost something
+
+Maths reconstruction reported confidence 1.0 for every formula until a guessed radical extent
+and an unnameable glyph were made to lower it. A score that is always 1.0 is worse than no score,
+because the image fallback it gates never fires.
+
 ## Measurements
 
-Extraction only (M0 scope), release build, corpus of four arXiv papers:
+Release build, whole corpus, best of three runs of ten:
 
-| paper | pages | glyphs | ms/page |
-|---|---|---|---|
-| adam | 15 | 40 851 | 4.3 |
-| bert | 16 | 62 370 | 4.9 |
-| resnet | 12 | 57 917 | 6.4 |
-| transformer | 15 | 38 753 | 7.5 |
+| paper | pages | ms/page |
+|---|---|---|
+| adam | 15 | 3.8 |
+| bert | 16 | 4.1 |
+| resnet | 12 | 5.6 |
+| transformer | 15 | 7.0 |
 
-Budget is ≤100 ms/page end-to-end single-threaded, so ingest currently costs under 10% of it.
+Peak memory is 17–31 MB per document. The budget was ≤100 ms/page end-to-end, so this runs at
+4–7% of it.
 
-Known cost to revisit if ingest ever shows up in a profile: `PdfPageTextChar::font_name()`
-allocates a `String` per character inside pdfium-render. The backend already avoids re-interning
-by remembering the previous name, but the allocation itself needs the raw
-`FPDFText_GetFontInfo` binding and a reusable buffer to remove.
+**Ingest is 80–90% of the remaining time**, and most of that is pdfium's own work. Two rounds of
+optimisation roughly halved total time: running the pure-Rust stages across pages under rayon,
+and caching the font descriptor flags, which are per-font but were being read per-character and
+accounted for ten of the eighteen FFI calls a glyph cost.
+
+Two experiments that did not pay off, recorded so they are not repeated:
+
+- Dropping `fill_color` from ingest saves 2%. Not worth losing the field.
+- Reading only segment *types* rather than coordinates in the rectangle test saved nothing
+  measurable and made classification worse — Adam went from 39 boxes to 148.
+
+The largest remaining wrapper cost is `PdfPageTextChar::font_name()` at ~9% of ingest, which
+allocates a `String` per character. Removing it needs the raw `FPDFText_GetFontInfo` binding and
+a reusable buffer.
 
 ## Dependencies
 
