@@ -1,0 +1,145 @@
+name: Release
+
+# Publishes the crate to crates.io and the wheels to PyPI, from a tag.
+#
+# The tag is the trigger and the version is read from Cargo.toml, so the two
+# can disagree — and a release published under the wrong number cannot be
+# unpublished, only yanked. The first job compares them and stops.
+#
+# rustium-pdf must already be on crates.io at the version this depends on.
+# cargo resolves a path dependency locally and the registry cannot, so a
+# publish that works here fails there with a message about a missing crate.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and verify everything, publish nothing"
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  verify:
+    name: verify the tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: version
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF#refs/tags/v}"
+            if [ "$tag" != "$version" ]; then
+              echo "::error::tag v$tag does not match Cargo.toml version $version."\
+                   "A release cannot be unpublished, so this stops here."
+              exit 1
+            fi
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=${{ inputs.dry_run == false }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Everything the default build needs is Rust, so this is the whole gate.
+      # Corpus tests skip when corpus/ is absent, which it is here — the PDFs
+      # are not ours to redistribute.
+      - run: cargo test --release
+      - run: cargo publish --dry-run -p rustypaper --locked
+
+  crate:
+    name: crates.io
+    needs: verify
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Set CARGO_REGISTRY_TOKEN in repository secrets, from an API token on
+      # crates.io scoped to publish-update. crates.io also supports GitHub
+      # OIDC trusted publishing, which removes the long-lived secret; switch
+      # once the first release has gone out under a token.
+      - run: cargo publish -p rustypaper --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  wheels:
+    name: wheel / ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest,   target: x86_64-apple-darwin }
+          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      # One wheel per platform covers every supported Python: the extension is
+      # built against the stable ABI (abi3-py39), so there is no interpreter
+      # dimension to this matrix.
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          # Only meaningful on Linux; builds the wheel inside a manylinux
+          # container so it runs on distributions older than the runner.
+          manylinux: auto
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: python/dist/*.whl
+
+  sdist:
+    name: sdist
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: python
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: python/dist/*.tar.gz
+
+  pypi:
+    name: PyPI
+    needs: [verify, wheels, sdist]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      # Trusted publishing: PyPI accepts a short-lived OIDC token from this
+      # workflow instead of an API token stored here. Configure the publisher
+      # at pypi.org/manage/account/publishing/ — for a project that does not
+      # exist yet, add it as a *pending* publisher before the first release.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: pypa/gh-action-pypi-publish@release/v1

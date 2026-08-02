@@ -2,12 +2,14 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [main]
   pull_request:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pin the pdfium build so CI tests the library the project ships against.
+  # Pin the pdfium build, for the one job that still needs it. The default
+  # build does not: it is pure Rust, which is what makes the crate a single
+  # static binary and the wheel self-contained.
   PDFIUM_RELEASE: chromium/7961
 
 jobs:
@@ -19,9 +21,6 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-
-      - name: Fetch pdfium
-        run: scripts/fetch-pdfium.sh
 
       # The corpus is not committed — the PDFs are not ours to redistribute — so unit and
       # robustness tests run everywhere and corpus tests skip unless it is present.
@@ -43,9 +42,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Fetch pdfium
-        run: scripts/fetch-pdfium.sh
-
       - name: Build the extension module
         run: scripts/build.sh
 
@@ -63,3 +59,18 @@ jobs:
         if: steps.corpus.outcome == 'success'
         working-directory: eval
         run: PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
+
+  # The pdfium backend is an escape hatch for documents rustium cannot yet
+  # read, and the reference the pure-Rust one is measured against. Nothing
+  # ships with it, but it has to keep compiling and passing — an escape hatch
+  # discovered to be broken at the moment it is needed is not one.
+  pdfium-backend:
+    name: pdfium feature
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch pdfium
+        run: scripts/fetch-pdfium.sh
+      - run: cargo test --release --no-default-features --features pdfium
