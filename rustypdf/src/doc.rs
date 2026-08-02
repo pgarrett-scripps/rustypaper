@@ -326,10 +326,16 @@ fn is_footnote(group: &[&Line], size: f32, stats: Stats, page_height: f32) -> bo
 
 /// Joins a block's lines into running text, rejoining words split across line breaks.
 ///
-/// The soft hyphen is already gone by the time the glyphs arrive, so the break is invisible
-/// except in the words themselves — see [`Vocabulary::rejoin`]. A geometric guard comes first:
-/// hyphenation only happens where a line was broken to fit, so a line that stops short of the
-/// block's right edge ended for some other reason and its last word is whole.
+/// How visible the break is depends on the backend. pdfium deletes the hyphen from the text page
+/// — Chrome does this so copy-paste rejoins hyphenated words — leaving nothing to key off but
+/// the words themselves, which is what [`Vocabulary::rejoin`] is for. rustium reports the page
+/// as written, so the hyphen is still there and says outright that the word continues.
+///
+/// Both are handled here rather than normalised away in a backend, because the hyphen is the
+/// better evidence and throwing it away to imitate pdfium would be losing information on
+/// purpose. A geometric guard comes first either way: hyphenation only happens where a line was
+/// broken to fit, so a line stopping short of the block's right edge ended for some other reason
+/// and its last word is whole.
 fn join_lines(group: &[&Line], vocab: &Vocabulary) -> String {
     let right_edge = group.iter().map(|l| l.bbox.x1).fold(0.0f32, f32::max);
 
@@ -345,7 +351,7 @@ fn join_lines(group: &[&Line], vocab: &Vocabulary) -> String {
         match justified
             .then(|| split_boundary(&out, &text))
             .flatten()
-            .and_then(|(head, tail)| vocab.rejoin(head, tail))
+            .and_then(|(head, tail)| rejoin_across_break(vocab, head, tail))
         {
             Some(merged) => {
                 out.truncate(out.len() - head_len(&out));
@@ -359,6 +365,31 @@ fn join_lines(group: &[&Line], vocab: &Vocabulary) -> String {
         }
     }
     out.trim().to_owned()
+}
+
+/// Decides whether the word ending one line and the word starting the next are one word.
+///
+/// With an explicit hyphen the question is only *which* word: `learn-` + `ing` is `learning`,
+/// but `state-` + `of-the-art` is a compound that keeps its hyphen. The vocabulary settles it —
+/// if the document uses the joined form elsewhere the hyphen was inserted by the typesetter, and
+/// if it does not, the hyphen was the author's and stays.
+fn rejoin_across_break(vocab: &Vocabulary, head: &str, tail: &str) -> Option<String> {
+    let Some(stem) = head.strip_suffix(['-', '\u{2010}']) else {
+        // No hyphen survived the backend: the words themselves are the only evidence.
+        return vocab.rejoin(head, tail);
+    };
+    if stem.is_empty() {
+        return None;
+    }
+    match vocab.rejoin(stem, tail) {
+        Some(merged) => Some(merged),
+        // A compound broken at its own hyphen still joins, keeping the hyphen; it just must not
+        // acquire a space that was never in the word.
+        None => tail
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-')
+            .then(|| format!("{head}{tail}")),
+    }
 }
 
 /// Whether a line runs to the block's right edge, within one character's slack.
@@ -692,6 +723,62 @@ mod tests {
             body_size: 10.0,
             leading: 12.0,
         }
+    }
+
+    /// A vocabulary in which `learning` is an established word of the document.
+    fn learned_vocab() -> Vocabulary {
+        // Only a line's *interior* words are counted — a fragment is always at one end — so
+        // every occurrence here needs a word on each side of it.
+        let one_line = |words: &[&str]| Line {
+            words: words
+                .iter()
+                .map(|t| Word {
+                    bbox: Rect::from_corners(0.0, 0.0, 1.0, 1.0),
+                    text: (*t).to_owned(),
+                    start: 0,
+                    end: 1,
+                })
+                .collect(),
+            ..line("", 100.0, 10.0, 0.0, 50.0)
+        };
+        Vocabulary::build(&[vec![
+            one_line(&["the", "learning", "rate", "and", "learning", "curve", "of"]),
+            one_line(&["a", "learning", "b", "learning", "c", "learning", "d"]),
+        ]])
+    }
+
+    #[test]
+    fn an_explicit_break_hyphen_is_removed_when_the_word_is_known() {
+        let vocab = learned_vocab();
+        // What rustium reports: the typesetter's hyphen is still on the page.
+        assert_eq!(
+            rejoin_across_break(&vocab, "learn-", "ing"),
+            Some("learning".into())
+        );
+        // What pdfium reports: no hyphen, so the words alone have to carry it.
+        assert_eq!(
+            rejoin_across_break(&vocab, "learn", "ing"),
+            Some("learning".into())
+        );
+    }
+
+    #[test]
+    fn a_compound_word_keeps_the_authors_hyphen() {
+        let vocab = learned_vocab();
+        // `stateof-the-art` is not a word; the hyphen belongs to the compound and stays.
+        assert_eq!(
+            rejoin_across_break(&vocab, "state-", "of-the-art"),
+            Some("state-of-the-art".into())
+        );
+    }
+
+    #[test]
+    fn a_break_before_punctuation_is_not_a_hyphenation() {
+        let vocab = learned_vocab();
+        // A trailing hyphen with nothing to attach to must not produce a bare join.
+        assert_eq!(rejoin_across_break(&vocab, "-", "ing"), None);
+        // Punctuation starting the next line means the line ended for another reason.
+        assert_eq!(rejoin_across_break(&vocab, "learn-", "(ing)"), None);
     }
 
     #[test]

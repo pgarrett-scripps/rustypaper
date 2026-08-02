@@ -11,10 +11,20 @@ keywords = ["pdf", "markdown", "typst", "science"]
 categories = ["text-processing", "science"]
 exclude = ["tests/corpus.rs"]
 
+[features]
+# Pure Rust throughout: no C library to ship, find or version-match. This is the default, and
+# the reason the crate can be a single static binary.
+default = ["rustium"]
+rustium = ["dep:rustium"]
+# The Chromium PDF engine behind FFI. Kept as an escape hatch for documents rustium cannot yet
+# read, and as the reference the pure-Rust backend is measured against.
+pdfium = ["dep:pdfium-render"]
+
 [dependencies]
 image.workspace = true
-pdfium-render.workspace = true
+pdfium-render = { workspace = true, optional = true }
 rayon.workspace = true
+rustium = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

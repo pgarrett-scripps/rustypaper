@@ -1,4 +1,4 @@
-# rustypdf2markdown
+# rustypdf
 
 Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON. Fast,
 CPU-only, no models.

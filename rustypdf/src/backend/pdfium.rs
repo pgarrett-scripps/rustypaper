@@ -10,20 +10,12 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use pdfium_render::prelude::*;
 
-use super::PageSource;
+use super::{classify_path, clip_to_page, resolve_size, PageSource, RECT_EPSILON};
 use crate::error::{Error, Result};
 use crate::ir::{
     FontFlags, FontId, FontTable, Glyph, GlyphText, ImageItem, PageRaw, PathItem, PathKind, Point,
     Rect, Rgba,
 };
-
-/// A vector path at most this thick (in points) is a candidate rule rather than a filled shape.
-/// `\toprule` is ~0.8pt and a fraction bar ~0.4pt; anything above 3pt is a drawn box edge.
-const MAX_RULE_THICKNESS: f32 = 3.0;
-
-/// A rule must be at least this many times longer than it is thick, which keeps small filled
-/// squares (list bullets, plot markers) out of the rule sets.
-const MIN_RULE_ASPECT: f32 = 3.0;
 
 /// How deep to follow nested Form XObjects. Real documents nest one or two levels; the limit is
 /// only there so a malformed or adversarial file cannot drive unbounded recursion.
@@ -66,9 +58,7 @@ fn pdfium() -> Result<&'static Pdfium> {
                         "lib",
                         "",
                     ] {
-                        attempts.push(Pdfium::pdfium_platform_library_name_at_path(
-                            &bin.join(rel),
-                        ));
+                        attempts.push(Pdfium::pdfium_platform_library_name_at_path(&bin.join(rel)));
                     }
                 }
             }
@@ -234,9 +224,6 @@ fn color_to_rgba(color: PdfColor) -> Rgba {
     Rgba::new(color.red(), color.green(), color.blue(), color.alpha())
 }
 
-/// Tolerance, in points, for calling two coordinates equal when testing for a rectangle.
-const RECT_EPSILON: f32 = 0.01;
-
 /// Distinguishes a real axis-aligned rectangle from arbitrary artwork.
 ///
 /// The distinction earns its keep downstream: rectangles are cell shading and frames, which
@@ -285,18 +272,6 @@ fn is_axis_aligned_rect(path: &PdfPagePathObject) -> bool {
 
 fn same_point(a: (f32, f32), b: (f32, f32)) -> bool {
     (a.0 - b.0).abs() <= RECT_EPSILON && (a.1 - b.1).abs() <= RECT_EPSILON
-}
-
-fn classify_path(bbox: &Rect) -> (PathKind, f32) {
-    let (w, h) = (bbox.width(), bbox.height());
-
-    if h <= MAX_RULE_THICKNESS && w >= h * MIN_RULE_ASPECT {
-        (PathKind::HorizontalRule, h)
-    } else if w <= MAX_RULE_THICKNESS && h >= w * MIN_RULE_ASPECT {
-        (PathKind::VerticalRule, w)
-    } else {
-        (PathKind::Other, w.min(h))
-    }
 }
 
 impl PageSource for PdfiumBackend {
@@ -454,48 +429,17 @@ fn collect_glyphs(page: &PdfPage, xform: &Transform, fonts: &mut FontTable, raw:
     }
 }
 
-/// Intersects an object's bounds with the page, returning `None` when nothing is left visible.
-fn clip_to_page(bbox: Rect, width: f32, height: f32) -> Option<Rect> {
-    if !bbox.x0.is_finite() || !bbox.y0.is_finite() || !bbox.x1.is_finite() || !bbox.y1.is_finite()
-    {
-        return None;
-    }
-    let clipped = Rect {
-        x0: bbox.x0.max(0.0),
-        y0: bbox.y0.max(0.0),
-        x1: bbox.x1.min(width),
-        y1: bbox.y1.min(height),
-    };
-    (clipped.width() > 0.0 && clipped.height() > 0.0).then_some(clipped)
-}
-
-/// Effective font size in points, with fallbacks.
+/// Effective font size in points.
 ///
 /// pdfium reports a scaled size of 0 for text whose matrix is a pure rotation — the arXiv stamp
-/// down the margin of every preprint is the case that surfaced this. Size is load-bearing
-/// everywhere downstream (baseline tolerance, word gaps, heading detection), so the invariant
-/// that it is positive and finite is established here rather than defended in every consumer.
+/// down the margin of every preprint is the case that surfaced this — and an unscaled size that
+/// is sometimes usable when the scaled one is not. Past that, [`resolve_size`] infers from ink.
 fn glyph_size(ch: &PdfPageTextChar, bbox: &Rect, angle: f32) -> f32 {
     let scaled = ch.scaled_font_size().value;
     if scaled.is_finite() && scaled > 0.0 {
         return scaled;
     }
-    let unscaled = ch.unscaled_font_size().value;
-    if unscaled.is_finite() && unscaled > 0.0 {
-        return unscaled;
-    }
-
-    // Last resort: infer from the ink. Font size runs *across* the baseline, so for sideways
-    // text that is the box's width, not its height — taking the larger of the two would report
-    // the advance and make a margin stamp look like display type.
-    let upright = (angle.to_degrees().rem_euclid(180.0) - 90.0).abs() >= 45.0;
-    let extent = if upright { bbox.height() } else { bbox.width() };
-    if extent.is_finite() && extent > 0.0 {
-        // A cap-height glyph is roughly 0.7em.
-        extent / 0.7
-    } else {
-        1.0
-    }
+    resolve_size(ch.unscaled_font_size().value, bbox, angle)
 }
 
 /// Reads a font's descriptor flags. Cached per font run by the caller.
@@ -689,57 +633,5 @@ mod tests {
         // y flips, so the PDF top edge (80) becomes the smaller y.
         assert_eq!((r.y0, r.y1), (712.0, 742.0));
         assert!(r.y0 < r.y1);
-    }
-
-    #[test]
-    fn path_classification() {
-        // A booktabs rule: long and 0.8pt thick.
-        let rule = Rect::from_corners(72.0, 300.0, 540.0, 300.8);
-        assert_eq!(classify_path(&rule).0, PathKind::HorizontalRule);
-
-        // A tabular column separator.
-        let vline = Rect::from_corners(300.0, 100.0, 300.5, 400.0);
-        assert_eq!(classify_path(&vline).0, PathKind::VerticalRule);
-
-        // A list bullet: thin, but not long enough to be a rule.
-        let bullet = Rect::from_corners(72.0, 300.0, 74.0, 302.0);
-        assert_eq!(classify_path(&bullet).0, PathKind::Other);
-
-        // A framed figure.
-        let boxy = Rect::from_corners(72.0, 100.0, 540.0, 400.0);
-        assert_eq!(classify_path(&boxy).0, PathKind::Other);
-    }
-
-    #[test]
-    fn off_page_geometry_is_clipped_to_the_page() {
-        // What a clipped path reports: bounds far outside the page in both directions.
-        let huge = Rect::from_corners(106.0, -38870.0, 492.0, 39239.0);
-        let clipped = clip_to_page(huge, 595.0, 842.0).expect("some of it is on the page");
-        assert_eq!((clipped.x0, clipped.y0), (106.0, 0.0));
-        assert_eq!((clipped.x1, clipped.y1), (492.0, 842.0));
-
-        // Entirely off-page geometry contributes nothing.
-        assert_eq!(
-            clip_to_page(
-                Rect::from_corners(-500.0, -500.0, -100.0, -100.0),
-                595.0,
-                842.0
-            ),
-            None
-        );
-        // Degenerate coordinates must not produce a rect at all.
-        assert_eq!(
-            clip_to_page(Rect::from_corners(f32::NAN, 0.0, 10.0, 10.0), 595.0, 842.0),
-            None
-        );
-    }
-
-    #[test]
-    fn fraction_bar_is_a_horizontal_rule() {
-        // 12pt wide, 0.4pt thick: what `\frac` draws.
-        let bar = Rect::from_corners(100.0, 200.0, 112.0, 200.4);
-        let (kind, thickness) = classify_path(&bar);
-        assert_eq!(kind, PathKind::HorizontalRule);
-        assert!((thickness - 0.4).abs() < 1e-5);
     }
 }

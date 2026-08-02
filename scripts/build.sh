@@ -7,14 +7,23 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-cargo build --release
-cp target/release/lib_rustypdf.so python/rustypdf/_rustypdf.so
+cargo build --release "$@"
 
-# pdfium is loaded at runtime and is not linked in, so the Python package has
-# to carry its own copy — that is what makes an installed wheel work off a
-# checkout, where there is no vendor/ directory to fall back to.
+# The extension is built with `abi3-py39`, so maturin names it `_rustypdf.abi3.so` — and
+# CPython's import machinery prefers that name over a plain `_rustypdf.so` when both exist.
+# Writing the plain name and leaving an old abi3 build beside it means every `import rustypdf`
+# silently loads the *stale* module: the eval harness then scores a build nobody is editing,
+# reports "no change", and looks like a correct measurement. That happened. Install under the
+# name Python actually resolves, and clear the other so the ambiguity cannot come back.
+cp target/release/lib_rustypdf.so python/rustypdf/_rustypdf.abi3.so
+rm -f python/rustypdf/_rustypdf.so
+
+# pdfium is loaded at runtime and is not linked in, so a pdfium-backed build of the Python
+# package has to carry its own copy — that is what makes an installed wheel work off a
+# checkout, where there is no vendor/ directory to fall back to. The default build is pure
+# Rust and ignores it.
 if [ -f vendor/pdfium/lib/libpdfium.so ]; then
   cp vendor/pdfium/lib/libpdfium.so python/rustypdf/libpdfium.so
 fi
 
-echo "built target/release/rp2m and python/rustypdf/_rustypdf.so"
+echo "built target/release/rp2m and python/rustypdf/_rustypdf.abi3.so"

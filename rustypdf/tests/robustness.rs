@@ -105,14 +105,13 @@ fn bit_flips_do_not_panic() {
 /// A page-range request outside the document must be an error.
 #[test]
 fn out_of_range_pages_are_rejected() {
-    use rustypdf::backend::pdfium::PdfiumBackend;
-    use rustypdf::backend::PageSource;
+    use rustypdf::backend::{open as open_backend, PageSource};
 
     let Some(path) = corpus("unet.pdf") else {
         eprintln!("skipping: corpus absent");
         return;
     };
-    let backend = PdfiumBackend::open(&path).expect("open");
+    let backend = open_backend(&path).expect("open");
     let mut fonts = rustypdf::ir::FontTable::new();
     assert!(backend.page(usize::MAX, &mut fonts).is_err());
     assert!(backend.page(backend.page_count(), &mut fonts).is_err());

@@ -23,10 +23,10 @@ pub enum Error {
     )]
     PdfiumUnavailable(String),
 
-    #[error("pdfium could not open the document: {0}")]
+    #[error("could not open the document: {0}")]
     PdfOpen(String),
 
-    #[error("pdfium failed while reading page {page}: {source}")]
+    #[error("failed while reading page {page}: {source}")]
     PdfPage {
         page: usize,
         #[source]

@@ -454,6 +454,12 @@ fn compact_spaces(page: &PageRaw, line: &mut Line) {
 /// Whitespace glyphs decide it where they exist. Where a document emits none at all, the
 /// fallback measures inter-glyph gaps against a threshold inferred from the line's own
 /// distribution — see [`word_gap_threshold`].
+///
+/// The marks win outright on a line that has any, rather than being unioned with the inferred
+/// gaps. Both alternatives were tried and are worse: unioning splits *inside* words, because the
+/// ink gap after a narrow letter is indistinguishable from a space (`I mage`, `M i crosoft`).
+/// The cost is that a backend which under-marks a line runs the rest of that line together, so
+/// completeness of the marks is a real obligation on a [`PageSource`](crate::backend::PageSource).
 fn segment_words(page: &PageRaw, line: &mut Line) {
     line.words.clear();
     if line.glyphs.is_empty() {

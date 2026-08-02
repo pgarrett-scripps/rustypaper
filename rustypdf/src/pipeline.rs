@@ -8,7 +8,6 @@ use std::path::Path;
 
 use rayon::prelude::*;
 
-use crate::backend::pdfium::PdfiumBackend;
 use crate::backend::PageSource;
 use crate::error::{Error, Result};
 use crate::ir::{DocRaw, FontTable};
@@ -43,10 +42,10 @@ impl Default for Options {
 /// *most* pages are scanned, so a paper with one scanned appendix page still converts.
 pub fn extract(path: impl AsRef<Path>) -> Result<DocRaw> {
     let path = path.as_ref();
-    extract_from(&PdfiumBackend::open(path)?, path)
+    extract_from(&crate::backend::open(path)?, path)
 }
 
-fn extract_from(backend: &PdfiumBackend, path: &Path) -> Result<DocRaw> {
+fn extract_from(backend: &impl PageSource, path: &Path) -> Result<DocRaw> {
     let total = backend.page_count();
     let mut fonts = FontTable::new();
     let mut pages = Vec::with_capacity(total);
@@ -79,12 +78,13 @@ pub fn convert(path: impl AsRef<Path>) -> Result<doc::Document> {
 /// blocks, then attach figures.
 pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Document> {
     let path = path.as_ref();
-    let backend = PdfiumBackend::open(path)?;
+    let backend = crate::backend::open(path)?;
     let raw = extract_from(&backend, path)?;
     let heights: Vec<f32> = raw.pages.iter().map(|p| p.height).collect();
 
-    // Everything from here to assembly is pure Rust, so it runs across pages at once. Ingest
-    // cannot: pdfium is single-threaded and serialised behind a lock inside the backend.
+    // Everything from here to assembly runs across pages at once. Ingest is kept serial: it is
+    // a small share of the total, and the pdfium backend cannot be anything else — pdfium is
+    // single-threaded and serialised behind a lock inside that backend.
     let mut pages = build_pages(&raw);
     layout::furniture::strip(&mut pages, &heights);
 
@@ -189,11 +189,17 @@ fn lift_equations(raw: &DocRaw, prose: &mut [Vec<text::lines::Line>]) -> Vec<Pla
         .par_iter()
         .zip(prose.par_iter_mut())
         .flat_map(|(page, lines)| {
-            let column = text_extent(lines);
+            let extent = text_extent(lines);
+            // Display maths is centred *in its column*, so on a two-column page the page-wide
+            // text extent is the wrong yardstick: an equation centred in the left column sits
+            // far left of the pair, and reads as not centred at all. Every unnumbered display
+            // equation in a two-column paper was being rejected on that basis.
+            let gutters = layout::columns::page_gutters(page, lines);
             let mut is_display = vec![false; lines.len()];
             let mut found_here = Vec::new();
 
             for i in 0..lines.len() {
+                let column = column_of(lines[i].bbox, extent, &gutters);
                 let Some(found) = math::display(page, &raw.fonts, lines, i, column) else {
                     continue;
                 };
@@ -368,6 +374,45 @@ fn extract_bibliography(document: &mut doc::Document) {
 }
 
 /// The horizontal extent of a page's text, used as the column a display equation is centred in.
+/// The column a line sits in, given the page's text extent and its gutters.
+///
+/// Gutters split the extent into bands; the line belongs to the band its horizontal midpoint
+/// falls in. A line that spans a gutter — a full-width title, a wide table — belongs to the
+/// whole extent, which is the honest answer for something that is not in a column at all.
+fn column_of(line: ir::Rect, extent: ir::Rect, gutters: &[(f32, f32)]) -> ir::Rect {
+    if gutters.is_empty() {
+        return extent;
+    }
+    // A line crossing any gutter is not inside a single column.
+    if gutters
+        .iter()
+        .any(|&(start, end)| line.x0 < start && line.x1 > end)
+    {
+        return extent;
+    }
+
+    let mid = (line.x0 + line.x1) * 0.5;
+    let mut left = extent.x0;
+    let mut right = extent.x1;
+    for &(start, end) in gutters {
+        if end <= mid {
+            left = left.max(end);
+        } else if start >= mid {
+            right = right.min(start);
+            break;
+        }
+    }
+    if right <= left {
+        return extent;
+    }
+    ir::Rect {
+        x0: left,
+        y0: extent.y0,
+        x1: right,
+        y1: extent.y1,
+    }
+}
+
 fn text_extent(lines: &[text::lines::Line]) -> ir::Rect {
     lines
         .iter()
@@ -454,7 +499,7 @@ fn insert_equations(document: &mut doc::Document, equations: Vec<PlacedEquation>
 /// an image: a reader can check an image, and a downstream tool will not silently ingest a
 /// mangled formula as fact.
 fn crop_uncertain_equations(
-    backend: &PdfiumBackend,
+    backend: &impl PageSource,
     document: &mut doc::Document,
     options: &Options,
 ) -> Result<()> {
@@ -502,7 +547,7 @@ fn insert_tables(document: &mut doc::Document, tables: Vec<PlacedTable>) {
 
 /// Binds detected figure regions to their captions, optionally rasterising them.
 fn attach_figures(
-    backend: &PdfiumBackend,
+    backend: &impl PageSource,
     raw: &DocRaw,
     document: &mut doc::Document,
     options: &Options,

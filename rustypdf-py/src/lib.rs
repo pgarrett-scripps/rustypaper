@@ -107,4 +107,3 @@ fn _rustypdf(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(extract_json, module)?)?;
     Ok(())
 }
-

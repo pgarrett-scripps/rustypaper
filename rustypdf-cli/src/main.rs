@@ -5,7 +5,6 @@ use std::time::Instant;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use rustypdf::backend::pdfium::PdfiumBackend;
 use rustypdf::backend::PageSource;
 use rustypdf::ir::{FontTable, PathKind};
 use rustypdf::text::lines::build_lines;
@@ -152,7 +151,7 @@ fn is_broken_pipe(error: &anyhow::Error) -> bool {
 fn dump(out: &mut impl Write, pdf: PathBuf, page: Option<usize>, pretty: bool) -> Result<()> {
     match page {
         Some(index) => {
-            let backend = PdfiumBackend::open(&pdf)?;
+            let backend = rustypdf::backend::open(&pdf)?;
             let mut fonts = FontTable::new();
             let raw = backend.page(index, &mut fonts)?;
             write_json(out, &(fonts, raw), pretty)

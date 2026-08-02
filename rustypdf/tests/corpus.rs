@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use rustypdf::backend::pdfium::PdfiumBackend;
+use rustypdf::backend::open as open_backend;
 use rustypdf::backend::PageSource;
 use rustypdf::ir::{FontTable, PathKind, Rect};
 use rustypdf::text::lines::build_lines;
@@ -156,7 +156,7 @@ fn booktabs_rules_are_detected() {
 #[test]
 fn renders_a_crop_at_the_requested_size() {
     let path = paper!("resnet.pdf");
-    let backend = PdfiumBackend::open(&path).expect("open failed");
+    let backend = open_backend(&path).expect("open failed");
 
     let mut fonts = FontTable::new();
     let page = backend.page(0, &mut fonts).expect("page failed");
@@ -178,20 +178,22 @@ fn renders_a_crop_at_the_requested_size() {
     assert!(region.x1 <= page.width && region.y1 <= page.height);
 }
 
-/// Regression test for the heap corruption that concurrent pdfium access causes.
+/// Extracting from several threads at once must stay memory-safe, whichever backend is built.
 ///
-/// pdfium-render's `thread_safe` feature only adds `Send`/`Sync` impls; it does no locking, so
-/// without our own lock this aborts with `free(): corrupted unsorted chunks`. It reliably
-/// reproduced within a handful of iterations before the lock was added.
+/// This began as a regression test for real heap corruption: pdfium-render's `thread_safe`
+/// feature only adds `Send`/`Sync` impls and does no locking, so without our own lock this
+/// aborted with `free(): corrupted unsorted chunks` within a handful of iterations. The rustium
+/// backend has no global state to corrupt, but the guarantee callers rely on is the same one,
+/// so the test follows whichever backend is compiled in rather than naming either.
 #[test]
-fn concurrent_extraction_does_not_corrupt_pdfium() {
+fn concurrent_extraction_stays_sound() {
     let path = paper!("resnet.pdf");
 
     let handles: Vec<_> = (0..8)
         .map(|_| {
             let path = path.clone();
             std::thread::spawn(move || {
-                let backend = PdfiumBackend::open(&path).expect("open failed");
+                let backend = open_backend(&path).expect("open failed");
                 let mut fonts = FontTable::new();
                 let mut total = 0;
                 for round in 0..4 {
@@ -214,7 +216,7 @@ fn concurrent_extraction_does_not_corrupt_pdfium() {
 #[test]
 fn crops_are_clamped_to_the_page() {
     let path = paper!("resnet.pdf");
-    let backend = PdfiumBackend::open(&path).expect("open failed");
+    let backend = open_backend(&path).expect("open failed");
 
     // Deliberately oversized: math bounding boxes can spill past the page box, and this must
     // clamp rather than panic.
