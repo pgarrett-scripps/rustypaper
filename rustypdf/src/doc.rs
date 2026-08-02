@@ -195,7 +195,7 @@ pub fn assemble(
     coalesce_fragments(&mut blocks, stats);
     demote_lonely_list_items(&mut blocks);
     promote_title(&mut blocks, stats);
-    assign_heading_levels(&mut blocks, stats);
+    assign_heading_levels(&mut blocks);
 
     let title = blocks
         .iter()
@@ -601,9 +601,7 @@ fn promote_title(blocks: &mut [Block], stats: Stats) {
 /// the size of `1 Introduction` and belongs at the same level, but ranking sizes in isolation
 /// gave it level 3; matching it against the size of a heading whose level *is* known fixes that.
 /// Size rank remains the fallback for templates that number nothing.
-fn assign_heading_levels(blocks: &mut [Block], stats: Stats) {
-    let _ = stats;
-
+fn assign_heading_levels(blocks: &mut [Block]) {
     // Sizes whose level is known from numbering.
     let mut calibrated: Vec<(f32, u8)> = Vec::new();
     for block in blocks.iter() {

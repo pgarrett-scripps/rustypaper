@@ -78,22 +78,11 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     let path = path.as_ref();
     let backend = PdfiumBackend::open(path)?;
     let raw = extract_from(&backend, path)?;
-
-    // Everything from here on is pure Rust, so it can run across pages at once. Ingest cannot:
-    // pdfium is single-threaded and serialised behind a lock inside the backend.
-    let mut pages: Vec<Vec<text::lines::Line>> = raw
-        .pages
-        .par_iter()
-        .map(|page| {
-            let lines = text::lines::build_lines(page);
-            // Gutters are measured before splitting, because a line spanning two columns is
-            // exactly what the coverage profile needs to see in order to discount it.
-            let gutters = layout::columns::page_gutters(page, &lines);
-            text::lines::split_at_gutters(page, lines, &gutters)
-        })
-        .collect();
-
     let heights: Vec<f32> = raw.pages.iter().map(|p| p.height).collect();
+
+    // Everything from here to assembly is pure Rust, so it runs across pages at once. Ingest
+    // cannot: pdfium is single-threaded and serialised behind a lock inside the backend.
+    let mut pages = build_pages(&raw);
     layout::furniture::strip(&mut pages, &heights);
 
     // Measured after furniture removal so running heads cannot skew the body size, and before
@@ -105,8 +94,44 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
         .map(layout::order::reading_order)
         .collect();
 
-    // Tables are lifted out before assembly so that their cells never become paragraphs. What
-    // is left on each page is prose.
+    // Everything that is not prose is lifted out before assembly, so that a table's cells and an
+    // equation's symbols can never be mistaken for paragraphs. What is left on each page is
+    // prose, with inline formulae folded into it as single words.
+    let (tables, mut prose) = lift_tables(&raw, ordered, stats);
+    let equations = lift_equations(&raw, &mut prose);
+
+    let vocab = text::vocab::Vocabulary::build(&prose);
+    let mut document = doc::assemble(&prose, &heights, stats, &vocab);
+
+    insert_tables(&mut document, tables);
+    insert_equations(&mut document, equations);
+    attach_figures(&backend, &raw, &mut document, options)?;
+    crop_uncertain_equations(&backend, &mut document, options)?;
+    extract_bibliography(&mut document);
+
+    Ok(document)
+}
+
+/// Recovers each page's lines, split at its column gutters.
+fn build_pages(raw: &DocRaw) -> Vec<Vec<text::lines::Line>> {
+    raw.pages
+        .par_iter()
+        .map(|page| {
+            let lines = text::lines::build_lines(page);
+            // Gutters are measured before splitting, because a line spanning two columns is
+            // exactly what the coverage profile needs to see in order to discount it.
+            let gutters = layout::columns::page_gutters(page, &lines);
+            text::lines::split_at_gutters(page, lines, &gutters)
+        })
+        .collect()
+}
+
+/// Lifts tables out of the line stream, returning them and the prose that remains.
+fn lift_tables(
+    raw: &DocRaw,
+    ordered: Vec<Vec<text::lines::Line>>,
+    stats: layout::stats::Stats,
+) -> (Vec<PlacedTable>, Vec<Vec<text::lines::Line>>) {
     let per_page: Vec<PageTables> = raw
         .pages
         .par_iter()
@@ -115,6 +140,7 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
             let found = table::detect(page, &lines, stats.body_size);
             let mut consumed = vec![false; lines.len()];
             let mut tables = Vec::new();
+
             for table in &found {
                 for &i in &table.consumed {
                     consumed[i] = true;
@@ -128,6 +154,7 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
                     },
                 ));
             }
+
             let prose = lines
                 .into_iter()
                 .enumerate()
@@ -138,19 +165,19 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
         })
         .collect();
 
-    let mut tables: Vec<(usize, ir::Rect, doc::TableData)> = Vec::new();
-    let mut prose: Vec<Vec<text::lines::Line>> = Vec::with_capacity(per_page.len());
-    #[allow(clippy::needless_late_init)]
+    let mut tables = Vec::new();
+    let mut prose = Vec::with_capacity(per_page.len());
     for (found, lines) in per_page {
         tables.extend(found);
         prose.push(lines);
     }
+    (tables, prose)
+}
 
-    // Mathematics is resolved before assembly: display equations are lifted out as their own
-    // blocks, and inline formulae are folded into the words of the lines that carry them, so
-    // that everything downstream sees `$x^2$` as a single word.
-    let equations: Vec<(usize, ir::Rect, doc::MathData)> = raw
-        .pages
+/// Lifts display equations out of the prose, and folds inline formulae into the lines that
+/// carry them so that everything downstream sees `$x^2$` as one word.
+fn lift_equations(raw: &DocRaw, prose: &mut [Vec<text::lines::Line>]) -> Vec<PlacedEquation> {
+    raw.pages
         .par_iter()
         .zip(prose.par_iter_mut())
         .flat_map(|(page, lines)| {
@@ -159,22 +186,23 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
             let mut found_here = Vec::new();
 
             for i in 0..lines.len() {
-                if let Some(found) = math::display(page, &raw.fonts, lines, i, column) {
-                    let latex = math::latex::render(&found.formula.root);
-                    if latex.trim().is_empty() {
-                        continue;
-                    }
-                    is_display[i] = true;
-                    found_here.push((
-                        page.index,
-                        lines[i].bbox,
-                        doc::MathData {
-                            latex,
-                            number: found.number,
-                            confidence: found.formula.confidence,
-                        },
-                    ));
+                let Some(found) = math::display(page, &raw.fonts, lines, i, column) else {
+                    continue;
+                };
+                let latex = math::latex::render(&found.formula.root);
+                if latex.trim().is_empty() {
+                    continue;
                 }
+                is_display[i] = true;
+                found_here.push((
+                    page.index,
+                    lines[i].bbox,
+                    doc::MathData {
+                        latex,
+                        number: found.number,
+                        confidence: found.formula.confidence,
+                    },
+                ));
             }
 
             for (i, display) in is_display.iter().enumerate() {
@@ -187,24 +215,17 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
             lines.retain(|_| keep.next().unwrap_or(true));
             found_here
         })
-        .collect();
-
-    let vocab = text::vocab::Vocabulary::build(&prose);
-    let mut document = doc::assemble(&prose, &heights, stats, &vocab);
-    insert_tables(&mut document, tables);
-    insert_equations(&mut document, equations);
-    attach_figures(&backend, &raw, &mut document, options)?;
-    crop_uncertain_equations(&backend, &mut document, options)?;
-    extract_bibliography(&mut document);
-
-    Ok(document)
+        .collect()
 }
 
+/// A table, with the page and place it was lifted from.
+type PlacedTable = (usize, ir::Rect, doc::TableData);
+
+/// A display equation, with the page and place it was lifted from.
+type PlacedEquation = (usize, ir::Rect, doc::MathData);
+
 /// The tables lifted off one page, and the prose that remains on it.
-type PageTables = (
-    Vec<(usize, ir::Rect, doc::TableData)>,
-    Vec<text::lines::Line>,
-);
+type PageTables = (Vec<PlacedTable>, Vec<text::lines::Line>);
 
 /// Turns the bibliography into structured entries and links the citations that point at them.
 fn extract_bibliography(document: &mut doc::Document) {
@@ -411,10 +432,7 @@ fn insert_in_reading_order(document: &mut doc::Document, block: doc::Block) {
 }
 
 /// Places display equations into the document.
-fn insert_equations(
-    document: &mut doc::Document,
-    equations: Vec<(usize, ir::Rect, doc::MathData)>,
-) {
+fn insert_equations(document: &mut doc::Document, equations: Vec<PlacedEquation>) {
     for (page, bbox, math) in equations {
         let mut block = doc::Block::new(doc::BlockKind::Equation, page, bbox);
         block.math = Some(math);
@@ -466,7 +484,7 @@ fn crop_uncertain_equations(
 }
 
 /// Places reconstructed tables into the document.
-fn insert_tables(document: &mut doc::Document, tables: Vec<(usize, ir::Rect, doc::TableData)>) {
+fn insert_tables(document: &mut doc::Document, tables: Vec<PlacedTable>) {
     for (page, bbox, data) in tables {
         let mut block = doc::Block::new(doc::BlockKind::Table, page, bbox);
         block.table = Some(data);

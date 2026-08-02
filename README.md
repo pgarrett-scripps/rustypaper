@@ -48,6 +48,7 @@ are renderings of it.
 | | |
 |---|---|
 | speed | 3.8–7.0 ms/page, single process |
+| corpus | 10 papers: ML, pure maths, physics, biology, statistics |
 | memory | 17–31 MB peak for a whole paper |
 | footprint | 2.3 MB binary + 7.3 MB pdfium, no models |
 
@@ -105,7 +106,7 @@ rather than scored.
 cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval
 ```
 
-Current mean bigram recall is **0.878** across the scorable corpus. See
+Current mean bigram recall is **0.894** across the nine scorable papers. See
 [`eval/README.md`](eval/README.md) for what the metrics mean and why plain edit distance is the
 wrong primary measure here.
 

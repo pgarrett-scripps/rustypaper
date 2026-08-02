@@ -12,8 +12,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::text::lines::Line;
-
 /// The heading that starts a bibliography.
 const HEADINGS: [&str; 4] = [
     "references",
@@ -21,10 +19,6 @@ const HEADINGS: [&str; 4] = [
     "works cited",
     "literature cited",
 ];
-
-/// A first line indented left of the following ones by at least this many points marks a new
-/// entry, in styles that use a hanging indent instead of a label.
-const HANGING_INDENT: f32 = 4.0;
 
 /// One bibliography entry.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,48 +74,6 @@ pub fn opens_bibliography(text: &str) -> Option<usize> {
         }
     }
     None
-}
-
-/// Splits the lines of a bibliography into entries.
-///
-/// A bracketed label is the strongest signal and is tried first. Author-year styles have no
-/// label, so the fallback is the hanging indent every such style uses to make entries scannable.
-pub fn split(lines: &[&Line]) -> Vec<Vec<usize>> {
-    if lines.is_empty() {
-        return Vec::new();
-    }
-
-    let labelled: Vec<bool> = lines
-        .iter()
-        .map(|l| leading_label(&l.text()).is_some())
-        .collect();
-    if labelled.iter().filter(|l| **l).count() >= 2 {
-        return group_by(&labelled);
-    }
-
-    // Hanging indent: an entry's first line starts left of its continuations.
-    let base = lines.iter().map(|l| l.bbox.x0).fold(f32::MAX, f32::min);
-    let starts: Vec<bool> = lines
-        .iter()
-        .map(|l| l.bbox.x0 <= base + HANGING_INDENT)
-        .collect();
-    if starts.iter().filter(|s| **s).count() >= 2 {
-        return group_by(&starts);
-    }
-
-    vec![(0..lines.len()).collect()]
-}
-
-fn group_by(starts: &[bool]) -> Vec<Vec<usize>> {
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    for (i, is_start) in starts.iter().enumerate() {
-        if *is_start || groups.is_empty() {
-            groups.push(vec![i]);
-        } else {
-            groups.last_mut().unwrap().push(i);
-        }
-    }
-    groups
 }
 
 /// Splits a run of concatenated entries on their `[n]` labels.
@@ -651,12 +603,5 @@ mod tests {
     fn unlabelled_text_stays_whole() {
         assert_eq!(split_entries("no labels at all here").len(), 1);
         assert!(split_entries("   ").is_empty());
-    }
-
-    #[test]
-    fn entries_split_on_labels() {
-        // Three labelled first lines and two continuations.
-        let flags = [true, false, true, true, false];
-        assert_eq!(group_by(&flags), vec![vec![0, 1], vec![2], vec![3, 4]]);
     }
 }

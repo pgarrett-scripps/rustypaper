@@ -145,6 +145,28 @@ Maths reconstruction reported confidence 1.0 for every formula until a guessed r
 and an unnameable glyph were made to lower it. A score that is always 1.0 is worse than no score,
 because the image fallback it gates never fires.
 
+## Findings from widening the corpus
+
+The corpus began as four machine-learning preprints in two conference templates. Adding pure
+maths, physics, biology and statistics papers, a Springer LNCS submission and a 2014 NeurIPS one
+found four bugs in a converter that passed every test it had:
+
+- **Any short run of capitals parsed as a section label**, so `ON DIOPHANTINE SETS...` was
+  section `ON`, and any title starting `A ...` was appendix `A`. A lettered label is a single
+  capital and must carry its full stop.
+- **Titles are not always larger than the body.** `amsart` sets them in capitals at body size, so
+  a pure-maths paper had no title at all.
+- **Bibliography numbering runs across column blocks.** ResNet's first column ends at `[27]` and
+  its second begins at `[28]`; restarting the sequence per block lost half its entries.
+- **A derivation's row spans three baselines at three sizes**, so line building saw three lines
+  and assembly split on every size change. A quarter of one paper's blocks held three words or
+  fewer.
+
+The pattern is worth stating plainly: **a converter tested on one family of templates learns
+that family, not the general shape of a paper.** Every one of these was invisible on the
+original four, and the new papers score *higher* once fixed — the two-column ML templates were
+the harder cases all along.
+
 ## Measurements
 
 Release build, whole corpus, best of three runs of ten:
