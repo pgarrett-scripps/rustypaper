@@ -8,6 +8,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 cargo build --release
-cp target/release/lib_rustypdf.so python/_rustypdf.so
+cp target/release/lib_rustypdf.so python/rustypdf/_rustypdf.so
 
-echo "built target/release/rp2m and python/_rustypdf.so"
+# pdfium is loaded at runtime and is not linked in, so the Python package has
+# to carry its own copy — that is what makes an installed wheel work off a
+# checkout, where there is no vendor/ directory to fall back to.
+if [ -f vendor/pdfium/lib/libpdfium.so ]; then
+  cp vendor/pdfium/lib/libpdfium.so python/rustypdf/libpdfium.so
+fi
+
+echo "built target/release/rp2m and python/rustypdf/_rustypdf.so"

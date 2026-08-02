@@ -24,8 +24,12 @@ build-backend = "maturin"
 
 [tool.maturin]
 manifest-path = "../rustypdf-py/Cargo.toml"
-module-name = "_rustypdf"
-# pdfium is loaded at runtime, so it has to travel inside the wheel — without
-# it `pip install rustypdf` produces a package that imports and then fails on
-# the first conversion.
+module-name = "rustypdf._rustypdf"
+# Where the pure-Python half lives. Without this maturin ships only the
+# compiled extension, so `pip install rustypdf` yields an importable
+# `_rustypdf` and no `rustypdf` — the package the docs tell people to import.
+python-source = "."
+# pdfium is loaded at runtime rather than linked, so it has to travel inside
+# the wheel — without it `pip install rustypdf` produces a package that
+# imports cleanly and then fails on the first conversion.
 include = [{ path = "rustypdf/*pdfium*", format = "wheel" }]

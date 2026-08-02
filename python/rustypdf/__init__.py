@@ -24,14 +24,14 @@ from typing import Any
 # who set it meant it.
 if "PDFIUM_DYNAMIC_LIB_PATH" not in os.environ:
     for _candidate in (
-        Path(__file__).resolve().parent,                          # bundled in the wheel
+        Path(__file__).resolve().parent,                           # bundled in the wheel
         Path(__file__).resolve().parents[2] / "vendor/pdfium/lib",  # source checkout
     ):
         if list(_candidate.glob("*pdfium*")):
             os.environ["PDFIUM_DYNAMIC_LIB_PATH"] = str(_candidate)
             break
 
-from _rustypdf import ScannedDocument, __version__, extract_json, to_json, to_markdown  # noqa: E402
+from ._rustypdf import ScannedDocument, __version__, extract_json, to_json, to_markdown  # noqa: E402
 
 __all__ = [
     "ScannedDocument",

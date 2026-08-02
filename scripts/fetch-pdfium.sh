@@ -25,7 +25,12 @@ echo "fetching $ASSET from $PDFIUM_RELEASE"
 curl -fsSL -o "$TMP/pdfium.tgz" "$URL"
 
 mkdir -p "$DEST"
+# LICENSE at the root is the *packager's* MIT licence. pdfium's own BSD-3-Clause notice and the
+# notices for everything vendored into it (FreeType, libjpeg-turbo, zlib, ICU, ...) live under
+# licenses/, and all of them must travel with any binary that bundles libpdfium.so.
 tar xzf "$TMP/pdfium.tgz" -C "$DEST" LICENSE VERSION
+tar xzf "$TMP/pdfium.tgz" -C "$DEST" licenses 2>/dev/null || true
+mv "$DEST/LICENSE" "$DEST/LICENSE-packaging" 2>/dev/null || true
 tar xzf "$TMP/pdfium.tgz" -C "$DEST" lib 2>/dev/null || tar xzf "$TMP/pdfium.tgz" -C "$DEST" bin
 
 echo "pdfium $(tr '\n' ' ' < "$DEST/VERSION") installed to $DEST"

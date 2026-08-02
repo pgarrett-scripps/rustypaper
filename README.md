@@ -152,4 +152,13 @@ rather than fail when the corpus is absent, so a fresh clone is green.
 
 ## Licence
 
-MIT OR Apache-2.0. Bundled pdfium is BSD-3-Clause (see `vendor/pdfium/LICENSE` after fetching).
+MIT OR Apache-2.0.
+
+pdfium is separate and is **not** covered by that. It is BSD-3-Clause, and it vendors further
+third-party code (FreeType, libjpeg-turbo, zlib, ICU and others) under their own terms. After
+running `scripts/fetch-pdfium.sh` those notices are in `vendor/pdfium/licenses/`, and
+`vendor/pdfium/LICENSE-packaging` is the MIT licence of
+[pdfium-binaries](https://github.com/bblanchon/pdfium-binaries), which builds and packages it.
+
+**If you redistribute a binary that bundles `libpdfium.so`, ship `vendor/pdfium/licenses/` with
+it.**
