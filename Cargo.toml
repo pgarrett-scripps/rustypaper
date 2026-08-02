@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["rustypdf", "rustypdf-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tygarrett/rustypdf2markdown"
+
+[workspace.dependencies]
+rustypdf = { path = "rustypdf", version = "0.1.0" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+# Must track the `image` version pdfium-render's `image_latest` feature resolves to, so that
+# `PdfBitmap::as_image()` hands back the same `DynamicImage` type we crop and encode.
+image = { version = "0.25", default-features = false, features = ["png"] }
+pdfium-render = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# Benchmarks and the eval harness need real optimisation but also usable backtraces.
+[profile.bench]
+debug = true

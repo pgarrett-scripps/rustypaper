@@ -1,0 +1,5 @@
+/target
+/vendor
+/corpus/*.pdf
+/corpus/*.tar.gz
+*_assets/

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Fetches the pinned evaluation corpus into corpus/.
+#
+# The corpus deliberately spans typesetting pipelines, because the failure modes differ: pdfTeX
+# with OT1 Computer Modern breaks ligatures on extraction, while publisher templates use
+# different fonts, column rules and heading conventions. Papers are pinned to a specific version
+# so extraction output stays comparable across commits.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="$ROOT/corpus"
+mkdir -p "$DEST"
+
+# id                       filename                       why it is in the corpus
+PAPERS=(
+  "1706.03762v7|transformer.pdf|single column, wide tables, inline math"
+  "1512.03385v1|resnet.pdf|two column, full-width figures, numbered equations"
+  "1412.6980v9|adam.pdf|algorithm floats, heavy display math"
+  "1810.04805v2|bert.pdf|two column, dense tables, footnotes"
+)
+
+for entry in "${PAPERS[@]}"; do
+  IFS='|' read -r id name why <<< "$entry"
+  out="$DEST/$name"
+  if [[ -f "$out" ]]; then
+    echo "have    $name"
+    continue
+  fi
+  echo "fetch   $name  ($why)"
+  curl -fsSL --retry 3 -A "rustypdf-corpus/0.1" -o "$out" "https://arxiv.org/pdf/$id"
+  # arXiv rate-limits; be a good citizen.
+  sleep 3
+done
+
+echo
+echo "corpus in $DEST:"
+ls -la "$DEST"/*.pdf

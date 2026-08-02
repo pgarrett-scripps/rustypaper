@@ -1,0 +1,15 @@
+[package]
+name = "rustypdf"
+description = "Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+image.workspace = true
+pdfium-render.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
