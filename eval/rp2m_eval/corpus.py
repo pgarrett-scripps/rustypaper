@@ -51,6 +51,9 @@ class Paper:
     reference: str
     """Prose extracted from the LaTeX source."""
 
+    source: str = ""
+    """The raw LaTeX, for scoring formulae and tables against."""
+
     @property
     def scorable(self) -> bool:
         """Whether this paper has enough reference prose to score against."""
@@ -74,6 +77,27 @@ def fetch_source(arxiv_id: str, cache: Path) -> Path:
     target.write_bytes(data)
     time.sleep(3)  # arXiv rate-limits; be a good citizen.
     return target
+
+
+def read_raw_source(archive: Path) -> str:
+    """The concatenated LaTeX of an e-print archive, unreduced."""
+    raw = archive.read_bytes()
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as tar:
+            parts = []
+            for member in tar.getmembers():
+                if member.isfile() and member.name.endswith(".tex"):
+                    handle = tar.extractfile(member)
+                    if handle is not None:
+                        parts.append(handle.read().decode("utf-8", errors="replace"))
+            return "\n".join(parts)
+    except tarfile.TarError:
+        import gzip
+
+        try:
+            return gzip.decompress(raw).decode("utf-8", errors="replace")
+        except OSError:
+            return raw.decode("utf-8", errors="replace")
 
 
 def read_source(archive: Path) -> str:
@@ -117,6 +141,13 @@ def load(corpus_dir: Path, cache_dir: Path, only: str | None = None) -> list[Pap
         pdf = corpus_dir / name
         if not pdf.exists():
             continue
-        reference = read_source(fetch_source(arxiv_id, cache_dir))
-        papers.append(Paper(arxiv_id=arxiv_id, pdf=pdf, reference=reference))
+        archive = fetch_source(arxiv_id, cache_dir)
+        papers.append(
+            Paper(
+                arxiv_id=arxiv_id,
+                pdf=pdf,
+                reference=read_source(archive),
+                source=read_raw_source(archive),
+            )
+        )
     return papers

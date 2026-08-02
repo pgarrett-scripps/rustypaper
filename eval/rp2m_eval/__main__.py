@@ -9,7 +9,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from . import convert, corpus, score
+from . import convert, corpus, formula, score
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -63,12 +63,22 @@ def main(argv: list[str] | None = None) -> int:
             report["unscorable"][paper.pdf.name] = row
             continue
 
+        emitted = [b["math"]["latex"] for b in document["blocks"] if b.get("math")]
+        maths = formula.compare(paper.source, emitted)
+        tables_found = sum(1 for b in document["blocks"] if b.get("table"))
+        tables_wanted = formula.reference_tables(paper.source)
+
         result = score.compare(paper.reference, markdown)
         row.update(
             bigram_recall=round(score.bigram_recall(paper.reference, markdown), 4),
             coverage=round(score.coverage(paper.reference, markdown), 4),
             similarity=round(result.similarity, 4),
             reference_words=result.reference_words,
+            equations=maths.reference,
+            equation_recall=round(maths.recall, 4),
+            equation_fidelity=round(maths.fidelity, 4),
+            tables=tables_wanted,
+            tables_found=tables_found,
         )
         report["papers"][paper.pdf.name] = row
 
@@ -85,23 +95,29 @@ def main(argv: list[str] | None = None) -> int:
 def _print_table(report: dict) -> None:
     print(f"converter={report['backend']}  scorer={report['scorer']}")
     print(
-        f"{'paper':<18} {'bigram':>7} {'cover':>6} {'sim':>6} "
-        f"{'words':>13} {'blocks':>7} {'sec':>6}"
+        f"{'paper':<16} {'bigram':>7} {'cover':>6} "
+        f"{'eq':>4} {'eq rec':>7} {'eq fid':>7} {'tables':>8} {'sec':>6}"
     )
-    print("-" * 70)
+    print("-" * 72)
     for name, row in sorted(report["papers"].items()):
-        blocks = sum(row["blocks"].values())
-        words = f"{row['output_words']}/{row['reference_words']}"
+        tables = f"{row['tables_found']}/{row['tables']}"
         print(
-            f"{name:<18} {row['bigram_recall']:>7.3f} {row['coverage']:>6.3f} "
-            f"{row['similarity']:>6.3f} {words:>13} {blocks:>7} {row['seconds']:>6.2f}"
+            f"{name:<16} {row['bigram_recall']:>7.3f} {row['coverage']:>6.3f} "
+            f"{row['equations']:>4} {row['equation_recall']:>7.3f} "
+            f"{row['equation_fidelity']:>7.3f} {tables:>8} {row['seconds']:>6.2f}"
         )
 
     rows = list(report["papers"].values())
     if rows:
-        mean = sum(r["bigram_recall"] for r in rows) / len(rows)
-        print("-" * 70)
-        print(f"{'mean bigram recall':<18} {mean:>7.3f}")
+        with_maths = [r for r in rows if r["equations"]]
+        print("-" * 72)
+        print(f"{'mean':<16} {sum(r['bigram_recall'] for r in rows) / len(rows):>7.3f}", end="")
+        if with_maths:
+            recall = sum(r["equation_recall"] for r in with_maths) / len(with_maths)
+            fidelity = sum(r["equation_fidelity"] for r in with_maths) / len(with_maths)
+            print(f" {'':>6} {'':>4} {recall:>7.3f} {fidelity:>7.3f}")
+        else:
+            print()
 
     for name, row in sorted(report.get("unscorable", {}).items()):
         print(f"\n  skipped {name}: {row['reason']} "

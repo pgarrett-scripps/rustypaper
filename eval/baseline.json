@@ -16,10 +16,15 @@
         "title": 1
       },
       "coverage": 0.9228,
+      "equation_fidelity": 0.0,
+      "equation_recall": 0.0,
+      "equations": 6,
       "output_words": 10306,
       "reference_words": 7305,
-      "seconds": 0.113,
-      "similarity": 0.6958
+      "seconds": 0.114,
+      "similarity": 0.6958,
+      "tables": 8,
+      "tables_found": 6
     },
     "biology.pdf": {
       "arxiv_id": "2607.28053v1",
@@ -37,10 +42,15 @@
         "title": 1
       },
       "coverage": 0.9649,
+      "equation_fidelity": 0.6653,
+      "equation_recall": 0.0364,
+      "equations": 55,
       "output_words": 9835,
       "reference_words": 6618,
-      "seconds": 0.224,
-      "similarity": 0.7528
+      "seconds": 0.235,
+      "similarity": 0.7528,
+      "tables": 4,
+      "tables_found": 9
     },
     "gan.pdf": {
       "arxiv_id": "1406.2661v1",
@@ -57,10 +67,15 @@
         "title": 1
       },
       "coverage": 0.9619,
+      "equation_fidelity": 0.7352,
+      "equation_recall": 0.5714,
+      "equations": 14,
       "output_words": 4478,
       "reference_words": 2666,
-      "seconds": 0.073,
-      "similarity": 0.7063
+      "seconds": 0.078,
+      "similarity": 0.7063,
+      "tables": 4,
+      "tables_found": 3
     },
     "numbertheory.pdf": {
       "arxiv_id": "2607.28606v1",
@@ -75,10 +90,15 @@
         "title": 1
       },
       "coverage": 0.9895,
+      "equation_fidelity": 0.8241,
+      "equation_recall": 0.7476,
+      "equations": 103,
       "output_words": 5093,
       "reference_words": 4003,
-      "seconds": 0.09,
-      "similarity": 0.8443
+      "seconds": 0.091,
+      "similarity": 0.8443,
+      "tables": 0,
+      "tables_found": 1
     },
     "optics.pdf": {
       "arxiv_id": "2607.28558v1",
@@ -95,10 +115,15 @@
         "title": 1
       },
       "coverage": 0.9282,
+      "equation_fidelity": 0.6921,
+      "equation_recall": 0.1643,
+      "equations": 213,
       "output_words": 7166,
       "reference_words": 5602,
-      "seconds": 0.15,
-      "similarity": 0.7898
+      "seconds": 0.145,
+      "similarity": 0.7898,
+      "tables": 0,
+      "tables_found": 0
     },
     "resnet.pdf": {
       "arxiv_id": "1512.03385v1",
@@ -115,10 +140,15 @@
         "title": 1
       },
       "coverage": 0.9679,
+      "equation_fidelity": 0.6181,
+      "equation_recall": 1.0,
+      "equations": 2,
       "output_words": 10537,
       "reference_words": 6021,
-      "seconds": 0.12,
-      "similarity": 0.6542
+      "seconds": 0.123,
+      "similarity": 0.6542,
+      "tables": 17,
+      "tables_found": 7
     },
     "statistics.pdf": {
       "arxiv_id": "2607.28455v1",
@@ -133,10 +163,15 @@
         "title": 1
       },
       "coverage": 0.9533,
+      "equation_fidelity": 0.6445,
+      "equation_recall": 0.3333,
+      "equations": 18,
       "output_words": 7450,
       "reference_words": 6384,
-      "seconds": 0.106,
-      "similarity": 0.8754
+      "seconds": 0.109,
+      "similarity": 0.8754,
+      "tables": 2,
+      "tables_found": 0
     },
     "transformer.pdf": {
       "arxiv_id": "1706.03762v7",
@@ -154,10 +189,15 @@
         "title": 1
       },
       "coverage": 0.9209,
+      "equation_fidelity": 0.8235,
+      "equation_recall": 0.5556,
+      "equations": 18,
       "output_words": 6233,
       "reference_words": 4369,
-      "seconds": 0.199,
-      "similarity": 0.7063
+      "seconds": 0.213,
+      "similarity": 0.7063,
+      "tables": 7,
+      "tables_found": 4
     },
     "unet.pdf": {
       "arxiv_id": "1505.04597v1",
@@ -174,10 +214,15 @@
         "title": 1
       },
       "coverage": 0.9815,
+      "equation_fidelity": 0.0,
+      "equation_recall": 0.0,
+      "equations": 2,
       "output_words": 3209,
       "reference_words": 2347,
-      "seconds": 0.037,
-      "similarity": 0.7999
+      "seconds": 0.039,
+      "similarity": 0.7999,
+      "tables": 2,
+      "tables_found": 2
     }
   },
   "scorer": "difflib",

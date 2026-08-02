@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rp2m_eval import detex, score  # noqa: E402
+from rp2m_eval import detex, formula, score  # noqa: E402
 
 
 class TestDetex(unittest.TestCase):
@@ -101,3 +101,44 @@ class TestScore(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFormula(unittest.TestCase):
+    def test_extracts_display_equations_from_source(self):
+        source = r"""
+        \begin{equation}\label{eq:1} E = mc^2 \end{equation}
+        Some prose with $inline$ maths that must not count.
+        \begin{align} a &= b + c \\ d &= e - f \end{align}
+        """
+        found = formula.reference_equations(source)
+        self.assertEqual(len(found), 3, found)
+        self.assertIn("E=mc^2", found)
+        # An align block is several equations, one per row, with alignment stripped.
+        self.assertIn("a=b+c", found)
+        self.assertIn("d=e-f", found)
+
+    def test_cosmetic_differences_do_not_count(self):
+        # What the author wrote versus what reconstruction produces.
+        self.assertEqual(
+            formula.normalise(r"\left( \frac{x}{y} \right) \, \cdot z"),
+            formula.normalise(r"(\frac{x}{y})\cdot z"),
+        )
+
+    def test_scores_recall_and_fidelity_separately(self):
+        source = r"\begin{equation} x^2 + y^2 = z^2 \end{equation}" \
+                 r"\begin{equation} a = b + c \end{equation}"
+        # One recovered exactly, one missed entirely.
+        result = formula.compare(source, [r"x^{2}+y^{2}=z^{2}"])
+        self.assertEqual(result.reference, 2)
+        self.assertEqual(result.found, 1)
+        self.assertEqual(result.recall, 0.5)
+        self.assertGreater(result.fidelity, 0.95)
+
+    def test_a_paper_without_maths_scores_zero_not_an_error(self):
+        result = formula.compare("no maths at all here", ["x^2"])
+        self.assertEqual(result.reference, 0)
+        self.assertEqual(result.recall, 0.0)
+
+    def test_counts_tabular_environments(self):
+        source = r"\begin{tabular}{cc} a & b \end{tabular} \begin{tabular*}{c} x \end{tabular*}"
+        self.assertEqual(formula.reference_tables(source), 2)
