@@ -371,3 +371,96 @@ fn hyphenated_line_breaks_are_rejoined() {
     assert!(md.contains("residual learning framework"));
     assert!(!md.contains("residuallearning"));
 }
+
+/// Figures are found and bound to their captions.
+#[test]
+fn figures_are_detected_and_captioned() {
+    let path = paper!("transformer.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+
+    let figures: Vec<&rustypdf::doc::Block> = doc
+        .blocks
+        .iter()
+        .filter(|b| b.kind == rustypdf::doc::BlockKind::Figure)
+        .collect();
+
+    assert!(figures.len() >= 4, "expected several figures, got {}", figures.len());
+    assert!(
+        figures
+            .iter()
+            .any(|f| f.text.starts_with("Figure 1")),
+        "Figure 1's caption was not bound to its graphic"
+    );
+}
+
+/// A figure region must never cover the page. One did — a clipped path reporting bounds tens of
+/// thousands of points off-page — and suppressing text inside it removed a page of prose.
+#[test]
+fn figure_regions_stay_within_the_page() {
+    for name in ["resnet.pdf", "bert.pdf", "transformer.pdf", "adam.pdf"] {
+        let path = paper!(name);
+        let doc = rustypdf::extract(&path).expect("extraction failed");
+        for page in &doc.pages {
+            let page_area = page.width * page.height;
+            for region in rustypdf::figure::regions(page) {
+                assert!(
+                    page.bounds().contains(&region.bbox),
+                    "{name} page {}: region {:?} escapes the page",
+                    page.index,
+                    region.bbox
+                );
+                let share = region.bbox.width() * region.bbox.height() / page_area;
+                assert!(share <= 0.85, "{name} page {}: region covers {share:.0%}", page.index);
+            }
+        }
+    }
+}
+
+/// Figures are written out and referenced when an assets directory is given.
+#[test]
+fn figures_are_extracted_to_disk() {
+    let path = paper!("resnet.pdf");
+    let dir = std::env::temp_dir().join("rustypdf-test-assets");
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let options = rustypdf::Options {
+        assets: Some(dir.clone()),
+        figure_dpi: 72.0,
+    };
+    let doc = rustypdf::convert_with(&path, &options).expect("conversion failed");
+    let md = rustypdf::emit::markdown::render(&doc);
+
+    let written: Vec<_> = std::fs::read_dir(&dir)
+        .expect("assets directory")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(!written.is_empty(), "no figures written");
+    assert!(md.contains("!["), "no image reference in the Markdown");
+
+    for entry in &written {
+        let bytes = std::fs::read(entry.path()).expect("read figure");
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Bulleted lists survive as lists, and isolated markers do not become phantom ones.
+#[test]
+fn lists_and_footnotes_are_classified() {
+    let path = paper!("bert.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+
+    let lists = doc
+        .blocks
+        .iter()
+        .filter(|b| matches!(b.kind, rustypdf::doc::BlockKind::ListItem { .. }))
+        .count();
+    assert!(lists >= 3, "expected BERT's contribution bullets, got {lists}");
+
+    let footnotes = doc
+        .blocks
+        .iter()
+        .filter(|b| b.kind == rustypdf::doc::BlockKind::Footnote)
+        .count();
+    assert!(footnotes >= 5, "expected footnotes, got {footnotes}");
+}

@@ -436,6 +436,21 @@ fn collect_glyphs(page: &PdfPage, xform: &Transform, fonts: &mut FontTable, raw:
     }
 }
 
+/// Intersects an object's bounds with the page, returning `None` when nothing is left visible.
+fn clip_to_page(bbox: Rect, width: f32, height: f32) -> Option<Rect> {
+    if !bbox.x0.is_finite() || !bbox.y0.is_finite() || !bbox.x1.is_finite() || !bbox.y1.is_finite()
+    {
+        return None;
+    }
+    let clipped = Rect {
+        x0: bbox.x0.max(0.0),
+        y0: bbox.y0.max(0.0),
+        x1: bbox.x1.min(width),
+        y1: bbox.y1.min(height),
+    };
+    (clipped.width() > 0.0 && clipped.height() > 0.0).then_some(clipped)
+}
+
 /// Effective font size in points, with fallbacks.
 ///
 /// pdfium reports a scaled size of 0 for text whose matrix is a pure rotation — the arXiv stamp
@@ -510,6 +525,7 @@ fn collect_from(
     depth: usize,
     next_index: &mut usize,
 ) {
+    let (page_width, page_height) = (raw.width, raw.height);
     for object in objects {
         let i = *next_index;
         *next_index += 1;
@@ -524,6 +540,13 @@ fn collect_from(
             bounds.right().value,
             bounds.top().value,
         );
+        // A clipped path reports the bounds of its *unclipped* geometry, which can run tens of
+        // thousands of points off-page. Taking that at face value let a single object drag a
+        // figure region to 6000% of the page and swallow every block on it. What is visible is
+        // what falls on the page, so that is what gets recorded.
+        let Some(bbox) = clip_to_page(bbox, page_width, page_height) else {
+            continue;
+        };
 
         match object.object_type() {
             PdfPageObjectType::XObjectForm => {
@@ -649,6 +672,26 @@ mod tests {
         // A framed figure.
         let boxy = Rect::from_corners(72.0, 100.0, 540.0, 400.0);
         assert_eq!(classify_path(&boxy).0, PathKind::Other);
+    }
+
+    #[test]
+    fn off_page_geometry_is_clipped_to_the_page() {
+        // What a clipped path reports: bounds far outside the page in both directions.
+        let huge = Rect::from_corners(106.0, -38870.0, 492.0, 39239.0);
+        let clipped = clip_to_page(huge, 595.0, 842.0).expect("some of it is on the page");
+        assert_eq!((clipped.x0, clipped.y0), (106.0, 0.0));
+        assert_eq!((clipped.x1, clipped.y1), (492.0, 842.0));
+
+        // Entirely off-page geometry contributes nothing.
+        assert_eq!(
+            clip_to_page(Rect::from_corners(-500.0, -500.0, -100.0, -100.0), 595.0, 842.0),
+            None
+        );
+        // Degenerate coordinates must not produce a rect at all.
+        assert_eq!(
+            clip_to_page(Rect::from_corners(f32::NAN, 0.0, 10.0, 10.0), 595.0, 842.0),
+            None
+        );
     }
 
     #[test]

@@ -56,6 +56,12 @@ enum Command {
         /// Write to a file instead of stdout.
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// Extract figures into this directory and reference them from the output.
+        #[arg(long)]
+        assets: Option<PathBuf>,
+        /// Resolution to rasterise figures at.
+        #[arg(long, default_value_t = 150.0)]
+        figure_dpi: f32,
     },
     /// Print reconstructed lines, one per output line. Reading order is not applied yet.
     Text {
@@ -78,7 +84,9 @@ fn main() -> Result<()> {
             pdf,
             format,
             out: dest,
-        } => convert(&mut out, pdf, format, dest),
+            assets,
+            figure_dpi,
+        } => convert(&mut out, pdf, format, dest, assets, figure_dpi),
         Command::Probe { pdf, pages } => probe(&mut out, pdf, pages),
         Command::Text {
             pdf,
@@ -205,6 +213,21 @@ fn probe(out: &mut impl Write, pdf: PathBuf, per_page: bool) -> Result<()> {
                         .collect::<Vec<_>>()
                 },
             )?;
+            for region in rustypdf::figure::regions(page) {
+                let pct = 100.0 * region.bbox.width() * region.bbox.height()
+                    / (page.width * page.height);
+                writeln!(
+                    out,
+                    "         figure {:.0},{:.0}..{:.0},{:.0}  {:.0}% of page  {} images {} paths",
+                    region.bbox.x0,
+                    region.bbox.y0,
+                    region.bbox.x1,
+                    region.bbox.y1,
+                    pct,
+                    region.images,
+                    region.paths
+                )?;
+            }
         }
     }
 
@@ -243,8 +266,15 @@ fn convert(
     pdf: PathBuf,
     format: Format,
     dest: Option<PathBuf>,
+    assets: Option<PathBuf>,
+    figure_dpi: f32,
 ) -> Result<()> {
-    let doc = rustypdf::convert(&pdf).with_context(|| format!("converting {}", pdf.display()))?;
+    let options = rustypdf::Options {
+        assets,
+        figure_dpi,
+    };
+    let doc = rustypdf::convert_with(&pdf, &options)
+        .with_context(|| format!("converting {}", pdf.display()))?;
 
     let rendered = match format {
         Format::Md => rustypdf::emit::markdown::render(&doc),

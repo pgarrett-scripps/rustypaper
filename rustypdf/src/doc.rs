@@ -37,6 +37,15 @@ const TITLE_SIZE_RATIO: f32 = 1.15;
 /// Only this many opening blocks are considered as title candidates.
 const TITLE_SEARCH_BLOCKS: usize = 4;
 
+/// A footnote is set smaller than body text by at least this factor.
+const FOOTNOTE_MAX_SIZE_RATIO: f32 = 0.92;
+
+/// A footnote starts below this fraction of the page height.
+const FOOTNOTE_MIN_Y_FRACTION: f32 = 0.68;
+
+/// How many blocks either side of a list item to search for a sibling item.
+const LIST_SIBLING_RANGE: usize = 2;
+
 /// Serialised with an internal tag so that the JSON reads `{"type": "heading", "level": 2}`
 /// rather than `{"Heading": 2}`. The document model is the contract other tools consume, so it
 /// is worth being pleasant in languages that are not Rust.
@@ -51,6 +60,14 @@ pub enum BlockKind {
     Paragraph,
     /// A figure or table caption.
     Caption,
+    /// A caption with the graphic it describes attached.
+    Figure,
+    /// An item of a bulleted or numbered list.
+    ListItem {
+        ordered: bool,
+    },
+    /// Set small at the foot of a page, below the body.
+    Footnote,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +79,9 @@ pub struct Block {
     pub bbox: Rect,
     /// Dominant font size, kept so emitters and later passes can reason without re-measuring.
     pub size: f32,
+    /// Relative path to an extracted graphic, for [`BlockKind::Figure`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub asset: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -71,7 +91,15 @@ pub struct Document {
 }
 
 /// Assembles ordered per-page lines into a document.
-pub fn assemble(pages: &[Vec<Line>], stats: Stats, vocab: &Vocabulary) -> Document {
+///
+/// `page_heights` is needed because "near the foot of the page" is what distinguishes a footnote
+/// from any other small text.
+pub fn assemble(
+    pages: &[Vec<Line>],
+    page_heights: &[f32],
+    stats: Stats,
+    vocab: &Vocabulary,
+) -> Document {
     let mut blocks = Vec::new();
 
     for (index, lines) in pages.iter().enumerate() {
@@ -81,13 +109,16 @@ pub fn assemble(pages: &[Vec<Line>], stats: Stats, vocab: &Vocabulary) -> Docume
             .fold(0.0f32, f32::max)
             .max(1.0);
 
+        let page_height = page_heights.get(index).copied().unwrap_or(792.0);
         for group in group_lines(lines, stats) {
-            if let Some(block) = build_block(&group, index, stats, column_width, vocab) {
+            if let Some(block) = build_block(&group, index, stats, column_width, vocab, page_height)
+            {
                 blocks.push(block);
             }
         }
     }
 
+    demote_lonely_list_items(&mut blocks);
     promote_title(&mut blocks, stats);
     assign_heading_levels(&mut blocks, stats);
 
@@ -131,12 +162,14 @@ fn starts_new_block(previous: &Line, line: &Line, stats: Stats) -> bool {
     step > stats.leading * BLOCK_GAP_RATIO
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_block(
     group: &[&Line],
     page: usize,
     stats: Stats,
     column_width: f32,
     vocab: &Vocabulary,
+    page_height: f32,
 ) -> Option<Block> {
     let text = join_lines(group, vocab);
     if text.trim().is_empty() {
@@ -150,11 +183,18 @@ fn build_block(
         .unwrap_or(Rect::from_corners(0.0, 0.0, 0.0, 0.0));
     let size = group[0].size;
 
+    // Order matters here. `1. Introduction` is indistinguishable from a numbered list item by
+    // its marker alone, so the heading test — which also demands brevity, a narrow measure and
+    // no terminal full stop — has to run first.
     let kind = if is_caption(&text) {
         BlockKind::Caption
     } else if is_heading(group, &text, stats, column_width) {
         // Level is assigned once the whole document's headings are known.
         BlockKind::Heading { level: 1 }
+    } else if let Some(ordered) = list_marker(&text) {
+        BlockKind::ListItem { ordered }
+    } else if is_footnote(group, size, stats, page_height) {
+        BlockKind::Footnote
     } else {
         BlockKind::Paragraph
     };
@@ -165,7 +205,49 @@ fn build_block(
         page,
         bbox,
         size,
+        asset: None,
     })
+}
+
+/// Whether a block opens with a list marker, and whether that marker is ordered.
+///
+/// Requires a following space so that `(1+x)` and `1.5` are not mistaken for markers.
+fn list_marker(text: &str) -> Option<bool> {
+    let mut chars = text.chars();
+    let first = chars.next()?;
+
+    if matches!(first, '•' | '◦' | '‣' | '▪' | '·' | '∗' | '*' | '–' | '—' | '-') {
+        return chars.next().is_some_and(char::is_whitespace).then_some(false);
+    }
+
+    // `1.` `2)` `(3)` `a.` `iv.`
+    let head = text.split_whitespace().next()?;
+    let rest = text[head.len()..].trim_start();
+    if rest.is_empty() || head.len() > 6 {
+        return None;
+    }
+    let core = head
+        .trim_start_matches('(')
+        .trim_end_matches([')', '.', ':']);
+    if core.is_empty() || core.len() == head.len() {
+        return None;
+    }
+    let ordered = core.chars().all(|c| c.is_ascii_digit())
+        || core.chars().all(|c| matches!(c, 'i' | 'v' | 'x' | 'l'))
+        || (core.len() == 1 && core.chars().all(|c| c.is_ascii_alphabetic()));
+    ordered.then_some(true)
+}
+
+/// Small text sitting at the foot of the page.
+///
+/// Both conditions matter. Size alone catches captions and affiliations; position alone catches
+/// the last paragraph of every page.
+fn is_footnote(group: &[&Line], size: f32, stats: Stats, page_height: f32) -> bool {
+    if page_height <= 0.0 || size >= stats.body_size * FOOTNOTE_MAX_SIZE_RATIO {
+        return false;
+    }
+    let top = group.iter().map(|l| l.bbox.y0).fold(f32::MAX, f32::min);
+    top / page_height >= FOOTNOTE_MIN_Y_FRACTION
 }
 
 /// Joins a block's lines into running text, rejoining words split across line breaks.
@@ -295,6 +377,32 @@ fn numbered_heading(text: &str) -> bool {
         .is_some_and(|c| c.is_alphabetic())
 }
 
+/// Turns list items with no siblings back into paragraphs.
+///
+/// A marker on its own is weak evidence: a paragraph opening `4. First, the situation is
+/// reversed...` and a stray table cell reading `- 43.9` both look like list items. A real list
+/// has more than one item, and its items sit together, so requiring a neighbour costs nothing
+/// on genuine lists and removes both false positives.
+fn demote_lonely_list_items(blocks: &mut [Block]) {
+    let is_item: Vec<bool> = blocks
+        .iter()
+        .map(|b| matches!(b.kind, BlockKind::ListItem { .. }))
+        .collect();
+
+    for i in 0..blocks.len() {
+        if !is_item[i] {
+            continue;
+        }
+        let lo = i.saturating_sub(LIST_SIBLING_RANGE);
+        let hi = (i + LIST_SIBLING_RANGE + 1).min(blocks.len());
+        let has_sibling = (lo..hi)
+            .any(|j| j != i && is_item[j] && blocks[j].page == blocks[i].page);
+        if !has_sibling {
+            blocks[i].kind = BlockKind::Paragraph;
+        }
+    }
+}
+
 /// The largest text near the top of the first page is the title.
 ///
 /// Restricted to the opening blocks of page 1 so that a paper whose first page begins with a
@@ -396,7 +504,7 @@ mod tests {
             line("The first line of a paragraph", 100.0, 10.0, 72.0, 540.0),
             line("and its continuation.", 112.0, 10.0, 72.0, 540.0),
         ];
-        let doc = assemble(&[page], stats(), &Vocabulary::default());
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks.len(), 1);
         assert_eq!(doc.blocks[0].kind, BlockKind::Paragraph);
         assert_eq!(
@@ -411,7 +519,7 @@ mod tests {
             line("First paragraph.", 100.0, 10.0, 72.0, 540.0),
             line("Second paragraph.", 140.0, 10.0, 72.0, 540.0),
         ];
-        let doc = assemble(&[page], stats(), &Vocabulary::default());
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks.len(), 2);
     }
 
@@ -423,7 +531,7 @@ mod tests {
             line("3.2 Ablation studies", 160.0, 10.0, 72.0, 220.0),
             line("More body text.", 190.0, 10.0, 72.0, 540.0),
         ];
-        let doc = assemble(&[page], stats(), &Vocabulary::default());
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
         let kinds: Vec<&BlockKind> = doc.blocks.iter().map(|b| &b.kind).collect();
         assert_eq!(kinds[0], &BlockKind::Heading { level: 1 });
         assert_eq!(kinds[1], &BlockKind::Paragraph);
@@ -444,7 +552,7 @@ mod tests {
             line("Related Work", 130.0, 12.0, 72.0, 200.0),
             line("More body text follows on.", 160.0, 10.0, 72.0, 540.0),
         ];
-        let doc = assemble(&[page], stats(), &Vocabulary::default());
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks[0].kind, BlockKind::Title);
         assert!(
             matches!(doc.blocks[2].kind, BlockKind::Heading { .. }),
@@ -466,7 +574,7 @@ mod tests {
                 540.0,
             ),
         ];
-        let doc = assemble(&[page], stats(), &Vocabulary::default());
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks[1].kind, BlockKind::Paragraph);
     }
 
@@ -486,7 +594,7 @@ mod tests {
             ));
         }
         page.push(line("5 Conclusion", 400.0, 14.0, 72.0, 200.0));
-        let doc = assemble(&[page], stats(), &Vocabulary::default());
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
         assert!(doc.title.is_none(), "promoted {:?} to a title", doc.title);
     }
 
@@ -499,7 +607,7 @@ mod tests {
             72.0,
             400.0,
         )];
-        let doc = assemble(&[page], stats(), &Vocabulary::default());
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks[0].kind, BlockKind::Caption);
     }
 
@@ -516,7 +624,7 @@ mod tests {
                 540.0,
             ),
         ];
-        let doc = assemble(&[page], stats(), &Vocabulary::default());
+        let doc = assemble(&[page], &[792.0], stats(), &Vocabulary::default());
         assert_eq!(doc.title.as_deref(), Some("Deep Residual Learning"));
         assert_eq!(doc.blocks[0].kind, BlockKind::Title);
     }
