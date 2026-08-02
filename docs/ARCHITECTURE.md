@@ -216,9 +216,11 @@ Peak memory is 13–30 MB per document. The budget was ≤100 ms/page end-to-end
 
 Converting all ten in one process, writing figures, takes 2.13 s and 64 MB.
 
-**Ingest dominates wall time.** Extracting the whole corpus takes 0.70 s, and converting it paper
-by paper without figures takes 0.70 s as well: everything after ingest runs across pages under
-rayon and disappears into the same wall clock.
+**Ingest dominates wall time.** Extracting the whole corpus takes 0.71 s against 0.76 s to
+convert it — 93% — because everything after ingest runs across pages under rayon and disappears
+into the same wall clock. Reproduce with `cargo run --release -p rustypaper --example
+ingest_share`. Ingest itself is serial and the reader is `Sync`, so that is where the remaining
+headroom is.
 
 Two experiments that did not pay off, recorded so they are not repeated:
 

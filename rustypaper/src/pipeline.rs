@@ -82,9 +82,11 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     let raw = extract_from(&backend, path)?;
     let heights: Vec<f32> = raw.pages.iter().map(|p| p.height).collect();
 
-    // Everything from here to assembly runs across pages at once; ingest above it is serial.
-    // The reader is `Sync`, so that is a choice rather than a constraint — see the measurements
-    // in docs/ARCHITECTURE.md before assuming it is the cheap part.
+    // Everything from here to assembly runs across pages at once. Ingest above it does not, and
+    // ingest is where the time goes: 93% of wall time across the corpus, because the parallel
+    // stages disappear into the same clock. `cargo run --release -p rustypaper --example
+    // ingest_share` prints the split. The reader is `Sync`, so parallelising it is available
+    // and is the one change here with real headroom left in it.
     let mut pages = build_pages(&raw);
     layout::furniture::strip(&mut pages, &heights);
 

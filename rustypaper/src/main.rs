@@ -142,10 +142,18 @@ fn main() -> Result<()> {
 }
 
 fn is_broken_pipe(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .filter_map(|e| e.downcast_ref::<std::io::Error>())
-        .any(|e| e.kind() == std::io::ErrorKind::BrokenPipe)
+    error.chain().any(|e| {
+        // A write that fails on a closed pipe can arrive as either type, and which one depends
+        // on who was writing. `serde_json` wraps the io error rather than returning it, so
+        // looking only for `io::Error` misses every failure from `--pretty`, which serialises
+        // straight to the stream — `dump --pretty | head` exited 1 for exactly that reason.
+        if let Some(io) = e.downcast_ref::<std::io::Error>() {
+            return io.kind() == std::io::ErrorKind::BrokenPipe;
+        }
+        e.downcast_ref::<serde_json::Error>()
+            .and_then(serde_json::Error::io_error_kind)
+            == Some(std::io::ErrorKind::BrokenPipe)
+    })
 }
 
 fn dump(out: &mut impl Write, pdf: PathBuf, page: Option<usize>, pretty: bool) -> Result<()> {
