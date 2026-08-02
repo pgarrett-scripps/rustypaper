@@ -39,15 +39,20 @@ _TABULAR = re.compile(r"\\begin\{tabular\*?\}", re.DOTALL)
 #: Commands that affect only appearance, and their arguments where they carry none.
 _COSMETIC = re.compile(
     r"\\(?:left|right|displaystyle|textstyle|scriptstyle|nonumber|notag|limits|nolimits"
-    r"|!|,|;|:|quad|qquad|thinspace|medspace|negthinspace|ensuremath|mathrm|mathit|mathbf"
+    r"|quad|qquad|thinspace|medspace|negthinspace|ensuremath|mathrm|mathit|mathbf"
     r"|text|mbox|operatorname|big|Big|bigg|Bigg|bigl|bigr|Bigl|Bigr)\b"
 )
+
+#: Spacing commands are punctuation, so a word boundary never follows them and they need their
+#: own pattern: `\,` and `\;` are as cosmetic as `\quad`.
+_SPACING = re.compile(r"\\[,;:!>]")
 _LABELS = re.compile(r"\\(?:label|tag|intertext)\s*\{[^{}]*\}")
 
 
 def normalise(latex: str) -> str:
     """Reduce a formula to its content, discarding everything cosmetic."""
     text = _LABELS.sub("", latex)
+    text = _SPACING.sub("", text)
     text = _COSMETIC.sub("", text)
     # Alignment and line breaks inside an environment are layout, not content.
     text = text.replace("\\\\", " ").replace("&", "")
@@ -66,8 +71,9 @@ def reference_equations(source: str) -> list[str]:
         # An `align` block holds several equations, one per row.
         for row in body.split("\\\\"):
             cleaned = normalise(row)
-            # Anything this short is a fragment, not an equation worth scoring.
-            if len(cleaned) >= 6:
+            # Anything this short is a fragment, not an equation worth scoring. `a=b+c` is a
+            # real equation at five characters, so the floor has to sit below that.
+            if len(cleaned) >= MIN_EQUATION_LENGTH:
                 equations.append(cleaned)
     return equations
 
@@ -95,6 +101,9 @@ class FormulaScore:
 
 #: Below this similarity, two formulae are different formulae rather than a poor reconstruction.
 MATCH_THRESHOLD = 0.5
+
+#: Shortest normalised string still worth calling an equation.
+MIN_EQUATION_LENGTH = 4
 
 
 def compare(source: str, emitted: list[str]) -> FormulaScore:
