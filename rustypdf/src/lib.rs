@@ -20,6 +20,7 @@ pub mod figure;
 pub mod ir;
 pub mod layout;
 pub mod math;
+pub mod refs;
 pub mod table;
 pub mod text;
 
@@ -193,8 +194,96 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     insert_equations(&mut document, equations);
     attach_figures(&backend, &raw, &mut document, options)?;
     crop_uncertain_equations(&backend, &mut document, options)?;
+    extract_bibliography(&mut document);
 
     Ok(document)
+}
+
+/// Turns the bibliography into structured entries and links the citations that point at them.
+fn extract_bibliography(document: &mut doc::Document) {
+    // Either a heading of its own, or a body-size heading that assembly merged into the first
+    // entry — both happen across the corpus.
+    let mut start = None;
+    let mut strip = 0usize;
+    for (i, block) in document.blocks.iter().enumerate() {
+        if matches!(block.kind, doc::BlockKind::Heading { .. })
+            && refs::is_bibliography_heading(&block.text)
+        {
+            start = Some(i + 1);
+            break;
+        }
+        if block.kind == doc::BlockKind::Paragraph {
+            // A heading set at body size is a paragraph as far as classification is concerned,
+            // whether it stands alone or was merged into the first entry.
+            if refs::is_bibliography_heading(&block.text) {
+                start = Some(i + 1);
+                break;
+            }
+            if let Some(offset) = refs::opens_bibliography(&block.text) {
+                start = Some(i);
+                strip = offset;
+                break;
+            }
+        }
+    }
+    let Some(first) = start else {
+        return;
+    };
+
+    // The bibliography runs to the next heading — papers put appendices after it.
+    let end = document.blocks[first..]
+        .iter()
+        .skip(1)
+        .position(|b| matches!(b.kind, doc::BlockKind::Heading { .. }))
+        .map(|i| first + 1 + i)
+        .unwrap_or(document.blocks.len());
+
+    let mut entries: Vec<doc::Block> = Vec::new();
+    for (n, block) in document.blocks[first..end].iter().enumerate() {
+        if block.kind != doc::BlockKind::Paragraph {
+            entries.push(block.clone());
+            continue;
+        }
+        let body = if n == 0 {
+            &block.text[strip..]
+        } else {
+            &block.text
+        };
+        for text in refs::split_entries(body) {
+            let parsed = refs::parse(&text);
+            entries.push(doc::Block {
+                kind: doc::BlockKind::Reference,
+                text,
+                page: block.page,
+                bbox: block.bbox,
+                size: block.size,
+                asset: None,
+                table: None,
+                math: None,
+                reference: Some(parsed),
+            });
+        }
+    }
+
+    document.blocks.splice(first..end, entries);
+
+    // Link citations only once the labels are known.
+    let labels: Vec<String> = document
+        .blocks
+        .iter()
+        .filter_map(|b| b.reference.as_ref()?.label.clone())
+        .collect();
+    if labels.is_empty() {
+        return;
+    }
+    for block in &mut document.blocks {
+        if matches!(
+            block.kind,
+            doc::BlockKind::Paragraph | doc::BlockKind::ListItem { .. } | doc::BlockKind::Caption
+        ) {
+            block.text = refs::link_citations(&block.text, &labels);
+        }
+    }
 }
 
 /// The horizontal extent of a page's text, used as the column a display equation is centred in.
@@ -269,6 +358,7 @@ fn insert_equations(
             asset: None,
             table: None,
             math: Some(math),
+            reference: None,
         };
         let at = document
             .blocks
@@ -334,6 +424,7 @@ fn insert_tables(document: &mut doc::Document, tables: Vec<(usize, ir::Rect, doc
             asset: None,
             table: Some(data),
             math: None,
+            reference: None,
         };
         let at = document
             .blocks
@@ -465,6 +556,7 @@ fn insert_figure(document: &mut doc::Document, page: usize, bbox: ir::Rect, asse
         asset,
         table: None,
         math: None,
+        reference: None,
     };
     let at = document
         .blocks

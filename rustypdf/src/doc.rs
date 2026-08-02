@@ -72,6 +72,8 @@ pub enum BlockKind {
     Table,
     /// A display equation; the LaTeX lives in [`Block::math`].
     Equation,
+    /// One bibliography entry; the parsed fields live in [`Block::reference`].
+    Reference,
 }
 
 /// A reconstructed display equation.
@@ -112,6 +114,9 @@ pub struct Block {
     /// LaTeX, for [`BlockKind::Equation`].
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub math: Option<MathData>,
+    /// Parsed fields, for [`BlockKind::Reference`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub reference: Option<crate::refs::Reference>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -238,6 +243,7 @@ fn build_block(
         asset: None,
         table: None,
         math: None,
+        reference: None,
     })
 }
 

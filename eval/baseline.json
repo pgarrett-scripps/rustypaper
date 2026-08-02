@@ -10,14 +10,15 @@
         "footnote": 37,
         "heading": 19,
         "list_item": 16,
-        "paragraph": 165,
+        "paragraph": 147,
+        "reference": 18,
         "table": 6,
         "title": 1
       },
       "coverage": 0.9236,
       "output_words": 10421,
       "reference_words": 7305,
-      "seconds": 0.269,
+      "seconds": 0.264,
       "similarity": 0.6924
     },
     "resnet.pdf": {
@@ -29,15 +30,16 @@
         "figure": 6,
         "footnote": 10,
         "heading": 18,
-        "paragraph": 133,
+        "paragraph": 131,
+        "reference": 50,
         "table": 7,
         "title": 1
       },
       "coverage": 0.9697,
-      "output_words": 10220,
+      "output_words": 10760,
       "reference_words": 6021,
-      "seconds": 0.244,
-      "similarity": 0.6718
+      "seconds": 0.239,
+      "similarity": 0.6501
     },
     "transformer.pdf": {
       "arxiv_id": "1706.03762v7",
@@ -49,15 +51,16 @@
         "footnote": 4,
         "heading": 27,
         "list_item": 3,
-        "paragraph": 126,
+        "paragraph": 85,
+        "reference": 41,
         "table": 4,
         "title": 1
       },
       "coverage": 0.9239,
-      "output_words": 6248,
+      "output_words": 6564,
       "reference_words": 4369,
-      "seconds": 0.286,
-      "similarity": 0.7066
+      "seconds": 0.277,
+      "similarity": 0.6864
     }
   },
   "scorer": "difflib",
@@ -70,13 +73,14 @@
         "figure": 4,
         "footnote": 16,
         "heading": 19,
-        "paragraph": 215,
+        "paragraph": 196,
+        "reference": 19,
         "table": 3,
         "title": 1
       },
       "output_words": 8158,
       "reason": "arXiv source carries no LaTeX prose",
-      "seconds": 0.189
+      "seconds": 0.182
     }
   }
 }

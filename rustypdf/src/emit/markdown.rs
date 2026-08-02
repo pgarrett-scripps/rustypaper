@@ -85,6 +85,13 @@ fn render_block(out: &mut String, block: &Block) {
             }
             (None, None) => out.push_str(&escape(&block.text)),
         },
+        BlockKind::Reference => {
+            // An anchor so that inline citations can point at the entry.
+            if let Some(label) = block.reference.as_ref().and_then(|r| r.label.as_deref()) {
+                out.push_str(&format!("<a id=\"ref-{label}\"></a>"));
+            }
+            out.push_str(&escape(&block.text));
+        }
         BlockKind::Table => match &block.table {
             Some(data) => render_table(out, data),
             None => out.push_str("*[table]*"),
@@ -212,6 +219,7 @@ mod tests {
             asset: None,
             table: None,
             math: None,
+            reference: None,
         }
     }
 

@@ -655,3 +655,82 @@ fn no_degenerate_latex_is_emitted() {
         }
     }
 }
+
+/// The bibliography becomes structured entries, not a wall of text.
+#[test]
+fn references_are_parsed() {
+    let path = paper!("resnet.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+
+    let refs: Vec<&rustypdf::refs::Reference> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| b.reference.as_ref())
+        .collect();
+
+    assert!(refs.len() >= 40, "expected ~50 entries, got {}", refs.len());
+
+    // The pattern-bound fields are the ones that must be reliable.
+    let years = refs.iter().filter(|r| r.year.is_some()).count();
+    assert!(
+        years * 10 >= refs.len() * 9,
+        "only {years}/{} have a year",
+        refs.len()
+    );
+    assert!(refs
+        .iter()
+        .all(|r| r.year.is_none_or(|y| (1900..=2030).contains(&y))));
+
+    let arxiv = refs.iter().filter(|r| r.arxiv.is_some()).count();
+    assert!(arxiv >= 5, "expected arXiv identifiers, found {arxiv}");
+
+    // Initials must not be mistaken for the end of the author list.
+    let authors = refs.iter().filter(|r| r.authors.len() >= 2).count();
+    assert!(
+        authors * 2 >= refs.len(),
+        "only {authors} entries parsed an author list"
+    );
+    assert!(
+        refs.iter().flat_map(|r| &r.authors).all(|a| a.len() > 1),
+        "a single-letter 'author' means initials were treated as a sentence break"
+    );
+}
+
+/// Every paper's bibliography must be found, whatever shape its heading takes.
+#[test]
+fn every_paper_yields_references() {
+    for name in ["resnet.pdf", "bert.pdf", "transformer.pdf", "adam.pdf"] {
+        let path = paper!(name);
+        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let count = doc.blocks.iter().filter(|b| b.reference.is_some()).count();
+        assert!(count > 0, "{name}: no bibliography found");
+    }
+}
+
+/// Numeric citations link to the entries they name.
+#[test]
+fn citations_link_to_their_entries() {
+    let path = paper!("resnet.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let md = rustypdf::emit::markdown::render(&doc);
+
+    assert!(md.contains("(#ref-"), "no citation links were emitted");
+    assert!(md.contains("<a id=\"ref-"), "no anchors were emitted");
+
+    // Every link must have a matching anchor, or the document has dangling references.
+    let labels: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| b.reference.as_ref()?.label.clone())
+        .collect();
+    let mut rest = md.as_str();
+    while let Some(i) = rest.find("](#ref-") {
+        rest = &rest[i + 7..];
+        let end = rest.find(')').unwrap_or(0);
+        let label = &rest[..end];
+        assert!(
+            labels.iter().any(|l| l == label),
+            "dangling citation [{label}]"
+        );
+    }
+}
