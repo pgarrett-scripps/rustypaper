@@ -18,6 +18,7 @@ pub mod emit;
 pub mod error;
 pub mod figure;
 pub mod ir;
+pub mod table;
 pub mod layout;
 pub mod text;
 
@@ -119,10 +120,63 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     // `ing` are one word is usually `learning` written out on some other page entirely.
     let vocab = text::vocab::Vocabulary::build(&ordered);
 
-    let mut document = doc::assemble(&ordered, &heights, stats, &vocab);
+    // Tables are lifted out before assembly so that their cells never become paragraphs. What
+    // is left on each page is prose.
+    let mut tables: Vec<(usize, ir::Rect, doc::TableData)> = Vec::new();
+    let mut prose: Vec<Vec<text::lines::Line>> = Vec::with_capacity(ordered.len());
+
+    for (page, lines) in raw.pages.iter().zip(ordered) {
+        let found = table::detect(page, &lines, stats.body_size);
+        let mut consumed = vec![false; lines.len()];
+        for table in &found {
+            for &i in &table.consumed {
+                consumed[i] = true;
+            }
+            tables.push((
+                page.index,
+                table.bbox,
+                doc::TableData {
+                    rows: table.rows.clone(),
+                    header_rows: table.header_rows,
+                },
+            ));
+        }
+        prose.push(
+            lines
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| !consumed[*i])
+                .map(|(_, line)| line)
+                .collect(),
+        );
+    }
+
+    let mut document = doc::assemble(&prose, &heights, stats, &vocab);
+    insert_tables(&mut document, tables);
     attach_figures(&backend, &raw, &mut document, options)?;
 
     Ok(document)
+}
+
+/// Places reconstructed tables into the document at their position in reading order.
+fn insert_tables(document: &mut doc::Document, tables: Vec<(usize, ir::Rect, doc::TableData)>) {
+    for (page, bbox, data) in tables {
+        let block = doc::Block {
+            kind: doc::BlockKind::Table,
+            text: String::new(),
+            page,
+            bbox,
+            size: 0.0,
+            asset: None,
+            table: Some(data),
+        };
+        let at = document
+            .blocks
+            .iter()
+            .position(|b| b.page > page || (b.page == page && b.bbox.y0 > bbox.y1))
+            .unwrap_or(document.blocks.len());
+        document.blocks.insert(at, block);
+    }
 }
 
 /// Binds detected figure regions to their captions, optionally rasterising them.
@@ -245,6 +299,7 @@ fn insert_figure(document: &mut doc::Document, page: usize, bbox: ir::Rect, asse
         bbox,
         size: 0.0,
         asset,
+        table: None,
     };
     let at = document
         .blocks

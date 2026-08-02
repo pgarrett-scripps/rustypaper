@@ -65,9 +65,72 @@ fn render_block(out: &mut String, block: &Block) {
             out.push_str("> ");
             out.push_str(&escape(&block.text));
         }
+        BlockKind::Table => match &block.table {
+            Some(data) => render_table(out, data),
+            None => out.push_str("*[table]*"),
+        },
         BlockKind::Paragraph => out.push_str(&escape(&block.text)),
     }
     out.push_str("\n\n");
+}
+
+/// Renders a table as GitHub-flavoured Markdown.
+///
+/// GFM requires a header row, so a table without one gets an empty header. Multi-row headers are
+/// flattened into a single row: GFM has no way to express them, and losing the distinction reads
+/// better than emitting the second header row as data.
+fn render_table(out: &mut String, data: &crate::doc::TableData) {
+    let columns = data.rows.iter().map(Vec::len).max().unwrap_or(0);
+    if columns == 0 {
+        return;
+    }
+
+    let header = flatten_header(data, columns);
+    write_row(out, &header);
+    out.push('|');
+    for _ in 0..columns {
+        out.push_str(" --- |");
+    }
+    out.push('\n');
+
+    for row in data.rows.iter().skip(data.header_rows.max(1).min(data.rows.len())) {
+        let mut cells: Vec<String> = row.iter().map(|c| cell(c)).collect();
+        cells.resize(columns, String::new());
+        write_row(out, &cells);
+    }
+    // The trailing blank line is added by the caller.
+    out.pop();
+}
+
+fn flatten_header(data: &crate::doc::TableData, columns: usize) -> Vec<String> {
+    let mut header = vec![String::new(); columns];
+    for row in data.rows.iter().take(data.header_rows) {
+        for (i, text) in row.iter().enumerate().take(columns) {
+            if text.is_empty() {
+                continue;
+            }
+            if !header[i].is_empty() {
+                header[i].push(' ');
+            }
+            header[i].push_str(&cell(text));
+        }
+    }
+    header
+}
+
+fn write_row(out: &mut String, cells: &[String]) {
+    out.push('|');
+    for text in cells {
+        out.push(' ');
+        out.push_str(text);
+        out.push_str(" |");
+    }
+    out.push('\n');
+}
+
+/// A pipe inside a cell would end the cell, so it has to be escaped.
+fn cell(text: &str) -> String {
+    text.replace('|', "\\|").trim().to_owned()
 }
 
 /// Removes a leading list marker, which the emitter re-adds in Markdown's own form.
@@ -123,6 +186,7 @@ mod tests {
             bbox: Rect::from_corners(0.0, 0.0, 1.0, 1.0),
             size: 10.0,
             asset: None,
+            table: None,
         }
     }
 
@@ -194,6 +258,56 @@ mod tests {
             blocks: vec![block(BlockKind::Footnote, "1 Work done while at X.")],
         };
         assert_eq!(render(&doc), "> 1 Work done while at X.\n");
+    }
+
+    #[test]
+    fn tables_render_as_gfm() {
+        let mut b = block(BlockKind::Table, "");
+        b.table = Some(crate::doc::TableData {
+            rows: vec![
+                vec!["Model".into(), "BLEU".into()],
+                vec!["ByteNet".into(), "23.75".into()],
+                vec!["GNMT".into(), "24.61".into()],
+            ],
+            header_rows: 1,
+        });
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert_eq!(
+            render(&doc),
+            "| Model | BLEU |\n| --- | --- |\n| ByteNet | 23.75 |\n| GNMT | 24.61 |\n"
+        );
+    }
+
+    #[test]
+    fn a_table_without_a_header_gets_an_empty_one() {
+        let mut b = block(BlockKind::Table, "");
+        b.table = Some(crate::doc::TableData {
+            rows: vec![vec!["a".into(), "b".into()], vec!["c".into(), "d".into()]],
+            header_rows: 0,
+        });
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        // GFM needs a header row even when the table has none.
+        assert!(render(&doc).starts_with("|  |  |\n| --- | --- |\n"));
+    }
+
+    #[test]
+    fn pipes_inside_cells_are_escaped() {
+        let mut b = block(BlockKind::Table, "");
+        b.table = Some(crate::doc::TableData {
+            rows: vec![vec!["a|b".into(), "c".into()]],
+            header_rows: 1,
+        });
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert!(render(&doc).contains("a\\|b"));
     }
 
     #[test]

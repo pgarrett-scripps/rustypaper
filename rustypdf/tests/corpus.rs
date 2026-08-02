@@ -410,7 +410,7 @@ fn figure_regions_stay_within_the_page() {
                     region.bbox
                 );
                 let share = region.bbox.width() * region.bbox.height() / page_area;
-                assert!(share <= 0.85, "{name} page {}: region covers {share:.0%}", page.index);
+                assert!(share <= 0.85, "{name} page {}: region covers {:.0}% of it", page.index, share * 100.0);
             }
         }
     }
@@ -463,4 +463,85 @@ fn lists_and_footnotes_are_classified() {
         .filter(|b| b.kind == rustypdf::doc::BlockKind::Footnote)
         .count();
     assert!(footnotes >= 5, "expected footnotes, got {footnotes}");
+}
+
+/// Tables are reconstructed as tables rather than left as loose text.
+#[test]
+fn tables_are_reconstructed() {
+    let path = paper!("transformer.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+
+    let tables: Vec<&rustypdf::doc::TableData> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| b.table.as_ref())
+        .collect();
+    assert!(tables.len() >= 3, "expected several tables, got {}", tables.len());
+
+    // Table 1 compares layer types; its shape and contents are unambiguous.
+    let layers = tables
+        .iter()
+        .find(|t| t.rows.iter().flatten().any(|c| c.contains("Self-Attention")))
+        .expect("the layer-type table was not found");
+    // Its header is two lines deep: `Sequential` / `Operations` wraps. The emitter flattens
+    // that into one GFM header row, which is the only shape GFM can express.
+    assert_eq!(layers.header_rows, 2);
+    assert!(layers.rows[0].iter().any(|c| c.contains("Layer Type")));
+    assert!(
+        layers.rows.iter().any(|r| r[0].starts_with("Recurrent")),
+        "row labels were lost"
+    );
+    // Every row must have the same number of cells for the emitter to be able to render it.
+    let width = layers.rows[0].len();
+    assert!(width >= 3);
+    assert!(layers.rows.iter().all(|r| r.len() == width), "ragged rows");
+
+    let md = rustypdf::emit::markdown::render(&doc);
+    assert!(
+        md.contains("| Sequential Operations |"),
+        "the wrapped header was not flattened into one row"
+    );
+}
+
+/// Table cells must not also appear as paragraphs.
+#[test]
+fn table_content_is_removed_from_the_prose() {
+    let path = paper!("transformer.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+
+    let prose: String = doc
+        .blocks
+        .iter()
+        .filter(|b| b.kind == rustypdf::doc::BlockKind::Paragraph)
+        .map(|b| b.text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    assert!(
+        !prose.contains("Maximum Path Length"),
+        "a table heading leaked into the prose"
+    );
+}
+
+/// GFM tables must be well formed: every row the same width as the separator.
+#[test]
+fn emitted_tables_are_well_formed_gfm() {
+    for name in ["transformer.pdf", "resnet.pdf", "bert.pdf"] {
+        let path = paper!(name);
+        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let md = rustypdf::emit::markdown::render(&doc);
+
+        let mut expected: Option<usize> = None;
+        for line in md.lines() {
+            if !line.starts_with('|') {
+                expected = None;
+                continue;
+            }
+            let width = line.matches('|').count();
+            match expected {
+                None => expected = Some(width),
+                Some(w) => assert_eq!(w, width, "{name}: ragged table row {line:?}"),
+            }
+        }
+    }
 }

@@ -68,6 +68,17 @@ pub enum BlockKind {
     },
     /// Set small at the foot of a page, below the body.
     Footnote,
+    /// A reconstructed table; the cells live in [`Block::table`].
+    Table,
+}
+
+/// A table's contents, flattened for emission.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableData {
+    /// Cell text, row-major.
+    pub rows: Vec<Vec<String>>,
+    /// How many leading rows are header rows.
+    pub header_rows: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +93,9 @@ pub struct Block {
     /// Relative path to an extracted graphic, for [`BlockKind::Figure`].
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub asset: Option<String>,
+    /// Cells, for [`BlockKind::Table`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub table: Option<TableData>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -206,6 +220,7 @@ fn build_block(
         bbox,
         size,
         asset: None,
+        table: None,
     })
 }
 
