@@ -78,6 +78,10 @@ enum Command {
         /// Resolution to rasterise figures at.
         #[arg(long, default_value_t = 150.0)]
         figure_dpi: f32,
+        /// Strip articles, copulas and stock academic phrases from the prose, for feeding to a
+        /// model that charges by the token. Maths, tables and citations are left alone.
+        #[arg(long)]
+        caveman: bool,
     },
     /// Print reconstructed lines, one per output line. Reading order is not applied yet.
     Text {
@@ -102,7 +106,8 @@ fn main() -> Result<()> {
             out: dest,
             assets,
             figure_dpi,
-        } => convert(&mut out, pdf, format, dest, assets, figure_dpi),
+            caveman,
+        } => convert(&mut out, pdf, format, dest, assets, figure_dpi, caveman),
         Command::Probe { pdf, pages } => probe(&mut out, pdf, pages),
         Command::Text {
             pdf,
@@ -284,6 +289,7 @@ fn convert(
     dest: Option<PathBuf>,
     assets: Option<PathBuf>,
     figure_dpi: f32,
+    caveman: bool,
 ) -> Result<()> {
     let batch = pdfs.len() > 1;
     if batch && dest.is_none() {
@@ -314,7 +320,11 @@ fn convert(
             }
         });
 
-        let options = rustypdf::Options { assets, figure_dpi };
+        let options = rustypdf::Options {
+            assets,
+            figure_dpi,
+            caveman,
+        };
         let doc = match rustypdf::convert_with(pdf, &options) {
             Ok(doc) => doc,
             // One unreadable file must not abandon the rest of a batch.

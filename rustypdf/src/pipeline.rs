@@ -22,6 +22,8 @@ pub struct Options {
     pub assets: Option<std::path::PathBuf>,
     /// Resolution to rasterise figures at.
     pub figure_dpi: f32,
+    /// Strip grammatical scaffolding from prose — see [`crate::compress`].
+    pub caveman: bool,
 }
 
 impl Default for Options {
@@ -29,6 +31,7 @@ impl Default for Options {
         Self {
             assets: None,
             figure_dpi: 150.0,
+            caveman: false,
         }
     }
 }
@@ -108,6 +111,11 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     attach_figures(&backend, &raw, &mut document, options)?;
     crop_uncertain_equations(&backend, &mut document, options)?;
     extract_bibliography(&mut document);
+
+    // Last, so that every structural pass has seen the prose as written.
+    if options.caveman {
+        crate::compress::compress(&mut document);
+    }
 
     Ok(document)
 }
