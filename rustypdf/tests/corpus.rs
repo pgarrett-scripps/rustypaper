@@ -384,11 +384,13 @@ fn figures_are_detected_and_captioned() {
         .filter(|b| b.kind == rustypdf::doc::BlockKind::Figure)
         .collect();
 
-    assert!(figures.len() >= 4, "expected several figures, got {}", figures.len());
     assert!(
-        figures
-            .iter()
-            .any(|f| f.text.starts_with("Figure 1")),
+        figures.len() >= 4,
+        "expected several figures, got {}",
+        figures.len()
+    );
+    assert!(
+        figures.iter().any(|f| f.text.starts_with("Figure 1")),
         "Figure 1's caption was not bound to its graphic"
     );
 }
@@ -410,7 +412,12 @@ fn figure_regions_stay_within_the_page() {
                     region.bbox
                 );
                 let share = region.bbox.width() * region.bbox.height() / page_area;
-                assert!(share <= 0.85, "{name} page {}: region covers {:.0}% of it", page.index, share * 100.0);
+                assert!(
+                    share <= 0.85,
+                    "{name} page {}: region covers {:.0}% of it",
+                    page.index,
+                    share * 100.0
+                );
             }
         }
     }
@@ -455,7 +462,10 @@ fn lists_and_footnotes_are_classified() {
         .iter()
         .filter(|b| matches!(b.kind, rustypdf::doc::BlockKind::ListItem { .. }))
         .count();
-    assert!(lists >= 3, "expected BERT's contribution bullets, got {lists}");
+    assert!(
+        lists >= 3,
+        "expected BERT's contribution bullets, got {lists}"
+    );
 
     let footnotes = doc
         .blocks
@@ -471,17 +481,23 @@ fn tables_are_reconstructed() {
     let path = paper!("transformer.pdf");
     let doc = rustypdf::convert(&path).expect("conversion failed");
 
-    let tables: Vec<&rustypdf::doc::TableData> = doc
-        .blocks
-        .iter()
-        .filter_map(|b| b.table.as_ref())
-        .collect();
-    assert!(tables.len() >= 3, "expected several tables, got {}", tables.len());
+    let tables: Vec<&rustypdf::doc::TableData> =
+        doc.blocks.iter().filter_map(|b| b.table.as_ref()).collect();
+    assert!(
+        tables.len() >= 3,
+        "expected several tables, got {}",
+        tables.len()
+    );
 
     // Table 1 compares layer types; its shape and contents are unambiguous.
     let layers = tables
         .iter()
-        .find(|t| t.rows.iter().flatten().any(|c| c.contains("Self-Attention")))
+        .find(|t| {
+            t.rows
+                .iter()
+                .flatten()
+                .any(|c| c.contains("Self-Attention"))
+        })
         .expect("the layer-type table was not found");
     // Its header is two lines deep: `Sequential` / `Operations` wraps. The emitter flattens
     // that into one GFM header row, which is the only shape GFM can express.
@@ -542,6 +558,100 @@ fn emitted_tables_are_well_formed_gfm() {
                 None => expected = Some(width),
                 Some(w) => assert_eq!(w, width, "{name}: ragged table row {line:?}"),
             }
+        }
+    }
+}
+
+/// Display equations are reconstructed as LaTeX rather than left as scrambled characters.
+#[test]
+fn display_equations_are_reconstructed() {
+    let path = paper!("adam.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+
+    let equations: Vec<&rustypdf::doc::MathData> = doc
+        .blocks
+        .iter()
+        .filter(|b| b.kind == rustypdf::doc::BlockKind::Equation)
+        .filter_map(|b| b.math.as_ref())
+        .collect();
+
+    assert!(
+        (5..120).contains(&equations.len()),
+        "expected tens of equations, got {} — detection has drifted",
+        equations.len()
+    );
+
+    let latex: String = equations
+        .iter()
+        .map(|m| m.latex.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // Greek, scripts and operators are the constructs the geometric pass exists to recover.
+    assert!(latex.contains(r"\beta"), "Greek was not named");
+    assert!(
+        latex.contains('^') || latex.contains('_'),
+        "no scripts recovered"
+    );
+
+    // Numbered equations keep their number.
+    assert!(
+        equations.iter().any(|m| m.number.is_some()),
+        "no equation numbers were found"
+    );
+
+    // Confidence must be a real signal, not a constant.
+    assert!(equations
+        .iter()
+        .all(|m| (0.0..=1.0).contains(&m.confidence)));
+}
+
+/// Inline mathematics must stay inside the formula, not swallow the sentence around it.
+#[test]
+fn inline_maths_does_not_swallow_prose() {
+    let path = paper!("adam.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+
+    // Length is not the measure — a real formula can be long. What must not happen is English
+    // getting pulled in, which is what an unbounded span looks like.
+    let mut worst: (usize, String) = (0, String::new());
+    for block in &doc.blocks {
+        let mut rest = block.text.as_str();
+        while let Some(open) = rest.find('$') {
+            rest = &rest[open + 1..];
+            let Some(close) = rest.find('$') else { break };
+            let span = &rest[..close];
+            let prose = span
+                .split_whitespace()
+                .filter(|w| {
+                    !w.starts_with('\\')
+                        && w.chars().count() >= 4
+                        && w.chars().all(char::is_alphabetic)
+                })
+                .count();
+            if prose > worst.0 {
+                worst = (prose, span.to_owned());
+            }
+            rest = &rest[close + 1..];
+        }
+    }
+    assert!(
+        worst.0 < 3,
+        "an inline formula swallowed {} English words: {:?}",
+        worst.0,
+        worst.1
+    );
+}
+
+/// Reconstruction never emits an empty construct: `\sqrt{}` is worse than the bare symbol.
+#[test]
+fn no_degenerate_latex_is_emitted() {
+    for name in ["adam.pdf", "transformer.pdf", "resnet.pdf", "bert.pdf"] {
+        let path = paper!(name);
+        let doc = rustypdf::convert(&path).expect("conversion failed");
+        let md = rustypdf::emit::markdown::render(&doc);
+        for bad in [r"\sqrt{}", r"\frac{}{}", "^{}", "_{}"] {
+            assert!(!md.contains(bad), "{name} emitted {bad}");
         }
     }
 }

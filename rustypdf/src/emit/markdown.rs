@@ -65,6 +65,26 @@ fn render_block(out: &mut String, block: &Block) {
             out.push_str("> ");
             out.push_str(&escape(&block.text));
         }
+        BlockKind::Equation => match (&block.math, &block.asset) {
+            // A reconstruction the pass was not sure of is shown as a picture rather than as
+            // LaTeX that looks authoritative and is wrong.
+            (_, Some(path)) => {
+                out.push_str("![equation](");
+                out.push_str(path);
+                out.push(')');
+            }
+            (Some(math), None) => {
+                out.push_str("$$\n");
+                out.push_str(&math.latex);
+                if let Some(number) = &math.number {
+                    out.push_str(" \\tag{");
+                    out.push_str(number);
+                    out.push('}');
+                }
+                out.push_str("\n$$");
+            }
+            (None, None) => out.push_str(&escape(&block.text)),
+        },
         BlockKind::Table => match &block.table {
             Some(data) => render_table(out, data),
             None => out.push_str("*[table]*"),
@@ -93,7 +113,11 @@ fn render_table(out: &mut String, data: &crate::doc::TableData) {
     }
     out.push('\n');
 
-    for row in data.rows.iter().skip(data.header_rows.max(1).min(data.rows.len())) {
+    for row in data
+        .rows
+        .iter()
+        .skip(data.header_rows.max(1).min(data.rows.len()))
+    {
         let mut cells: Vec<String> = row.iter().map(|c| cell(c)).collect();
         cells.resize(columns, String::new());
         write_row(out, &cells);
@@ -187,6 +211,7 @@ mod tests {
             size: 10.0,
             asset: None,
             table: None,
+            math: None,
         }
     }
 
@@ -258,6 +283,53 @@ mod tests {
             blocks: vec![block(BlockKind::Footnote, "1 Work done while at X.")],
         };
         assert_eq!(render(&doc), "> 1 Work done while at X.\n");
+    }
+
+    #[test]
+    fn display_equations_render_as_latex() {
+        let mut b = block(BlockKind::Equation, "");
+        b.math = Some(crate::doc::MathData {
+            latex: r"E=mc^2".into(),
+            number: None,
+            confidence: 1.0,
+        });
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert_eq!(render(&doc), "$$\nE=mc^2\n$$\n");
+    }
+
+    #[test]
+    fn a_numbered_equation_carries_its_tag() {
+        let mut b = block(BlockKind::Equation, "");
+        b.math = Some(crate::doc::MathData {
+            latex: "a=b".into(),
+            number: Some("3".into()),
+            confidence: 1.0,
+        });
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert!(render(&doc).contains(r"a=b \tag{3}"));
+    }
+
+    /// An uncertain reconstruction is shown, not asserted.
+    #[test]
+    fn a_low_confidence_equation_falls_back_to_a_picture() {
+        let mut b = block(BlockKind::Equation, "");
+        b.math = Some(crate::doc::MathData {
+            latex: "garbled".into(),
+            number: None,
+            confidence: 0.2,
+        });
+        b.asset = Some("assets/equation-004.png".into());
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert_eq!(render(&doc), "![equation](assets/equation-004.png)\n");
     }
 
     #[test]

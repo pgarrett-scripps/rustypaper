@@ -18,8 +18,9 @@ pub mod emit;
 pub mod error;
 pub mod figure;
 pub mod ir;
-pub mod table;
 pub mod layout;
+pub mod math;
+pub mod table;
 pub mod text;
 
 pub use error::{Error, Result};
@@ -116,10 +117,6 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
         .map(layout::order::reading_order)
         .collect();
 
-    // The vocabulary is built from the whole document, because the evidence that `learn` and
-    // `ing` are one word is usually `learning` written out on some other page entirely.
-    let vocab = text::vocab::Vocabulary::build(&ordered);
-
     // Tables are lifted out before assembly so that their cells never become paragraphs. What
     // is left on each page is prose.
     let mut tables: Vec<(usize, ir::Rect, doc::TableData)> = Vec::new();
@@ -151,11 +148,178 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
         );
     }
 
+    // Mathematics is resolved before assembly: display equations are lifted out as their own
+    // blocks, and inline formulae are folded into the words of the lines that carry them, so
+    // that everything downstream sees `$x^2$` as a single word.
+    let mut equations: Vec<(usize, ir::Rect, doc::MathData)> = Vec::new();
+    let mut prose = prose;
+
+    for (page, lines) in raw.pages.iter().zip(prose.iter_mut()) {
+        let column = text_extent(lines);
+        let mut is_display = vec![false; lines.len()];
+
+        for i in 0..lines.len() {
+            if let Some(found) = math::display(page, &raw.fonts, lines, i, column) {
+                let latex = math::latex::render(&found.formula.root);
+                if latex.trim().is_empty() {
+                    continue;
+                }
+                is_display[i] = true;
+                equations.push((
+                    page.index,
+                    lines[i].bbox,
+                    doc::MathData {
+                        latex,
+                        number: found.number,
+                        confidence: found.formula.confidence,
+                    },
+                ));
+            }
+        }
+
+        for i in 0..lines.len() {
+            if !is_display[i] {
+                apply_inline_math(page, &raw.fonts, lines, i);
+            }
+        }
+
+        let mut keep = is_display.iter().map(|d| !d);
+        lines.retain(|_| keep.next().unwrap_or(true));
+    }
+
+    let vocab = text::vocab::Vocabulary::build(&prose);
     let mut document = doc::assemble(&prose, &heights, stats, &vocab);
     insert_tables(&mut document, tables);
+    insert_equations(&mut document, equations);
     attach_figures(&backend, &raw, &mut document, options)?;
+    crop_uncertain_equations(&backend, &mut document, options)?;
 
     Ok(document)
+}
+
+/// The horizontal extent of a page's text, used as the column a display equation is centred in.
+fn text_extent(lines: &[text::lines::Line]) -> ir::Rect {
+    lines
+        .iter()
+        .map(|l| l.bbox)
+        .reduce(|a, b| a.union(&b))
+        .unwrap_or(ir::Rect::from_corners(0.0, 0.0, 0.0, 0.0))
+}
+
+/// Replaces the words covered by an inline formula with a single `$...$` word.
+///
+/// Rewriting words rather than the finished text means every later pass — paragraph assembly,
+/// the vocabulary, table cells — sees the formula as one indivisible token, which is what it is.
+fn apply_inline_math(
+    page: &ir::PageRaw,
+    fonts: &ir::FontTable,
+    lines: &mut [text::lines::Line],
+    index: usize,
+) {
+    let spans = math::spans(page, fonts, lines, index);
+    if spans.is_empty() {
+        return;
+    }
+
+    let line = &mut lines[index];
+    let mut rebuilt: Vec<text::lines::Word> = Vec::with_capacity(line.words.len());
+
+    for word in &line.words {
+        // A word belongs to a span when its glyphs fall inside it.
+        let covering = spans
+            .iter()
+            .find(|s| word.start >= s.start && word.end <= s.end);
+        match covering {
+            Some(span) => {
+                // Emit the formula once, at its first word.
+                if rebuilt.last().is_some_and(|w| w.start >= span.start) {
+                    continue;
+                }
+                let latex = math::latex::render(&span.formula.root);
+                if latex.trim().is_empty() {
+                    rebuilt.push(word.clone());
+                    continue;
+                }
+                rebuilt.push(text::lines::Word {
+                    bbox: word.bbox,
+                    text: format!("${latex}$"),
+                    start: span.start,
+                    end: span.end,
+                });
+            }
+            None => rebuilt.push(word.clone()),
+        }
+    }
+
+    line.words = rebuilt;
+}
+
+/// Places display equations into the document at their position in reading order.
+fn insert_equations(
+    document: &mut doc::Document,
+    equations: Vec<(usize, ir::Rect, doc::MathData)>,
+) {
+    for (page, bbox, math) in equations {
+        let block = doc::Block {
+            kind: doc::BlockKind::Equation,
+            text: String::new(),
+            page,
+            bbox,
+            size: 0.0,
+            asset: None,
+            table: None,
+            math: Some(math),
+        };
+        let at = document
+            .blocks
+            .iter()
+            .position(|b| b.page > page || (b.page == page && b.bbox.y0 > bbox.y1))
+            .unwrap_or(document.blocks.len());
+        document.blocks.insert(at, block);
+    }
+}
+
+/// Renders a picture of any equation the reconstruction was not confident about.
+///
+/// The alternative is emitting LaTeX that looks authoritative and is wrong, which is worse than
+/// an image: a reader can check an image, and a downstream tool will not silently ingest a
+/// mangled formula as fact.
+fn crop_uncertain_equations(
+    backend: &PdfiumBackend,
+    document: &mut doc::Document,
+    options: &Options,
+) -> Result<()> {
+    let Some(dir) = &options.assets else {
+        return Ok(());
+    };
+
+    let mut counter = 0usize;
+    for index in 0..document.blocks.len() {
+        let uncertain = document.blocks[index]
+            .math
+            .as_ref()
+            .is_some_and(|m| m.confidence < math::MIN_CONFIDENCE);
+        if !uncertain {
+            continue;
+        }
+        counter += 1;
+
+        let block = &document.blocks[index];
+        let padded = ir::Rect {
+            x0: block.bbox.x0 - 4.0,
+            y0: block.bbox.y0 - 4.0,
+            x1: block.bbox.x1 + 4.0,
+            y1: block.bbox.y1 + 4.0,
+        };
+        let png = backend.render_region(block.page, padded, options.figure_dpi)?;
+        let name = format!("equation-{counter:03}.png");
+        let file = dir.join(&name);
+        std::fs::write(&file, png).map_err(|source| Error::Io { path: file, source })?;
+
+        let folder = dir.file_name().and_then(|n| n.to_str()).unwrap_or("assets");
+        document.blocks[index].asset = Some(format!("{folder}/{name}"));
+    }
+    Ok(())
 }
 
 /// Places reconstructed tables into the document at their position in reading order.
@@ -169,6 +333,7 @@ fn insert_tables(document: &mut doc::Document, tables: Vec<(usize, ir::Rect, doc
             size: 0.0,
             asset: None,
             table: Some(data),
+            math: None,
         };
         let at = document
             .blocks
@@ -206,13 +371,12 @@ fn attach_figures(
                     let name = format!("figure-{:03}.png", counter);
                     let png = backend.render_region(page.index, region.bbox, options.figure_dpi)?;
                     let file = dir.join(&name);
-                    std::fs::write(&file, png).map_err(|source| Error::Io {
-                        path: file,
-                        source,
-                    })?;
-                    Some(format!("{}/{name}", dir.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("assets")))
+                    std::fs::write(&file, png)
+                        .map_err(|source| Error::Io { path: file, source })?;
+                    Some(format!(
+                        "{}/{name}",
+                        dir.file_name().and_then(|n| n.to_str()).unwrap_or("assets")
+                    ))
                 }
                 None => None,
             };
@@ -257,8 +421,8 @@ fn drop_text_inside_figures(document: &mut doc::Document, regions: &[(usize, ir:
         let area = (block.bbox.width() * block.bbox.height()).max(f32::EPSILON);
         !regions.iter().any(|(page, region)| {
             *page == block.page && {
-                let overlap = region.x_overlap(&block.bbox).max(0.0)
-                    * region.y_overlap(&block.bbox).max(0.0);
+                let overlap =
+                    region.x_overlap(&block.bbox).max(0.0) * region.y_overlap(&block.bbox).max(0.0);
                 overlap / area >= MIN_CONTAINED
             }
         })
@@ -300,6 +464,7 @@ fn insert_figure(document: &mut doc::Document, page: usize, bbox: ir::Rect, asse
         size: 0.0,
         asset,
         table: None,
+        math: None,
     };
     let at = document
         .blocks

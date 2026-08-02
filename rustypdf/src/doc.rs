@@ -70,6 +70,19 @@ pub enum BlockKind {
     Footnote,
     /// A reconstructed table; the cells live in [`Block::table`].
     Table,
+    /// A display equation; the LaTeX lives in [`Block::math`].
+    Equation,
+}
+
+/// A reconstructed display equation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MathData {
+    pub latex: String,
+    /// The equation number as printed, if there is one.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub number: Option<String>,
+    /// How much to trust the reconstruction; 1.0 when nothing had to be guessed.
+    pub confidence: f32,
 }
 
 /// A table's contents, flattened for emission.
@@ -96,6 +109,9 @@ pub struct Block {
     /// Cells, for [`BlockKind::Table`].
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub table: Option<TableData>,
+    /// LaTeX, for [`BlockKind::Equation`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub math: Option<MathData>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -221,6 +237,7 @@ fn build_block(
         size,
         asset: None,
         table: None,
+        math: None,
     })
 }
 
@@ -231,8 +248,14 @@ fn list_marker(text: &str) -> Option<bool> {
     let mut chars = text.chars();
     let first = chars.next()?;
 
-    if matches!(first, '•' | '◦' | '‣' | '▪' | '·' | '∗' | '*' | '–' | '—' | '-') {
-        return chars.next().is_some_and(char::is_whitespace).then_some(false);
+    if matches!(
+        first,
+        '•' | '◦' | '‣' | '▪' | '·' | '∗' | '*' | '–' | '—' | '-'
+    ) {
+        return chars
+            .next()
+            .is_some_and(char::is_whitespace)
+            .then_some(false);
     }
 
     // `1.` `2)` `(3)` `a.` `iv.`
@@ -410,8 +433,8 @@ fn demote_lonely_list_items(blocks: &mut [Block]) {
         }
         let lo = i.saturating_sub(LIST_SIBLING_RANGE);
         let hi = (i + LIST_SIBLING_RANGE + 1).min(blocks.len());
-        let has_sibling = (lo..hi)
-            .any(|j| j != i && is_item[j] && blocks[j].page == blocks[i].page);
+        let has_sibling =
+            (lo..hi).any(|j| j != i && is_item[j] && blocks[j].page == blocks[i].page);
         if !has_sibling {
             blocks[i].kind = BlockKind::Paragraph;
         }

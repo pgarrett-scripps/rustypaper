@@ -214,8 +214,8 @@ fn probe(out: &mut impl Write, pdf: PathBuf, per_page: bool) -> Result<()> {
                 },
             )?;
             for region in rustypdf::figure::regions(page) {
-                let pct = 100.0 * region.bbox.width() * region.bbox.height()
-                    / (page.width * page.height);
+                let pct =
+                    100.0 * region.bbox.width() * region.bbox.height() / (page.width * page.height);
                 writeln!(
                     out,
                     "         figure {:.0},{:.0}..{:.0},{:.0}  {:.0}% of page  {} images {} paths",
@@ -269,10 +269,7 @@ fn convert(
     assets: Option<PathBuf>,
     figure_dpi: f32,
 ) -> Result<()> {
-    let options = rustypdf::Options {
-        assets,
-        figure_dpi,
-    };
+    let options = rustypdf::Options { assets, figure_dpi };
     let doc = rustypdf::convert_with(&pdf, &options)
         .with_context(|| format!("converting {}", pdf.display()))?;
 

@@ -138,7 +138,10 @@ fn build(rules: &[Rect], lines: &[Line], body_size: f32, used: &mut [bool]) -> O
         .collect();
 
     // A table where every row is one cell is a run of centred text, not a table.
-    if rows.iter().all(|r| r.iter().filter(|c| !c.is_empty()).count() < MIN_COLUMNS) {
+    if rows
+        .iter()
+        .all(|r| r.iter().filter(|c| !c.is_empty()).count() < MIN_COLUMNS)
+    {
         return None;
     }
 
@@ -346,9 +349,30 @@ mod tests {
             rule(170.0, 72.0, 400.0),
         ]);
         let lines = vec![
-            row(115.0, &[("Model", 76.0, 110.0), ("BLEU", 200.0, 232.0), ("Cost", 320.0, 350.0)]),
-            row(140.0, &[("ByteNet", 76.0, 120.0), ("23.75", 200.0, 232.0), ("1.0", 320.0, 340.0)]),
-            row(160.0, &[("GNMT", 76.0, 112.0), ("24.61", 200.0, 232.0), ("2.3", 320.0, 340.0)]),
+            row(
+                115.0,
+                &[
+                    ("Model", 76.0, 110.0),
+                    ("BLEU", 200.0, 232.0),
+                    ("Cost", 320.0, 350.0),
+                ],
+            ),
+            row(
+                140.0,
+                &[
+                    ("ByteNet", 76.0, 120.0),
+                    ("23.75", 200.0, 232.0),
+                    ("1.0", 320.0, 340.0),
+                ],
+            ),
+            row(
+                160.0,
+                &[
+                    ("GNMT", 76.0, 112.0),
+                    ("24.61", 200.0, 232.0),
+                    ("2.3", 320.0, 340.0),
+                ],
+            ),
         ];
         (page, lines)
     }
@@ -441,12 +465,30 @@ mod tests {
         ]);
         let lines = vec![
             row(115.0, &[("Results across all datasets", 76.0, 396.0)]),
-            row(140.0, &[("A", 76.0, 90.0), ("1.0", 200.0, 220.0), ("2.0", 320.0, 340.0)]),
-            row(160.0, &[("B", 76.0, 90.0), ("3.0", 200.0, 220.0), ("4.0", 320.0, 340.0)]),
+            row(
+                140.0,
+                &[
+                    ("A", 76.0, 90.0),
+                    ("1.0", 200.0, 220.0),
+                    ("2.0", 320.0, 340.0),
+                ],
+            ),
+            row(
+                160.0,
+                &[
+                    ("B", 76.0, 90.0),
+                    ("3.0", 200.0, 220.0),
+                    ("4.0", 320.0, 340.0),
+                ],
+            ),
         ];
         let tables = detect(&page, &lines, 10.0);
         assert_eq!(tables.len(), 1);
-        assert_eq!(tables[0].columns(), 3, "the spanning title erased the columns");
+        assert_eq!(
+            tables[0].columns(),
+            3,
+            "the spanning title erased the columns"
+        );
         assert_eq!(tables[0].rows[1], ["A", "1.0", "2.0"]);
     }
 }

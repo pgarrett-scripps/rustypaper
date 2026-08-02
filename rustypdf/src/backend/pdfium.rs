@@ -684,7 +684,11 @@ mod tests {
 
         // Entirely off-page geometry contributes nothing.
         assert_eq!(
-            clip_to_page(Rect::from_corners(-500.0, -500.0, -100.0, -100.0), 595.0, 842.0),
+            clip_to_page(
+                Rect::from_corners(-500.0, -500.0, -100.0, -100.0),
+                595.0,
+                842.0
+            ),
             None
         );
         // Degenerate coordinates must not produce a rect at all.

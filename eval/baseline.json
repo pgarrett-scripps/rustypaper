@@ -3,7 +3,7 @@
   "papers": {
     "bert.pdf": {
       "arxiv_id": "1810.04805v2",
-      "bigram_recall": 0.8721,
+      "bigram_recall": 0.8719,
       "blocks": {
         "caption": 6,
         "figure": 5,
@@ -14,48 +14,50 @@
         "table": 6,
         "title": 1
       },
-      "coverage": 0.9228,
-      "output_words": 10394,
+      "coverage": 0.9236,
+      "output_words": 10421,
       "reference_words": 7305,
-      "seconds": 0.171,
-      "similarity": 0.6931
+      "seconds": 0.269,
+      "similarity": 0.6924
     },
     "resnet.pdf": {
       "arxiv_id": "1512.03385v1",
-      "bigram_recall": 0.9115,
+      "bigram_recall": 0.911,
       "blocks": {
         "caption": 9,
+        "equation": 2,
         "figure": 6,
         "footnote": 10,
         "heading": 18,
-        "paragraph": 135,
+        "paragraph": 133,
         "table": 7,
         "title": 1
       },
       "coverage": 0.9697,
-      "output_words": 10181,
+      "output_words": 10220,
       "reference_words": 6021,
-      "seconds": 0.164,
-      "similarity": 0.6729
+      "seconds": 0.244,
+      "similarity": 0.6718
     },
     "transformer.pdf": {
       "arxiv_id": "1706.03762v7",
-      "bigram_recall": 0.8397,
+      "bigram_recall": 0.8404,
       "blocks": {
         "caption": 5,
+        "equation": 6,
         "figure": 6,
         "footnote": 4,
-        "heading": 30,
+        "heading": 27,
         "list_item": 3,
-        "paragraph": 128,
+        "paragraph": 126,
         "table": 4,
         "title": 1
       },
-      "coverage": 0.9229,
-      "output_words": 6177,
+      "coverage": 0.9239,
+      "output_words": 6248,
       "reference_words": 4369,
-      "seconds": 0.221,
-      "similarity": 0.7102
+      "seconds": 0.286,
+      "similarity": 0.7066
     }
   },
   "scorer": "difflib",
@@ -64,16 +66,17 @@
       "arxiv_id": "1412.6980v9",
       "blocks": {
         "caption": 2,
+        "equation": 44,
         "figure": 4,
-        "footnote": 15,
-        "heading": 27,
-        "paragraph": 220,
+        "footnote": 16,
+        "heading": 19,
+        "paragraph": 215,
         "table": 3,
         "title": 1
       },
-      "output_words": 7211,
+      "output_words": 8158,
       "reason": "arXiv source carries no LaTeX prose",
-      "seconds": 0.127
+      "seconds": 0.189
     }
   }
 }

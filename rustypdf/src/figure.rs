@@ -175,7 +175,11 @@ mod tests {
             paths.push(path(PathKind::Other, x, y, x + 6.0, y + 6.0));
         }
         let found = regions(&page(paths, Vec::new()));
-        assert_eq!(found.len(), 1, "plot marks should form one region: {found:?}");
+        assert_eq!(
+            found.len(),
+            1,
+            "plot marks should form one region: {found:?}"
+        );
         assert!(found[0].paths >= 40);
         assert!(found[0].bbox.width() > 150.0);
     }
