@@ -23,7 +23,7 @@ pub struct Options {
     /// Resolution to rasterise figures at.
     pub figure_dpi: f32,
     /// Strip grammatical scaffolding from prose — see [`crate::compress`].
-    pub caveman: bool,
+    pub caveman: Option<crate::compress::Level>,
 }
 
 impl Default for Options {
@@ -31,7 +31,7 @@ impl Default for Options {
         Self {
             assets: None,
             figure_dpi: 150.0,
-            caveman: false,
+            caveman: None,
         }
     }
 }
@@ -113,8 +113,8 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     extract_bibliography(&mut document);
 
     // Last, so that every structural pass has seen the prose as written.
-    if options.caveman {
-        crate::compress::compress(&mut document);
+    if let Some(level) = options.caveman {
+        crate::compress::compress(&mut document, level);
     }
 
     Ok(document)

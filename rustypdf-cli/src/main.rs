@@ -33,6 +33,23 @@ impl Format {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
+enum Caveman {
+    /// Articles, copulas and stock phrases. Reads as clipped English.
+    Light,
+    /// Also prepositions, pronouns and filler. Reads as telegraphese.
+    Hard,
+}
+
+impl From<Caveman> for rustypdf::compress::Level {
+    fn from(value: Caveman) -> Self {
+        match value {
+            Caveman::Light => rustypdf::compress::Level::Light,
+            Caveman::Hard => rustypdf::compress::Level::Hard,
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
 enum Format {
     /// GitHub-flavoured Markdown.
     Md,
@@ -78,10 +95,11 @@ enum Command {
         /// Resolution to rasterise figures at.
         #[arg(long, default_value_t = 150.0)]
         figure_dpi: f32,
-        /// Strip articles, copulas and stock academic phrases from the prose, for feeding to a
-        /// model that charges by the token. Maths, tables and citations are left alone.
-        #[arg(long)]
-        caveman: bool,
+        /// Strip grammatical scaffolding from the prose, for feeding to a model that charges by
+        /// the token. `light` drops articles, copulas and stock phrases; `hard` also drops
+        /// prepositions, pronouns and filler. Maths, tables and citations are left alone.
+        #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "light")]
+        caveman: Option<Caveman>,
     },
     /// Print reconstructed lines, one per output line. Reading order is not applied yet.
     Text {
@@ -289,7 +307,7 @@ fn convert(
     dest: Option<PathBuf>,
     assets: Option<PathBuf>,
     figure_dpi: f32,
-    caveman: bool,
+    caveman: Option<Caveman>,
 ) -> Result<()> {
     let batch = pdfs.len() > 1;
     if batch && dest.is_none() {
@@ -323,7 +341,7 @@ fn convert(
         let options = rustypdf::Options {
             assets,
             figure_dpi,
-            caveman,
+            caveman: caveman.map(Into::into),
         };
         let doc = match rustypdf::convert_with(pdf, &options) {
             Ok(doc) => doc,

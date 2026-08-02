@@ -24,6 +24,7 @@ scripts/build.sh            # cargo build --release, plus installing the Python 
 ./target/release/rp2m convert corpus/resnet.pdf
 ./target/release/rp2m convert corpus/resnet.pdf --format typst --assets figures/
 ./target/release/rp2m convert corpus/*.pdf --out out/        # batch
+./target/release/rp2m convert paper.pdf --caveman=hard       # -25% words for LLM ingestion
 
 # Diagnostics.
 ./target/release/rp2m probe corpus/resnet.pdf --pages   # counts, fonts, detected gutters
