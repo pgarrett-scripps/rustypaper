@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::ir::Rect;
 use crate::layout::stats::Stats;
 use crate::text::lines::Line;
+use crate::text::vocab::Vocabulary;
 
 /// A baseline step larger than leading by this factor starts a new block.
 const BLOCK_GAP_RATIO: f32 = 1.45;
@@ -44,7 +45,9 @@ const TITLE_SEARCH_BLOCKS: usize = 4;
 pub enum BlockKind {
     Title,
     /// Section heading; level 1 is a top-level section.
-    Heading { level: u8 },
+    Heading {
+        level: u8,
+    },
     Paragraph,
     /// A figure or table caption.
     Caption,
@@ -68,7 +71,7 @@ pub struct Document {
 }
 
 /// Assembles ordered per-page lines into a document.
-pub fn assemble(pages: &[Vec<Line>], stats: Stats) -> Document {
+pub fn assemble(pages: &[Vec<Line>], stats: Stats, vocab: &Vocabulary) -> Document {
     let mut blocks = Vec::new();
 
     for (index, lines) in pages.iter().enumerate() {
@@ -79,7 +82,7 @@ pub fn assemble(pages: &[Vec<Line>], stats: Stats) -> Document {
             .max(1.0);
 
         for group in group_lines(lines, stats) {
-            if let Some(block) = build_block(&group, index, stats, column_width) {
+            if let Some(block) = build_block(&group, index, stats, column_width, vocab) {
                 blocks.push(block);
             }
         }
@@ -128,8 +131,14 @@ fn starts_new_block(previous: &Line, line: &Line, stats: Stats) -> bool {
     step > stats.leading * BLOCK_GAP_RATIO
 }
 
-fn build_block(group: &[&Line], page: usize, stats: Stats, column_width: f32) -> Option<Block> {
-    let text = join_lines(group);
+fn build_block(
+    group: &[&Line],
+    page: usize,
+    stats: Stats,
+    column_width: f32,
+    vocab: &Vocabulary,
+) -> Option<Block> {
+    let text = join_lines(group, vocab);
     if text.trim().is_empty() {
         return None;
     }
@@ -159,20 +168,61 @@ fn build_block(group: &[&Line], page: usize, stats: Stats, column_width: f32) ->
     })
 }
 
-/// Joins a block's lines into running text.
+/// Joins a block's lines into running text, rejoining words split across line breaks.
 ///
-/// Line-ending hyphens are left alone. Deciding whether `state-` + `of-the-art` should rejoin
-/// needs the document's own vocabulary, which is M2's de-hyphenation pass; guessing here would
-/// silently corrupt compound words.
-fn join_lines(group: &[&Line]) -> String {
+/// The soft hyphen is already gone by the time the glyphs arrive, so the break is invisible
+/// except in the words themselves — see [`Vocabulary::rejoin`]. A geometric guard comes first:
+/// hyphenation only happens where a line was broken to fit, so a line that stops short of the
+/// block's right edge ended for some other reason and its last word is whole.
+fn join_lines(group: &[&Line], vocab: &Vocabulary) -> String {
+    let right_edge = group.iter().map(|l| l.bbox.x1).fold(0.0f32, f32::max);
+
     let mut out = String::new();
     for (i, line) in group.iter().enumerate() {
-        if i > 0 {
-            out.push(' ');
+        let text = line.text();
+        if i == 0 {
+            out.push_str(&text);
+            continue;
         }
-        out.push_str(&line.text());
+
+        let justified = line_reaches(group[i - 1], right_edge, group[i - 1].size);
+        match justified
+            .then(|| split_boundary(&out, &text))
+            .flatten()
+            .and_then(|(head, tail)| vocab.rejoin(head, tail))
+        {
+            Some(merged) => {
+                out.truncate(out.len() - head_len(&out));
+                out.push_str(&merged);
+                out.push_str(&text[first_word_len(&text)..]);
+            }
+            None => {
+                out.push(' ');
+                out.push_str(&text);
+            }
+        }
     }
     out.trim().to_owned()
+}
+
+/// Whether a line runs to the block's right edge, within one character's slack.
+fn line_reaches(line: &Line, right_edge: f32, size: f32) -> bool {
+    right_edge - line.bbox.x1 <= size
+}
+
+/// The last word of `left` and the first word of `right`, if both exist.
+fn split_boundary<'a>(left: &'a str, right: &'a str) -> Option<(&'a str, &'a str)> {
+    let head = left.rsplit(' ').next()?;
+    let tail = right.split(' ').next()?;
+    (!head.is_empty() && !tail.is_empty()).then_some((head, tail))
+}
+
+fn head_len(text: &str) -> usize {
+    text.rsplit(' ').next().map_or(0, str::len)
+}
+
+fn first_word_len(text: &str) -> usize {
+    text.split(' ').next().map_or(0, str::len)
 }
 
 fn is_caption(text: &str) -> bool {
@@ -289,7 +339,9 @@ fn assign_heading_levels(blocks: &mut [Block], stats: Stats) {
                 (rank + 1).min(6) as u8
             }
         };
-        block.kind = BlockKind::Heading { level: level.max(1) };
+        block.kind = BlockKind::Heading {
+            level: level.max(1),
+        };
         let _ = stats;
     }
 }
@@ -344,7 +396,7 @@ mod tests {
             line("The first line of a paragraph", 100.0, 10.0, 72.0, 540.0),
             line("and its continuation.", 112.0, 10.0, 72.0, 540.0),
         ];
-        let doc = assemble(&[page], stats());
+        let doc = assemble(&[page], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks.len(), 1);
         assert_eq!(doc.blocks[0].kind, BlockKind::Paragraph);
         assert_eq!(
@@ -359,7 +411,7 @@ mod tests {
             line("First paragraph.", 100.0, 10.0, 72.0, 540.0),
             line("Second paragraph.", 140.0, 10.0, 72.0, 540.0),
         ];
-        let doc = assemble(&[page], stats());
+        let doc = assemble(&[page], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks.len(), 2);
     }
 
@@ -371,7 +423,7 @@ mod tests {
             line("3.2 Ablation studies", 160.0, 10.0, 72.0, 220.0),
             line("More body text.", 190.0, 10.0, 72.0, 540.0),
         ];
-        let doc = assemble(&[page], stats());
+        let doc = assemble(&[page], stats(), &Vocabulary::default());
         let kinds: Vec<&BlockKind> = doc.blocks.iter().map(|b| &b.kind).collect();
         assert_eq!(kinds[0], &BlockKind::Heading { level: 1 });
         assert_eq!(kinds[1], &BlockKind::Paragraph);
@@ -392,7 +444,7 @@ mod tests {
             line("Related Work", 130.0, 12.0, 72.0, 200.0),
             line("More body text follows on.", 160.0, 10.0, 72.0, 540.0),
         ];
-        let doc = assemble(&[page], stats());
+        let doc = assemble(&[page], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks[0].kind, BlockKind::Title);
         assert!(
             matches!(doc.blocks[2].kind, BlockKind::Heading { .. }),
@@ -414,7 +466,7 @@ mod tests {
                 540.0,
             ),
         ];
-        let doc = assemble(&[page], stats());
+        let doc = assemble(&[page], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks[1].kind, BlockKind::Paragraph);
     }
 
@@ -434,7 +486,7 @@ mod tests {
             ));
         }
         page.push(line("5 Conclusion", 400.0, 14.0, 72.0, 200.0));
-        let doc = assemble(&[page], stats());
+        let doc = assemble(&[page], stats(), &Vocabulary::default());
         assert!(doc.title.is_none(), "promoted {:?} to a title", doc.title);
     }
 
@@ -447,7 +499,7 @@ mod tests {
             72.0,
             400.0,
         )];
-        let doc = assemble(&[page], stats());
+        let doc = assemble(&[page], stats(), &Vocabulary::default());
         assert_eq!(doc.blocks[0].kind, BlockKind::Caption);
     }
 
@@ -464,7 +516,7 @@ mod tests {
                 540.0,
             ),
         ];
-        let doc = assemble(&[page], stats());
+        let doc = assemble(&[page], stats(), &Vocabulary::default());
         assert_eq!(doc.title.as_deref(), Some("Deep Residual Learning"));
         assert_eq!(doc.blocks[0].kind, BlockKind::Title);
     }

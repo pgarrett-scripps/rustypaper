@@ -350,24 +350,24 @@ fn single_column_papers_are_not_split_into_columns() {
     }
 }
 
-/// Known gap, pinned so the fix is visible when it lands.
+/// Words split across a line break are rejoined.
 ///
-/// pdfium removes soft line-break hyphens from the text page entirely — Chrome does this so
-/// copy-paste rejoins hyphenated words — so the artifact is `learn ing`, not `learn- ing`. That
-/// means M2's de-hyphenation cannot key off a trailing hyphen; it has to notice a line ending
-/// mid-word and consult the document's own vocabulary.
+/// pdfium removes soft line-break hyphens entirely — Chrome does this so copy-paste rejoins
+/// hyphenated words — so there is no hyphen to key off and the break is invisible except in the
+/// words themselves. The document's own vocabulary supplies the evidence.
 #[test]
-fn hyphenated_line_breaks_are_a_known_gap() {
+fn hyphenated_line_breaks_are_rejoined() {
     let path = paper!("resnet.pdf");
     let doc = rustypdf::convert(&path).expect("conversion failed");
     let md = rustypdf::emit::markdown::render(&doc);
 
     assert!(
-        md.contains("learn ing residual functions"),
-        "the split-word artifact changed shape; revisit de-hyphenation"
+        md.contains("learning residual functions"),
+        "hyphenated break was not rejoined"
     );
-    assert!(
-        !md.contains("learn- ing"),
-        "a trailing hyphen survived, so pdfium's behaviour changed"
-    );
+    assert!(!md.contains("learn ing"), "a split word survived");
+
+    // And it must not over-merge: ordinary word pairs stay separate.
+    assert!(md.contains("residual learning framework"));
+    assert!(!md.contains("residuallearning"));
 }

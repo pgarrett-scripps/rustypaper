@@ -16,7 +16,7 @@ crates that exist are generic text extractors with no notion of a paper. This ai
 ```sh
 scripts/fetch-pdfium.sh     # vendored pdfium (BSD-3-Clause), pinned build
 scripts/fetch-corpus.sh     # evaluation corpus of arXiv papers, not committed
-cargo build --release
+scripts/build.sh            # cargo build --release, plus installing the Python extension
 ```
 
 ```sh
@@ -45,9 +45,10 @@ stage is a pass over an IR. The `Document` JSON is the contract; Markdown and Ty
 renderings of it.
 
 Unicode repair turned out not to be needed — pdfium's glyph-name fallback already resolves TeX
-ligatures, so the tables the plan budgeted for were dropped. De-hyphenation is still outstanding
-and is harder than expected: pdfium *removes* soft line-break hyphens, so the artifact is
-`learn ing` rather than `learn- ing` and there is no hyphen left to key off.
+ligatures, so the tables the plan budgeted for were dropped. De-hyphenation could not work the
+way the plan assumed either: pdfium *removes* soft line-break hyphens, so there is no hyphen to
+key off. Words split across a break are rejoined using the document's own vocabulary instead,
+which needs no word list and knows the paper's jargon.
 
 Maths is reconstructed geometrically, MaxTract-style, from exact glyph identities and positions
 rather than by OCR — a born-digital PDF hands you perfect character information, so image-to-
@@ -63,7 +64,7 @@ pretending.
 |---|---|---|
 | **M0** | Backend, `PageRaw`, CLI, corpus, thread-safety spike | done |
 | **M1** | Lines/words, furniture removal, columns, reading order → Markdown | done |
-| **M2** | Figures, captions, footnotes, lists, de-hyphenation | next |
+| **M2** | Figures, captions, footnotes, lists, de-hyphenation | in progress |
 | **M3** | Tables (booktabs → lattice → stream) | |
 | **M4** | Maths detection and reconstruction | |
 | **M5** | References, citation linking, CSL-JSON | |
@@ -75,8 +76,7 @@ The core is Rust; the tooling around it is Python, because evaluation, corpus ma
 comparison against other converters are scripting jobs.
 
 ```sh
-cargo build --release                      # also builds the extension module
-cp target/release/lib_rustypdf.so python/_rustypdf.so
+scripts/build.sh
 PYTHONPATH=python python3 -c "
 import rustypdf
 print(rustypdf.to_markdown('corpus/resnet.pdf')[:80])
@@ -96,7 +96,7 @@ ground truth for exactly this document class.
 cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval
 ```
 
-Current mean bigram recall is **0.862** across the scorable corpus. See
+Current mean bigram recall is **0.875** across the scorable corpus. See
 [`eval/README.md`](eval/README.md) for what the metrics mean and why plain edit distance is the
 wrong primary measure here.
 

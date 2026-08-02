@@ -20,6 +20,31 @@ except ImportError:  # pragma: no cover
 
 REPO = Path(__file__).resolve().parents[2]
 CLI = REPO / "target" / "release" / "rp2m"
+BUILT_EXTENSION = REPO / "target" / "release" / "lib_rustypdf.so"
+INSTALLED_EXTENSION = REPO / "python" / "_rustypdf.so"
+
+
+def _warn_if_stale() -> None:
+    """Shout if the loaded extension is older than the last Rust build.
+
+    Worth the code: measuring a stale binary silently reports "no change" for a change that
+    worked, which is the most expensive kind of wrong answer a harness can give. It hid a real
+    +0.013 improvement once already.
+    """
+    import sys
+
+    if not (BUILT_EXTENSION.exists() and INSTALLED_EXTENSION.exists()):
+        return
+    if BUILT_EXTENSION.stat().st_mtime > INSTALLED_EXTENSION.stat().st_mtime + 1:
+        print(
+            f"warning: {INSTALLED_EXTENSION.name} is older than the last cargo build; "
+            "scores describe stale code. Run scripts/build.sh.",
+            file=sys.stderr,
+        )
+
+
+if _module is not None:
+    _warn_if_stale()
 
 
 def to_markdown(pdf: Path) -> str:

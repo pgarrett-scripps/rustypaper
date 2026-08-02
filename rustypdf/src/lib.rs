@@ -86,5 +86,9 @@ pub fn convert(path: impl AsRef<Path>) -> Result<doc::Document> {
         .map(layout::order::reading_order)
         .collect();
 
-    Ok(doc::assemble(&ordered, stats))
+    // The vocabulary is built from the whole document, because the evidence that `learn` and
+    // `ing` are one word is usually `learning` written out on some other page entirely.
+    let vocab = text::vocab::Vocabulary::build(&ordered);
+
+    Ok(doc::assemble(&ordered, stats, &vocab))
 }

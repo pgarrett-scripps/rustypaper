@@ -3,22 +3,22 @@
   "papers": {
     "bert.pdf": {
       "arxiv_id": "1810.04805v2",
-      "bigram_recall": 0.8505,
+      "bigram_recall": 0.8751,
       "blocks": {
         "caption": 12,
         "heading": 33,
         "paragraph": 287,
         "title": 1
       },
-      "coverage": 0.9236,
-      "output_words": 10837,
+      "coverage": 0.9228,
+      "output_words": 10695,
       "reference_words": 7305,
-      "seconds": 0.168,
-      "similarity": 0.6717
+      "seconds": 0.174,
+      "similarity": 0.7019
     },
     "resnet.pdf": {
       "arxiv_id": "1512.03385v1",
-      "bigram_recall": 0.8953,
+      "bigram_recall": 0.91,
       "blocks": {
         "caption": 23,
         "heading": 20,
@@ -26,14 +26,14 @@
         "title": 1
       },
       "coverage": 0.9697,
-      "output_words": 10496,
+      "output_words": 10422,
       "reference_words": 6021,
-      "seconds": 0.162,
-      "similarity": 0.6438
+      "seconds": 0.166,
+      "similarity": 0.6541
     },
     "transformer.pdf": {
       "arxiv_id": "1706.03762v7",
-      "bigram_recall": 0.8394,
+      "bigram_recall": 0.8397,
       "blocks": {
         "caption": 10,
         "heading": 33,
@@ -41,10 +41,10 @@
         "title": 1
       },
       "coverage": 0.9229,
-      "output_words": 6185,
+      "output_words": 6182,
       "reference_words": 4369,
-      "seconds": 0.224,
-      "similarity": 0.7093
+      "seconds": 0.228,
+      "similarity": 0.7099
     }
   },
   "scorer": "difflib",
@@ -57,9 +57,9 @@
         "paragraph": 268,
         "title": 1
       },
-      "output_words": 7359,
+      "output_words": 7344,
       "reason": "arXiv source carries no LaTeX prose",
-      "seconds": 0.126
+      "seconds": 0.131
     }
   }
 }
