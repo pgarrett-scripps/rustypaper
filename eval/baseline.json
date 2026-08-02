@@ -18,7 +18,7 @@
       "coverage": 0.9228,
       "output_words": 10306,
       "reference_words": 7305,
-      "seconds": 0.112,
+      "seconds": 0.113,
       "similarity": 0.6958
     },
     "biology.pdf": {
@@ -59,7 +59,7 @@
       "coverage": 0.9619,
       "output_words": 4478,
       "reference_words": 2666,
-      "seconds": 0.075,
+      "seconds": 0.073,
       "similarity": 0.7063
     },
     "numbertheory.pdf": {
@@ -77,7 +77,7 @@
       "coverage": 0.9895,
       "output_words": 5093,
       "reference_words": 4003,
-      "seconds": 0.088,
+      "seconds": 0.09,
       "similarity": 0.8443
     },
     "optics.pdf": {
@@ -97,7 +97,7 @@
       "coverage": 0.9282,
       "output_words": 7166,
       "reference_words": 5602,
-      "seconds": 0.147,
+      "seconds": 0.15,
       "similarity": 0.7898
     },
     "resnet.pdf": {
@@ -117,7 +117,7 @@
       "coverage": 0.9679,
       "output_words": 10537,
       "reference_words": 6021,
-      "seconds": 0.118,
+      "seconds": 0.12,
       "similarity": 0.6542
     },
     "statistics.pdf": {
@@ -135,7 +135,7 @@
       "coverage": 0.9533,
       "output_words": 7450,
       "reference_words": 6384,
-      "seconds": 0.105,
+      "seconds": 0.106,
       "similarity": 0.8754
     },
     "transformer.pdf": {
@@ -156,7 +156,7 @@
       "coverage": 0.9209,
       "output_words": 6233,
       "reference_words": 4369,
-      "seconds": 0.201,
+      "seconds": 0.199,
       "similarity": 0.7063
     },
     "unet.pdf": {
@@ -176,7 +176,7 @@
       "coverage": 0.9815,
       "output_words": 3209,
       "reference_words": 2347,
-      "seconds": 0.038,
+      "seconds": 0.037,
       "similarity": 0.7999
     }
   },
@@ -197,7 +197,7 @@
       },
       "output_words": 5487,
       "reason": "arXiv source carries no LaTeX prose",
-      "seconds": 0.101
+      "seconds": 0.103
     }
   }
 }
