@@ -15,6 +15,7 @@
 pub mod backend;
 pub mod error;
 pub mod ir;
+pub mod text;
 
 pub use error::{Error, Result};
 

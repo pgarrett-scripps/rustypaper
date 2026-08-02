@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use rustypdf::backend::pdfium::PdfiumBackend;
 use rustypdf::backend::PageSource;
 use rustypdf::ir::{FontTable, PathKind, Rect};
+use rustypdf::text::lines::build_lines;
 
 fn corpus(name: &str) -> Option<PathBuf> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -83,19 +84,27 @@ fn reading_order_is_not_assumed_but_text_runs_top_down() {
     let path = paper!("resnet.pdf");
     let doc = rustypdf::extract(&path).expect("extraction failed");
 
-    // The title is the largest text on page 1. This is the assumption the heading classifier
-    // will rest on, so it is worth pinning now.
+    // The title is the largest *horizontal* text on page 1 — the sideways arXiv stamp is not
+    // running text and layout never sees it. This is the assumption the heading classifier will
+    // rest on, so it is worth pinning now.
     let page = &doc.pages[0];
-    let max_size = page.glyphs.iter().map(|g| g.size).fold(0.0f32, f32::max);
+    let rotated: std::collections::HashSet<usize> = rustypdf::text::lines::rotated_glyphs(page)
+        .into_iter()
+        .collect();
+    let upright = |i: &usize| !rotated.contains(i);
+    let max_size = (0..page.glyphs.len())
+        .filter(upright)
+        .map(|i| page.glyphs[i].size)
+        .fold(0.0f32, f32::max);
     let body_size = median_size(page);
     assert!(
         max_size > body_size * 1.4,
         "title ({max_size}) should stand well clear of body text ({body_size})"
     );
 
-    let title_top = page
-        .glyphs
-        .iter()
+    let title_top = (0..page.glyphs.len())
+        .filter(upright)
+        .map(|i| &page.glyphs[i])
         .filter(|g| (g.size - max_size).abs() < 0.1)
         .map(|g| g.bbox.y0)
         .fold(f32::MAX, f32::min);
@@ -107,6 +116,7 @@ fn reading_order_is_not_assumed_but_text_runs_top_down() {
 
 fn median_size(page: &rustypdf::ir::PageRaw) -> f32 {
     let mut sizes: Vec<f32> = page.glyphs.iter().map(|g| g.size).collect();
+    assert!(!sizes.is_empty());
     sizes.sort_by(|a, b| a.partial_cmp(b).unwrap());
     sizes[sizes.len() / 2]
 }
@@ -213,4 +223,84 @@ fn crops_are_clamped_to_the_page() {
         .render_region(0, region, 72.0)
         .expect("oversized crop should clamp, not fail");
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+/// Word segmentation must come out right on prose, including the cases that a fixed gap
+/// threshold gets wrong.
+#[test]
+fn words_are_segmented_correctly_on_body_text() {
+    let path = paper!("resnet.pdf");
+    let doc = rustypdf::extract(&path).expect("extraction failed");
+
+    let text: String = build_lines(&doc.pages[0])
+        .iter()
+        .map(|l| l.text())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    // `learning framework` is kerned to a 0.18 em ink gap against a 0.30 em typical space, so
+    // any fixed threshold safe for kerning merges it. pdfium's generated space marks it.
+    assert!(
+        text.contains("residual learning framework"),
+        "kerned space was swallowed"
+    );
+    // An author line has three gap classes (kerning, spaces, author separators); inferring the
+    // threshold from the line's own distribution alone merges first and last names.
+    assert!(
+        text.contains("Kaiming He") && text.contains("Xiangyu Zhang"),
+        "author names were merged"
+    );
+    assert!(text.contains("Deep Residual Learning for Image Recognition"));
+}
+
+/// The sideways arXiv stamp down the left margin must not be interleaved into body text.
+#[test]
+fn the_rotated_arxiv_stamp_is_excluded() {
+    let path = paper!("resnet.pdf");
+    let doc = rustypdf::extract(&path).expect("extraction failed");
+    let page = &doc.pages[0];
+
+    let rotated = rustypdf::text::lines::rotated_glyphs(page);
+    assert!(!rotated.is_empty(), "resnet has a sideways arXiv stamp");
+    // pdfium reports a scaled size of 0 for purely rotated text; the backend must have
+    // substituted a usable size rather than letting a zero reach layout.
+    for &i in &rotated {
+        assert!(page.glyphs[i].size > 0.0, "glyph size must be positive");
+    }
+
+    let text: String = build_lines(page).iter().map(|l| l.text()).collect();
+    assert!(
+        !text.contains("arXiv"),
+        "the sideways stamp leaked into running text"
+    );
+}
+
+/// pdfium's glyph-name fallback already resolves TeX ligatures, so the Unicode repair tables the
+/// plan budgeted for are not needed. This pins that: if a backend change ever regresses it, the
+/// classic dropped-ligature spellings reappear.
+#[test]
+fn tex_ligatures_survive_extraction() {
+    for name in ["resnet.pdf", "adam.pdf", "bert.pdf", "transformer.pdf"] {
+        let path = paper!(name);
+        let doc = rustypdf::extract(&path).expect("extraction failed");
+        let text: String = doc
+            .pages
+            .iter()
+            .flat_map(build_lines)
+            .map(|l| l.text())
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        for broken in ["dierent", "eective", "signicant", "dicult", "specic"] {
+            assert!(
+                !text.contains(broken),
+                "{name}: ligature dropped, found {broken:?}"
+            );
+        }
+        // Raw ligature codepoints must have been decomposed, not passed through.
+        assert!(
+            !text.chars().any(|c| ('\u{FB00}'..='\u{FB06}').contains(&c)),
+            "{name}: un-expanded ligature codepoint"
+        );
+    }
 }

@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 use rustypdf::backend::pdfium::PdfiumBackend;
 use rustypdf::backend::PageSource;
 use rustypdf::ir::{FontTable, PathKind};
+use rustypdf::text::lines::build_lines;
 
 #[derive(Parser)]
 #[command(
@@ -38,6 +39,16 @@ enum Command {
         #[arg(long)]
         pages: bool,
     },
+    /// Print reconstructed lines, one per output line. Reading order is not applied yet.
+    Text {
+        pdf: PathBuf,
+        /// Restrict output to a single zero-based page.
+        #[arg(short, long)]
+        page: Option<usize>,
+        /// Prefix each line with its baseline, x-range and dominant font size.
+        #[arg(long)]
+        geometry: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -46,6 +57,11 @@ fn main() -> Result<()> {
     let result = match Cli::parse().command {
         Command::Dump { pdf, page, pretty } => dump(&mut out, pdf, page, pretty),
         Command::Probe { pdf, pages } => probe(&mut out, pdf, pages),
+        Command::Text {
+            pdf,
+            page,
+            geometry,
+        } => text(&mut out, pdf, page, geometry),
     };
 
     // Piping into `head` closes stdout early. That is normal shell usage, not a failure, so it
@@ -158,5 +174,32 @@ fn probe(out: &mut impl Write, pdf: PathBuf, per_page: bool) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn text(out: &mut impl Write, pdf: PathBuf, only: Option<usize>, geometry: bool) -> Result<()> {
+    let doc = rustypdf::extract(&pdf).with_context(|| format!("extracting {}", pdf.display()))?;
+
+    for page in &doc.pages {
+        if only.is_some_and(|p| p != page.index) {
+            continue;
+        }
+        writeln!(out, "--- page {} ---", page.index)?;
+        for line in build_lines(page) {
+            if geometry {
+                writeln!(
+                    out,
+                    "[y={:7.2} x={:6.1}..{:6.1} size={:5.2}] {}",
+                    line.baseline,
+                    line.bbox.x0,
+                    line.bbox.x1,
+                    line.size,
+                    line.text()
+                )?;
+            } else {
+                writeln!(out, "{}", line.text())?;
+            }
+        }
+    }
     Ok(())
 }

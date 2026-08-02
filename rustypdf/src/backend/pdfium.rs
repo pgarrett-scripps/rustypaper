@@ -421,17 +421,47 @@ fn collect_glyphs(page: &PdfPage, xform: &Transform, fonts: &mut FontTable, raw:
         let bold = ch.font_weight().is_some_and(is_bold_weight) || ch.font_is_bold_reenforced();
         flags.set(FontFlags::BOLD, bold);
 
+        let angle = ch.angle_radians().unwrap_or(0.0);
         raw.glyphs.push(Glyph {
             text: GlyphText::Char(c),
             bbox,
             origin,
             font,
-            size: ch.scaled_font_size().value,
-            angle: ch.angle_radians().unwrap_or(0.0),
+            size: glyph_size(&ch, &bbox, angle),
+            angle,
             flags,
             color: ch.fill_color().map(color_to_rgba).unwrap_or(Rgba::BLACK),
             generated: ch.is_generated().unwrap_or(false),
         });
+    }
+}
+
+/// Effective font size in points, with fallbacks.
+///
+/// pdfium reports a scaled size of 0 for text whose matrix is a pure rotation — the arXiv stamp
+/// down the margin of every preprint is the case that surfaced this. Size is load-bearing
+/// everywhere downstream (baseline tolerance, word gaps, heading detection), so the invariant
+/// that it is positive and finite is established here rather than defended in every consumer.
+fn glyph_size(ch: &PdfPageTextChar, bbox: &Rect, angle: f32) -> f32 {
+    let scaled = ch.scaled_font_size().value;
+    if scaled.is_finite() && scaled > 0.0 {
+        return scaled;
+    }
+    let unscaled = ch.unscaled_font_size().value;
+    if unscaled.is_finite() && unscaled > 0.0 {
+        return unscaled;
+    }
+
+    // Last resort: infer from the ink. Font size runs *across* the baseline, so for sideways
+    // text that is the box's width, not its height — taking the larger of the two would report
+    // the advance and make a margin stamp look like display type.
+    let upright = (angle.to_degrees().rem_euclid(180.0) - 90.0).abs() >= 45.0;
+    let extent = if upright { bbox.height() } else { bbox.width() };
+    if extent.is_finite() && extent > 0.0 {
+        // A cap-height glyph is roughly 0.7em.
+        extent / 0.7
+    } else {
+        1.0
     }
 }
 
