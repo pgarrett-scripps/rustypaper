@@ -7,6 +7,9 @@
 
 use crate::text::lines::Line;
 
+/// Font sizes within this many points of each other are the same size.
+const SIZE_TOLERANCE: f32 = 0.25;
+
 /// Typographic baseline for a document.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stats {
@@ -32,24 +35,14 @@ impl Stats {
     /// a paper's headings, captions and footnotes would drag a mean well off the body value,
     /// whereas body text always dominates by volume.
     pub fn measure(pages: &[Vec<Line>]) -> Stats {
-        let mut buckets: Vec<(f32, usize)> = Vec::new();
-        for line in pages.iter().flatten() {
-            let weight = line.glyphs.len();
-            match buckets
-                .iter_mut()
-                .find(|(size, _)| (*size - line.size).abs() < 0.25)
-            {
-                Some((_, count)) => *count += weight,
-                None => buckets.push((line.size, weight)),
-            }
-        }
-
-        let body_size = buckets
-            .iter()
-            .max_by_key(|(_, count)| *count)
-            .map(|(size, _)| *size)
-            .filter(|s| *s > 0.0)
-            .unwrap_or(Stats::default().body_size);
+        let body_size = crate::util::dominant(
+            pages.iter().flatten(),
+            SIZE_TOLERANCE,
+            |line| line.size,
+            |line| line.glyphs.len() as f32,
+        )
+        .filter(|s| *s > 0.0)
+        .unwrap_or(Stats::default().body_size);
 
         Stats {
             body_size,
@@ -83,11 +76,7 @@ fn measure_leading(pages: &[Vec<Line>], body_size: f32) -> f32 {
         }
     }
 
-    if steps.is_empty() {
-        return body_size * 1.2;
-    }
-    steps.sort_by(f32::total_cmp);
-    steps[steps.len() / 2]
+    crate::util::median(&mut steps).unwrap_or(body_size * 1.2)
 }
 
 #[cfg(test)]

@@ -748,7 +748,10 @@ fn all_emitters_render_the_corpus() {
         let json = serde_json::to_string(&doc).expect("the document model must serialise");
 
         for (format, output) in [("markdown", &md), ("typst", &typ), ("text", &txt)] {
-            assert!(output.len() > 5_000, "{name}: {format} output is suspiciously short");
+            assert!(
+                output.len() > 5_000,
+                "{name}: {format} output is suspiciously short"
+            );
         }
         assert!(json.contains("\"type\":\"paragraph\""));
 
@@ -757,6 +760,9 @@ fn all_emitters_render_the_corpus() {
             assert!(typ.starts_with("#import"), "{name}: mitex import missing");
         }
         // Plain text must carry no markup.
-        assert!(!txt.contains("#table("), "{name}: markup leaked into plain text");
+        assert!(
+            !txt.contains("#table("),
+            "{name}: markup leaked into plain text"
+        );
     }
 }

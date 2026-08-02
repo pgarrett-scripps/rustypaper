@@ -424,8 +424,7 @@ fn dominant_baseline(items: &[Item], size: f32) -> f32 {
     if baselines.is_empty() {
         baselines = items.iter().map(|i| i.baseline).collect();
     }
-    baselines.sort_by(f32::total_cmp);
-    baselines[baselines.len() / 2]
+    crate::util::median(&mut baselines).unwrap_or(0.0)
 }
 
 /// Lowers confidence, saturating at zero.

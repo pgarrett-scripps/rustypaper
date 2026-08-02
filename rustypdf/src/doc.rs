@@ -119,6 +119,34 @@ pub struct Block {
     pub reference: Option<crate::refs::Reference>,
 }
 
+impl Block {
+    /// A block with no attachments. Figures, tables, equations and references fill in the
+    /// relevant field afterwards.
+    pub fn new(kind: BlockKind, page: usize, bbox: Rect) -> Self {
+        Self {
+            kind,
+            text: String::new(),
+            page,
+            bbox,
+            size: 0.0,
+            asset: None,
+            table: None,
+            math: None,
+            reference: None,
+        }
+    }
+
+    pub fn with_text(mut self, text: impl Into<String>) -> Self {
+        self.text = text.into();
+        self
+    }
+
+    pub fn with_size(mut self, size: f32) -> Self {
+        self.size = size;
+        self
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Document {
     pub title: Option<String>,
@@ -234,17 +262,7 @@ fn build_block(
         BlockKind::Paragraph
     };
 
-    Some(Block {
-        kind,
-        text,
-        page,
-        bbox,
-        size,
-        asset: None,
-        table: None,
-        math: None,
-        reference: None,
-    })
+    Some(Block::new(kind, page, bbox).with_text(text).with_size(size))
 }
 
 /// Whether a block opens with a list marker, and whether that marker is ordered.

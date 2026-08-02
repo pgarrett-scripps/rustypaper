@@ -330,23 +330,13 @@ fn recompute(page: &PageRaw, line: &mut Line) {
     let indices: Vec<usize> = line.glyphs.iter().map(|p| p.index).collect();
     line.bbox = bounds(page, &indices);
 
-    let mut buckets: Vec<(f32, f32)> = Vec::new();
-    for &i in &indices {
-        let glyph = &page.glyphs[i];
-        let weight = glyph.bbox.width().max(0.1);
-        match buckets
-            .iter_mut()
-            .find(|(size, _)| (*size - glyph.size).abs() < 0.25)
-        {
-            Some((_, w)) => *w += weight,
-            None => buckets.push((glyph.size, weight)),
-        }
-    }
-    line.size = buckets
-        .iter()
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(size, _)| *size)
-        .unwrap_or(0.0);
+    line.size = crate::util::dominant(
+        indices.iter().map(|&i| &page.glyphs[i]),
+        0.25,
+        |g| g.size,
+        |g| g.bbox.width().max(0.1),
+    )
+    .unwrap_or(0.0);
 
     // The baseline is that of the dominant-size glyphs; scripts must not drag it.
     let mut baselines: Vec<f32> = line
@@ -362,8 +352,7 @@ fn recompute(page: &PageRaw, line: &mut Line) {
             .map(|p| page.glyphs[p.index].origin.y)
             .collect();
     }
-    baselines.sort_by(f32::total_cmp);
-    line.baseline = baselines[baselines.len() / 2];
+    line.baseline = crate::util::median(&mut baselines).unwrap_or(0.0);
 
     // Emphasis is judged over the line as a whole: a single italic symbol in a sentence does not
     // make the line italic, but a fully italicised caption lead-in is worth knowing about.
