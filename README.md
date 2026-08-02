@@ -21,17 +21,27 @@ cargo install rustypaper          # the command-line tool
 rustypaper = "0.1"            # the library
 ```
 
-**pdfium is required and is not bundled.** It is a native library (BSD-3-Clause, the PDF engine
-from Chromium), so it cannot ship inside a crate. Grab a build from
-[bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries/releases) and point
-`PDFIUM_DYNAMIC_LIB_PATH` at the directory containing `libpdfium.so`, or install it from your
-package manager. From a checkout, `scripts/fetch-pdfium.sh` does it for you. The error message
-says all of this if you forget.
+```sh
+pip install rustypaper        # the Python bindings
+```
+
+**Nothing else to install.** The default build reads PDFs with
+[rustium-pdf](https://github.com/pgarrett-scripps/rustium-pdf), a pure-Rust interpreter, so
+there is no native library to fetch, point an environment variable at, or match versions with.
+The CLI is a single static binary and the wheel is self-contained.
+
+pdfium — the Chromium PDF engine, behind FFI — remains available as an opt-in feature. It is
+the reference the pure-Rust backend is measured against, and an escape hatch for documents
+rustium cannot yet read. Asking for it means supplying it:
+
+```sh
+cargo build --release --no-default-features --features pdfium
+scripts/fetch-pdfium.sh     # or set PDFIUM_DYNAMIC_LIB_PATH yourself
+```
 
 ## Getting started
 
 ```sh
-scripts/fetch-pdfium.sh     # vendored pdfium (BSD-3-Clause), pinned build
 scripts/fetch-corpus.sh     # evaluation corpus of arXiv papers, not committed
 scripts/build.sh            # cargo build --release, plus installing the Python extension
 ```
@@ -68,12 +78,12 @@ are renderings of it.
 | speed | 3.8–7.0 ms/page, single process |
 | corpus | 10 papers: ML, pure maths, physics, biology, statistics |
 | memory | 17–31 MB peak for a whole paper |
-| footprint | 2.3 MB binary + 7.3 MB pdfium, no models |
+| footprint | a 2.3 MB static binary, no native library, no models |
 
-Unicode repair turned out not to be needed — pdfium's glyph-name fallback already resolves TeX
+Unicode repair turned out not to be needed — glyph-name fallback already resolves TeX
 ligatures, so the tables the plan budgeted for were dropped. De-hyphenation could not work the
-way the plan assumed either: pdfium *removes* soft line-break hyphens, so there is no hyphen to
-key off. Words split across a break are rejoined using the document's own vocabulary instead,
+way the plan assumed either: soft line-break hyphens are removed before the text reaches the
+pipeline, so there is no hyphen to key off. Words split across a break are rejoined using the document's own vocabulary instead,
 which needs no word list and knows the paper's jargon.
 
 Maths is reconstructed geometrically, MaxTract-style, from exact glyph identities and positions
@@ -154,11 +164,14 @@ rather than fail when the corpus is absent, so a fresh clone is green.
 
 MIT OR Apache-2.0.
 
-pdfium is separate and is **not** covered by that. It is BSD-3-Clause, and it vendors further
-third-party code (FreeType, libjpeg-turbo, zlib, ICU and others) under their own terms. After
-running `scripts/fetch-pdfium.sh` those notices are in `vendor/pdfium/licenses/`, and
-`vendor/pdfium/LICENSE-packaging` is the MIT licence of
+That covers everything a default build contains, the published crate and the published wheels
+included: the dependency tree is Rust, and rustium-pdf is MIT OR Apache-2.0 as well.
+
+The `pdfium` feature is the exception, and only for whoever turns it on. pdfium is BSD-3-Clause
+and vendors further third-party code (FreeType, libjpeg-turbo, zlib, ICU and others) under
+their own terms. After running `scripts/fetch-pdfium.sh` those notices are in
+`vendor/pdfium/licenses/`, and `vendor/pdfium/LICENSE-packaging` is the MIT licence of
 [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries), which builds and packages it.
 
 **If you redistribute a binary that bundles `libpdfium.so`, ship `vendor/pdfium/licenses/` with
-it.**
+it.** Nothing released from this repository does.
