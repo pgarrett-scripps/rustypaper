@@ -12,30 +12,11 @@ scripts/build.sh           # cargo build --release AND install the Python extens
 cargo test --release
 python3 -m unittest discover -s eval/tests
 PYTHONPATH=python pytest python/tests -q   # the Python surface; needs the corpus
-
-scripts/fetch-pdfium.sh    # only for the optional pdfium backend, below
 ```
 
 **Use `scripts/build.sh`, not bare `cargo build`.** The eval harness loads a compiled extension
 module; a bare cargo build leaves it stale and the harness then reports "no change" for a change
 that worked. It warns when this happens, but the warning is easy to miss.
-
-## Backends
-
-Two implement `PageSource`, chosen by cargo feature:
-
-| feature | backend | notes |
-| --- | --- | --- |
-| `rustium` (default) | pure Rust, no FFI | `Send + Sync`, no global state, nothing to install |
-| `pdfium` | Chromium's engine via FFI | needs `libpdfium.so`; the accuracy reference |
-
-```sh
-cargo test --release                                            # rustium
-cargo test --release -p rustypaper --no-default-features --features pdfium
-```
-
-pdfium currently scores better — see the table below — so measure any backend change against
-both before concluding anything.
 
 ## Measure, do not assume
 
@@ -48,19 +29,14 @@ cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline
 Exits non-zero if any paper regresses by more than 0.005. Refresh `baseline.json` deliberately,
 with `--json > baseline.json`, only when a change is an intended improvement.
 
-Current, by backend, over the nine scorable papers:
+Current, over the nine scorable papers:
 
-| backend | prose bigram | equation recall | equation fidelity | tables | corpus tests |
-| --- | --- | --- | --- | --- | --- |
-| rustium (default) | 0.891 | 0.370 | 0.547 | 26/44 | 31/31 |
-| pdfium | 0.894 | 0.384 | 0.557 | 32/44 | 31/31 |
+| prose bigram | equation recall | equation fidelity | tables | corpus tests |
+| --- | --- | --- | --- | --- |
+| 0.891 | 0.370 | 0.547 | 26/44 | 31/31 |
 
-`baseline.json` holds the rustium numbers, because that is what a default build and CI measure.
-Prose is within 0.003 across backends; maths and tables are further apart, and are the project's
-weak point on either. That is the honest place to work next.
-
-rustium converts the corpus in 2.1 s to pdfium's 2.0 s, in 64 MB of resident memory to
-pdfium's 93 MB.
+Maths and tables are the project's weak point, and the honest place to work next. The corpus
+converts in 2.1 s and 64 MB of resident memory.
 
 ## Rules that have earned their place
 
@@ -69,18 +45,15 @@ pdfium's 93 MB.
 - **Never commit with failing tests.** It happened twice; both had to be unpicked.
 - **The corpus is the specification.** Ten papers across six template families. A converter tuned
   on one family passes its own tests and fails on everything else — see the findings section of
-  `docs/ARCHITECTURE.md` for six real bugs that only appeared when the corpus widened.
+  `docs/ARCHITECTURE.md` for four real bugs that only appeared when the corpus widened.
 - **Prefer an absent field to a wrong one.** Reference parsing omits authors it cannot parse;
   maths falls back to a rendered crop rather than emitting confident-looking wrong LaTeX.
 - **Check which extension Python actually imported**, with `rustypaper._rustypaper.__file__`. The
   module is built `abi3`, and CPython prefers `_rustypaper.abi3.so` over a plain `_rustypaper.so`
   when both exist. `build.sh` used to install the plain name, so an old abi3 build beside it was
-  loaded instead — silently, for every eval run. A whole backend comparison was measured against
-  the wrong binary before this surfaced. `build.sh` now writes the abi3 name and deletes the
-  other; do not reintroduce a second name.
-- **`default-features = false` belongs on the workspace dependency**, not on the member that
-  inherits it. Cargo ignores it on the member, so `--no-default-features` on a member silently
-  compiled *both* backends in and the feature-selected one won regardless of the flag.
+  loaded instead — silently, for every eval run. A whole round of eval numbers was measured
+  against the wrong binary before this surfaced. `build.sh` now writes the abi3 name and deletes
+  the other; do not reintroduce a second name.
 
 ## Shape
 
@@ -89,31 +62,29 @@ over an IR and only knows the stage before it. `Document` is the contract; Markd
 text are renderings of it, which is why the model was never allowed to become "whatever Markdown
 can express".
 
-Each backend is confined to one module behind the `PageSource` trait, and the shape classification
-they must agree on (`classify_path`, `clip_to_page`, `resolve_size`, `expand_ligature`) lives in
-`backend/mod.rs` — downstream passes must not be able to tell which backend built the `PageRaw`.
+Reading a PDF is confined to one module behind the `PageSource` trait, and the classification
+downstream passes depend on (`classify_path`, `clip_to_page`, `resolve_size`, `expand_ligature`)
+lives in `backend/mod.rs` rather than in the reader — what the pipeline is promised does not move
+if the reader underneath it does. rustium has no global state and is `Send + Sync`, so ingest
+could be parallelised; the pipeline does not yet do so, because ingest is a small share of the
+total.
 
-pdfium is **not thread-safe** and pdfium-render's `thread_safe` feature does no locking, so that
-backend serialises ingest behind a lock and the pure-Rust stages are what run in parallel. rustium
-has no global state and is `Send + Sync`, so ingest could be parallelised on it — the pipeline does
-not yet do so.
+Two things the trait boundary has to get right, both handled above it rather than papered over
+inside it:
 
-Two places where the backends genuinely differ, both handled above the trait rather than papered
-over inside it:
-
-- **Line-break hyphens.** pdfium deletes them from the text page; rustium reports the page as
-  written. `doc::rejoin_across_break` handles both, and prefers the hyphen when it is there —
-  it is better evidence than the vocabulary heuristic pdfium forces us into.
-- **Word breaks.** Both synthesise space marks on their own gap heuristic. `segment_words` treats
-  the marks as authoritative on any line that has them; inferring gaps instead splits *inside*
-  words (`I mage`), because ink gaps after a narrow letter look exactly like spaces. The cost is
-  that a backend which under-marks a line runs the rest of it together, so mark completeness is a
+- **Line-break hyphens.** The page is reported as written, so the hyphen is usually there and
+  `doc::rejoin_across_break` takes it as the evidence it is. Where a document leaves none, the
+  document's own vocabulary settles the join instead.
+- **Word breaks.** The reader synthesises space marks on a gap heuristic, and `segment_words`
+  treats those marks as authoritative on any line that has them; inferring gaps instead splits
+  *inside* words (`I mage`), because ink gaps after a narrow letter look exactly like spaces. The
+  cost is that a line that is under-marked runs the rest of it together, so mark completeness is a
   real obligation on a `PageSource`. rustium's threshold had to drop to 0.12 em to meet it —
   justification compresses a word space to about 0.19 em, and at 0.20 em whole lines were being
   missed.
 
-Two `PageSource` obligations that only became visible through this pipeline, both now met by
-rustium and worth re-checking in any future backend:
+Two further `PageSource` obligations that only became visible through this pipeline, both now met
+and worth re-checking against any future reader:
 
 - **Glyph boxes must be the document's**, not a substitute face's. When a font embeds no usable
   program the substitute's letters are another typeface's, so its ink widths make inter-glyph

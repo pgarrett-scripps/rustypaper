@@ -26,20 +26,11 @@ rustypaper = "0.1"            # the library
 pip install rustypaper        # the Python bindings
 ```
 
-**Nothing else to install.** The default build reads PDFs with
+**Nothing else to install.** PDFs are read with
 [rustium-pdf](https://github.com/pgarrett-scripps/rustium-pdf), a pure-Rust interpreter, so
 there is no native library to fetch, point an environment variable at, or match versions with.
 `ldd` on the binary shows libc, libm and libgcc and nothing else; the wheel is the extension
 module and the Python package around it, with no C library travelling beside it.
-
-pdfium — the Chromium PDF engine, behind FFI — remains available as an opt-in feature. It is
-the reference the pure-Rust backend is measured against, and an escape hatch for documents
-rustium cannot yet read. Asking for it means supplying it:
-
-```sh
-cargo build --release --no-default-features --features pdfium
-scripts/fetch-pdfium.sh     # or set PDFIUM_DYNAMIC_LIB_PATH yourself
-```
 
 ## Getting started
 
@@ -68,8 +59,7 @@ first thing to check when text comes out wrong.
 ## Design
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the pipeline, the coordinate convention,
-the two backends behind the `PageSource` trait, and the things the corpus taught this converter
-the hard way.
+the `PageSource` boundary, and the things the corpus taught this converter the hard way.
 
 The short version: the backend produces a `PageRaw` of glyphs, paths and images, and every later
 stage is a pass over an IR. The `Document` JSON is the contract; Markdown, Typst and plain text
@@ -83,11 +73,11 @@ are renderings of it.
 | footprint | a 3.2 MB binary, no native library, no models |
 
 Unicode repair turned out not to be needed — glyph-name fallback already resolves TeX ligatures,
-so the tables the plan budgeted for were dropped. De-hyphenation could not work the way the plan
-assumed either: pdfium removes soft line-break hyphens before the text reaches the pipeline, so
-on that backend there is no hyphen to key off. Words split across a break are rejoined using the
-document's own vocabulary instead, which needs no word list and knows the paper's jargon. The
-default backend does leave the hyphen in, and it is preferred when it is there.
+so the tables the plan budgeted for were dropped. De-hyphenation needed a second mechanism the
+plan did not anticipate: the page is read as written, so a soft line-break hyphen is usually
+there and is preferred when it is, but where a document leaves none the words split across the
+break are rejoined using the document's own vocabulary, which needs no word list and knows the
+paper's jargon.
 
 Maths is reconstructed geometrically, MaxTract-style, from exact glyph identities and positions
 rather than by OCR — a born-digital PDF hands you perfect character information, so image-to-
@@ -124,8 +114,7 @@ doc = rustypaper.to_document('corpus/resnet.pdf')   # the document model as a di
 ```
 
 `ScannedDocument` is raised for image-only PDFs, so callers can route those to an OCR pipeline
-instead. Conversion releases the GIL, and on the default backend several threads convert in
-parallel.
+instead. Conversion releases the GIL, so several threads convert in parallel.
 
 ## Evaluation
 
@@ -138,7 +127,7 @@ rather than scored.
 cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval
 ```
 
-Current scores on the default backend, across the nine scorable papers:
+Current scores across the nine scorable papers:
 
 | metric | value | what it says |
 |---|---|---|
@@ -169,14 +158,5 @@ rather than fail when the corpus is absent, so a fresh clone is green.
 
 MIT OR Apache-2.0.
 
-That covers everything a default build contains, the published crate and the published wheels
-included: the dependency tree is Rust, and rustium-pdf is MIT OR Apache-2.0 as well.
-
-The `pdfium` feature is the exception, and only for whoever turns it on. pdfium is BSD-3-Clause
-and vendors further third-party code (FreeType, libjpeg-turbo, zlib, ICU and others) under
-their own terms. After running `scripts/fetch-pdfium.sh` those notices are in
-`vendor/pdfium/licenses/`, and `vendor/pdfium/LICENSE-packaging` is the MIT licence of
-[pdfium-binaries](https://github.com/bblanchon/pdfium-binaries), which builds and packages it.
-
-**If you redistribute a binary that bundles `libpdfium.so`, ship `vendor/pdfium/licenses/` with
-it.** Nothing released from this repository does.
+That covers everything a build contains, the published crate and the published wheels included:
+the dependency tree is Rust, and rustium-pdf is MIT OR Apache-2.0 as well.

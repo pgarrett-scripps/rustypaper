@@ -17,25 +17,14 @@ exclude = ["tests/corpus.rs"]
 name = "rustypaper"
 path = "src/main.rs"
 
-[features]
-# Pure Rust throughout: no C library to ship, find or version-match. This is the default, and
-# the reason the crate can be a single static binary.
-default = ["rustium"]
-rustium = ["dep:rustium"]
-# The Chromium PDF engine behind FFI. Kept as an escape hatch for documents rustium cannot yet
-# read, and as the reference the pure-Rust backend is measured against.
-pdfium = ["dep:pdfium-render"]
-
 [dependencies]
 # Used by the binary only, but cargo has no way to say so for a bin inside a library crate.
 # They are small and pure Rust, so the cost to a library consumer is compile time, not weight.
 anyhow.workspace = true
 clap.workspace = true
 
-image.workspace = true
-pdfium-render = { workspace = true, optional = true }
 rayon.workspace = true
-rustium = { workspace = true, optional = true }
+rustium.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -14,11 +14,6 @@ publish = false
 name = "_rustypaper"
 crate-type = ["cdylib"]
 
-[features]
-default = ["rustium"]
-rustium = ["rustypaper/rustium"]
-pdfium = ["rustypaper/pdfium"]
-
 [dependencies]
 rustypaper.workspace = true
 

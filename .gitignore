@@ -1,5 +1,4 @@
 /target
-/vendor
 /corpus/*.pdf
 /corpus/*.tar.gz
 *_assets/
@@ -8,4 +7,3 @@ python/rustypaper/_rustypaper*.so
 __pycache__/
 *.pyc
 /out
-python/rustypaper/libpdfium.so

@@ -1,11 +1,10 @@
 //! Rejoining words split across a line break.
 //!
-//! A backend may remove soft line-break hyphens from the text page. pdfium does — Chrome does it
-//! so that copy-paste rejoins hyphenated words — so by the time the glyphs reach us, `learn-` at
-//! the end of one line and `ing` at the start of the next have become `learn` and `ing` with no
-//! marker at all, and there is nothing to key off but the words themselves. rustium leaves the
-//! hyphen where the document put it, and [`crate::doc`] prefers it when it is there; this module
-//! is what happens when it is not.
+//! The hyphen is usually there to key off: the reader leaves soft line-break hyphens where the
+//! document put them, and [`crate::doc`] prefers one when it finds it. This module is what
+//! happens when it does not — a document that sets `learn-` at the end of one line and `ing` at
+//! the start of the next without an encodable hyphen leaves nothing to match on but the words
+//! themselves.
 //!
 //! The evidence used is the document's own vocabulary. A paper that hyphenates `learn-ing` at
 //! one line break almost always writes `learning` somewhere else, so the merged form can be

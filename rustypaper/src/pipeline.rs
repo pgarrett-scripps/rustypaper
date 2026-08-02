@@ -82,9 +82,9 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     let raw = extract_from(&backend, path)?;
     let heights: Vec<f32> = raw.pages.iter().map(|p| p.height).collect();
 
-    // Everything from here to assembly runs across pages at once. Ingest is kept serial: it is
-    // a small share of the total, and the pdfium backend cannot be anything else — pdfium is
-    // single-threaded and serialised behind a lock inside that backend.
+    // Everything from here to assembly runs across pages at once; ingest above it is serial.
+    // The reader is `Sync`, so that is a choice rather than a constraint — see the measurements
+    // in docs/ARCHITECTURE.md before assuming it is the cheap part.
     let mut pages = build_pages(&raw);
     layout::furniture::strip(&mut pages, &heights);
 

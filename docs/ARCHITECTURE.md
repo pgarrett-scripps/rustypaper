@@ -15,96 +15,43 @@ PDF --[backend]--> PageRaw   glyphs, paths, images
 `Document` is the real output. Markdown is one rendering of it, which is why Typst can be added
 later as an emitter rather than a rewrite.
 
-## Backends
+## The reader boundary
 
-Reading a PDF is behind one trait, `backend::PageSource`, with two implementations selected by
-cargo feature:
+Reading a PDF happens behind one trait, `backend::PageSource`, implemented over
+[rustium-pdf](https://github.com/pgarrett-scripps/rustium-pdf), a pure-Rust interpreter. There is
+no C library in the build at all: `ldd` on the CLI reports libc, libm and libgcc.
 
-| feature | backend | |
-|---|---|---|
-| `rustium` (default) | [rustium-pdf](https://github.com/pgarrett-scripps/rustium-pdf), a pure-Rust interpreter | no FFI, no global state, `Send + Sync`, nothing to install |
-| `pdfium` | Chromium's PDF engine, behind FFI via `pdfium-render` | needs `libpdfium.so` at runtime; the accuracy reference |
+The trait is not there to hold a second implementation. It is there because what the pipeline is
+promised has to be stated somewhere, and that statement belongs above the reader rather than
+inside it. So the classification downstream passes depend on — `classify_path`, `clip_to_page`,
+`resolve_size`, `expand_ligature` — lives in `backend/mod.rs`: table detection must not become a
+function of how a particular reader represents a path or names a glyph. Rectangle detection is
+the one part that has to sit below the boundary, since it inspects the reader's own path
+segments, but the criterion it applies to promote a path to `PathKind::Box` is fixed here.
 
-The default build therefore has no C library in it at all: `ldd` on the CLI reports libc, libm
-and libgcc. pdfium is asked for deliberately —
+Three obligations the boundary carries, all settled at it rather than papered over inside the
+reader:
 
-```sh
-cargo build --release --no-default-features --features pdfium
-scripts/fetch-pdfium.sh
-```
-
-— and is kept as an escape hatch for documents rustium cannot yet read, and as the reference the
-pure-Rust backend is measured against. `backend::Backend` resolves to rustium when both features
-are on, so a build only gets pdfium by giving up the default.
-
-Nothing above `backend/` can tell which one ran. The classification downstream passes depend on
-— `classify_path`, `clip_to_page`, `resolve_size`, `expand_ligature` — lives in `backend/mod.rs`
-rather than in either backend, because two backends that classified rules differently would make
-table detection depend on which was compiled in. Only rectangle detection is unavoidably
-per-backend, since each has its own representation of a path's segments; both promote a path to
-`PathKind::Box` on the same criterion.
-
-Two places where they genuinely differ, both reconciled above the trait rather than papered over
-inside it:
-
-- **Line-break hyphens.** pdfium deletes them from the text page; rustium reports the page as
-  written. `doc::rejoin_across_break` handles both and prefers the hyphen when it is there — it
-  is better evidence than the vocabulary heuristic pdfium forces on us.
-- **Word breaks.** Both synthesise space marks on their own gap heuristic, and `segment_words`
-  treats the marks as authoritative on any line that has them. Mark completeness is a real
-  obligation on a `PageSource`: a backend that under-marks a line runs the rest of it together.
+- **Line-break hyphens.** The page is reported as written, so a soft hyphen at a break is usually
+  present and `doc::rejoin_across_break` takes it as the better evidence it is. Where a document
+  leaves none, the document's own vocabulary settles the join.
+- **Word breaks.** Space marks are synthesised from advance widths, and `segment_words` treats
+  them as authoritative on any line that has them. Mark completeness is therefore a real
+  obligation on a `PageSource`: a line that is under-marked runs the rest of itself together.
+- **Nested content.** LaTeX's `\includegraphics` lands in the content stream as a form XObject,
+  so every rule and image inside a figure sits a level down. Forms are executed as the stream is
+  walked, with the form matrix accumulating down the tree; a reader that yielded only top-level
+  objects would report a figure as empty.
 
 ## Coordinates
 
 Everything above `backend/` works in **PDF points, top-left origin, y-down**, with page rotation
-already applied. PDF's native space is bottom-left/y-up, so each backend converts at its own
-boundary and nothing downstream converts again — `backend::pdfium::Transform` for pdfium, the
-matrix from `Page::page_matrix` for rustium. `glyphs_land_inside_the_page` in `tests/corpus.rs`
-is the regression test for getting it wrong.
+already applied. PDF's native space is bottom-left/y-up, so the conversion happens once, at the
+backend boundary, and nothing downstream converts again: `Page::page_matrix` gives exactly that
+transform, applied to every point rather than case-analysed per rotation.
+`glyphs_land_inside_the_page` in `tests/corpus.rs` is the regression test for getting it wrong.
 
 ## Findings from M0
-
-Three things were discovered by building it that are worth not rediscovering. pdfium was the
-only backend at the time, so the first two are about pdfium specifically; they are kept because
-that backend still ships as a feature.
-
-### pdfium-render's `thread_safe` feature does not make anything thread-safe
-
-It is a default feature and its entire effect is:
-
-```rust
-#[cfg(feature = "thread_safe")]
-unsafe impl<'a> Send for PdfDocument<'a> {}
-#[cfg(feature = "thread_safe")]
-unsafe impl<'a> Sync for PdfDocument<'a> {}
-```
-
-No locking. It only lets pdfium handles cross thread boundaries; keeping concurrent calls out of
-pdfium is the caller's job. Running the integration tests on the default multi-threaded test
-harness aborted with `free(): corrupted unsorted chunks` — and separate documents on separate
-threads are enough to trigger it, because pdfium's global state is shared.
-
-`PDFIUM_LOCK` in `backend/pdfium.rs` serialises every entry point, including `Drop` (closing a
-document calls into pdfium, so the document is held in an `Option` and taken under the guard).
-`concurrent_extraction_does_not_corrupt_pdfium` is the regression test.
-
-The consequence for the pipeline is the one the plan assumed: **ingest is serialised, and the
-pure-Rust stages are what get parallelised.** rustium has no global state and is `Send + Sync`,
-so ingest could be parallelised on the default backend; the pipeline does not yet do so, because
-the shape has to hold for both. Converting many documents at once should shard across processes,
-not threads.
-
-### Figures live inside Form XObjects
-
-`page.objects()` only yields top-level objects. LaTeX's `\includegraphics` lands in the content
-stream as a Form XObject, so treating forms as opaque loses every rule and image inside every
-figure. Before the fix, `adam.pdf` reported **0** paths across 15 pages; after, 1 825.
-
-Child objects report bounds in their form's coordinate space, so the form matrix accumulates
-down the tree. `PdfMatrix::apply_to_points` uses the row-vector convention (`p · M`), so nesting
-composes as `form.multiply(parent)`.
-
-Text needs no equivalent handling: `FPDFText_LoadPage` already flattens the whole page.
 
 ### Path shape has to come from segments, not the bounding box
 
@@ -120,16 +67,16 @@ segments. On the corpus this moved `transformer.pdf` from `2602 boxes / 0 other`
 ### Word breaks come from whitespace glyphs, not from measuring gaps
 
 The plan had this backwards. LaTeX output contains almost no real space characters — 9 to 236
-per document across the corpus — but pdfium *generates* 5 000 to 8 500 per document from the
-font's advance widths, which the public API does not otherwise expose. Measured against those,
-gap analysis mis-segments kerned pairs: `learning framework` has a 0.18 em ink gap where a
-typical space on the same line is 0.30 em. Gap analysis is now the fallback for documents that
-emit no whitespace at all, and inferring a per-line threshold by Otsu may only *lower* it, never
-raise it — author lines have three gap classes and splitting at the widest yields `KaimingHe`.
+per document across the corpus — but the reader *generates* 5 000 to 8 500 per document from the
+font's advance widths. Measured against those, gap analysis mis-segments kerned pairs:
+`learning framework` has a 0.18 em ink gap where a typical space on the same line is 0.30 em. Gap
+analysis is now the fallback for documents that emit no whitespace at all, and inferring a
+per-line threshold by Otsu may only *lower* it, never raise it — author lines have three gap
+classes and splitting at the widest yields `KaimingHe`.
 
-rustium synthesises the same marks on its own gap heuristic, so this holds on either backend. Its
-threshold had to drop to 0.12 em to match: justification compresses a word space to about 0.19 em,
-and at 0.20 em whole lines were being left unmarked and running together.
+The gap heuristic that synthesises those marks had to drop to 0.12 em: justification compresses a
+word space to about 0.19 em, and at 0.20 em whole lines were being left unmarked and running
+together.
 
 ### The column profile must be built from glyphs, not lines
 
@@ -150,28 +97,25 @@ recursion. Full-width elements block vertical cuts by construction, which is why
 two columns, and a wide figure dropped between them, both come out in the right order without a
 special case.
 
-### pdfium reports a font size of 0 for rotated text
+### Text on a pure rotation can report a font size of 0
 
-Every arXiv preprint carries a sideways stamp down the left margin, and pdfium gives all 70 of
-its glyphs a scaled size of 0. Size is load-bearing everywhere downstream, so the backend now
-substitutes the ink extent measured *across* the baseline — taking the larger dimension would
-report the advance and make a margin stamp look like display type. Rotated glyphs are excluded
-from running text; sideways table headers are excluded by the same rule and are not yet handled.
+Every arXiv preprint carries a sideways stamp down the left margin, and every one of its 70
+glyphs arrived with a scaled size of 0. Size is load-bearing everywhere downstream — baseline
+tolerance, word gaps, heading detection — so "positive and finite" is established once, in
+`backend::resolve_size`, rather than defended in every consumer. The substitute is the ink
+extent measured *across* the baseline; taking the larger dimension would report the advance and
+make a margin stamp look like display type. Rotated glyphs are excluded from running text;
+sideways table headers are excluded by the same rule and are not yet handled.
 
-The substitution is `backend::resolve_size`, shared rather than pdfium's, because "size is
-positive and finite" is an invariant downstream depends on and every backend has to meet it.
+### De-hyphenation cannot key off the hyphen alone
 
-### pdfium strips soft line-break hyphens
-
-There is no hyphen left in the glyph stream at a hyphenated line break, because Chrome removes
-them so that copy-paste rejoins words. The artifact is therefore `learn ing`, not `learn- ing`.
-M2's de-hyphenation cannot key off a trailing hyphen and has to notice a line ending mid-word,
-then consult the document's own vocabulary.
-
-rustium reports the page as written, so on the default backend the hyphen *is* there.
-`doc::rejoin_across_break` takes it when it is and falls back to the vocabulary when it is not;
-neither backend is normalised to look like the other, because the hyphen is the better evidence
-and discarding it would be losing information on purpose.
+A hyphen at a line break says the word continues, but not what it becomes: `learn-` + `ing` is
+`learning`, while `state-` + `of-the-art` is a compound that keeps its hyphen. And a document
+that leaves no hyphen at the break gives nothing to key off but the words themselves. Both cases
+go through `doc::rejoin_across_break`, which asks the document's own vocabulary whether the
+joined form appears elsewhere — no word list, and it knows the paper's jargon. A geometric guard
+comes first either way: a line stopping short of its block's right edge was not broken to fit, so
+its last word is whole.
 
 ## Findings from the later milestones
 
@@ -229,10 +173,10 @@ Scoring emitted LaTeX against the equations in each paper's own source — the m
 original plan called for and did not get built until much later — gives the honest state of the
 project's headline claim:
 
-| | default backend | pdfium |
-|---|---|---|
-| equation recall | **0.370** | 0.384 |
-| equation fidelity | **0.547** | 0.557 |
+| | |
+|---|---|
+| equation recall | **0.370** |
+| equation fidelity | **0.547** |
 
 Recall ranges from 1.000 on ResNet, which has two equations, to 0.000 on BERT and unet and 0.035
 on a biology paper with 57. **Detection, not reconstruction, is the weaker half**: most display
@@ -252,8 +196,7 @@ invisible to it.
 
 ## Measurements
 
-Release build on the default backend, one document per process, no figure rasterisation, best of
-three:
+Release build, one document per process, no figure rasterisation, best of three:
 
 | paper | pages | ms/page |
 |---|---|---|
@@ -271,18 +214,11 @@ three:
 Peak memory is 13–30 MB per document. The budget was ≤100 ms/page end-to-end, so this runs at
 3–9% of it.
 
-Converting all ten in one process, writing figures, takes 2.13 s and 64 MB on rustium against
-1.98 s and 93 MB on pdfium. The pure-Rust backend costs a few per cent of wall time and saves a
-third of the memory.
+Converting all ten in one process, writing figures, takes 2.13 s and 64 MB.
 
-**Ingest dominates wall time on either backend.** Extracting the whole corpus takes 0.70 s, and
-converting it paper by paper without figures takes 0.70 s as well: everything after ingest runs
-across pages under rayon and disappears into the same wall clock.
-
-Two rounds of optimisation on the pdfium backend roughly halved its total time: running the
-pure-Rust stages across pages under rayon, and caching the font descriptor flags, which are
-per-font but were being read per-character and accounted for ten of the eighteen FFI calls a
-glyph cost.
+**Ingest dominates wall time.** Extracting the whole corpus takes 0.70 s, and converting it paper
+by paper without figures takes 0.70 s as well: everything after ingest runs across pages under
+rayon and disappears into the same wall clock.
 
 Two experiments that did not pay off, recorded so they are not repeated:
 
@@ -290,34 +226,13 @@ Two experiments that did not pay off, recorded so they are not repeated:
 - Reading only segment *types* rather than coordinates in the rectangle test saved nothing
   measurable and made classification worse — Adam went from 39 boxes to 148.
 
-The largest remaining wrapper cost on pdfium is `PdfPageTextChar::font_name()` at ~9% of ingest,
-which allocates a `String` per character. Removing it needs the raw `FPDFText_GetFontInfo`
-binding and a reusable buffer.
-
 ## Dependencies
 
-The default build is Rust throughout, and everything in it is MIT OR Apache-2.0.
+The build is Rust throughout, and everything in it is MIT OR Apache-2.0.
 
-- **rustium-pdf** (`rustium` in the manifest) is the default backend, resolved from crates.io at
-  `0.1`. It is deliberately not a path dependency: a path only resolves where a sibling checkout
-  happens to exist, which is this machine and not a CI runner. To develop the two together, add
-  a `[patch.crates-io]` override rather than committing one.
-- **rayon** parallelises the pure-Rust stages across pages; **clap** and **anyhow** are used by
+- **rustium-pdf** (`rustium` in the manifest) reads the PDF, resolved from crates.io at `0.1`. It
+  is deliberately not a path dependency: a path only resolves where a sibling checkout happens to
+  exist, which is this machine and not a CI runner. To develop the two together, add a
+  `[patch.crates-io]` override rather than committing one.
+- **rayon** parallelises the stages above ingest across pages; **clap** and **anyhow** are used by
   the binary only, which cargo has no way to express for a `[[bin]]` inside a library crate.
-
-The `pdfium` feature pulls in the rest, and only for whoever turns it on:
-
-- **pdfium** (BSD-3-Clause), pinned to a specific build by `scripts/fetch-pdfium.sh`. Loaded
-  dynamically, not linked: `PDFIUM_DYNAMIC_LIB_PATH` is tried first, then `vendor/pdfium/lib`
-  relative to the executable, then relative to the working directory, then the system library.
-  Pinning matters because the build we test against should be the one we run against. pdfium
-  vendors further third-party code under its own terms — see the licence note in the README
-  before redistributing a binary that bundles it.
-- **pdfium-render** is compiled against its `pdfium_latest` bindings (chromium/7881) while the
-  vendored binary is chromium/7961. pdfium's public C API is append-mostly so the newer library
-  is a superset; if a binding ever goes missing, this is the first place to look.
-- **image** is used only by that backend, to crop and PNG-encode what pdfium rasterises — rustium
-  encodes its own. It is pinned to the version `pdfium-render`'s `image_latest` feature resolves
-  to, so `PdfBitmap::as_image()` returns the same `DynamicImage` type. It is declared
-  unconditionally in the manifest rather than behind the feature, so a default build compiles it
-  without using it.

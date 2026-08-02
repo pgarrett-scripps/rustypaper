@@ -318,10 +318,9 @@ fn convert(
         }
     }
 
-    // Sequential on purpose. Each conversion already parallelises its own pure-Rust stages across
-    // pages, so converting several documents at once in one process buys little and multiplies
-    // peak memory — and on the pdfium backend it buys nothing at all, since ingest is serialised
-    // behind that backend's lock whatever the caller does. Shard across processes to scale out.
+    // Sequential on purpose. Each conversion already parallelises its own stages across pages, so
+    // converting several documents at once in one process buys little and multiplies peak memory.
+    // Shard across processes to scale out.
     let mut failed = 0;
     for pdf in &pdfs {
         let stem = pdf

@@ -326,14 +326,12 @@ fn is_footnote(group: &[&Line], size: f32, stats: Stats, page_height: f32) -> bo
 
 /// Joins a block's lines into running text, rejoining words split across line breaks.
 ///
-/// How visible the break is depends on the backend. pdfium deletes the hyphen from the text page
-/// — Chrome does this so copy-paste rejoins hyphenated words — leaving nothing to key off but
-/// the words themselves, which is what [`Vocabulary::rejoin`] is for. rustium reports the page
-/// as written, so the hyphen is still there and says outright that the word continues.
+/// The page is reported as written, so a soft line-break hyphen is usually still there and says
+/// outright that the word continues. Where a document leaves none — the hyphen unencodable, or
+/// the break made without one — there is nothing to key off but the words themselves, which is
+/// what [`Vocabulary::rejoin`] is for.
 ///
-/// Both are handled here rather than normalised away in a backend, because the hyphen is the
-/// better evidence and throwing it away to imitate pdfium would be losing information on
-/// purpose. A geometric guard comes first either way: hyphenation only happens where a line was
+/// A geometric guard comes first either way: hyphenation only happens where a line was
 /// broken to fit, so a line stopping short of the block's right edge ended for some other reason
 /// and its last word is whole.
 fn join_lines(group: &[&Line], vocab: &Vocabulary) -> String {
@@ -755,7 +753,7 @@ mod tests {
             rejoin_across_break(&vocab, "learn-", "ing"),
             Some("learning".into())
         );
-        // What pdfium reports: no hyphen, so the words alone have to carry it.
+        // No hyphen on the page, so the words alone have to carry it.
         assert_eq!(
             rejoin_across_break(&vocab, "learn", "ing"),
             Some("learning".into())

@@ -18,12 +18,5 @@ cargo build --release "$@"
 cp target/release/lib_rustypaper.so python/rustypaper/_rustypaper.abi3.so
 rm -f python/rustypaper/_rustypaper.so
 
-# pdfium is loaded at runtime and is not linked in, so a pdfium-backed build of the Python
-# package has to carry its own copy — that is what makes an installed wheel work off a
-# checkout, where there is no vendor/ directory to fall back to. The default build is pure
-# Rust and ignores it.
-if [ -f vendor/pdfium/lib/libpdfium.so ]; then
-  cp vendor/pdfium/lib/libpdfium.so python/rustypaper/libpdfium.so
-fi
 
 echo "built target/release/rustypaper and python/rustypaper/_rustypaper.abi3.so"

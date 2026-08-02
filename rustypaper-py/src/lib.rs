@@ -5,10 +5,8 @@
 //! comparison against other tools, notebook work — is scripting, and Rust is the wrong language
 //! for that while being the right one for the per-glyph algorithms underneath.
 //!
-//! Conversion releases the GIL, so other Python threads keep running. On the default backend
-//! conversions also run in parallel with each other. A build using the optional `pdfium` feature
-//! serialises them behind a lock inside `rustypaper`, because pdfium is not thread-safe: still
-//! safe to call from several threads, but not faster for it.
+//! Conversion releases the GIL, so other Python threads keep running and separate conversions
+//! run in parallel with each other.
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyIOError, PyValueError};

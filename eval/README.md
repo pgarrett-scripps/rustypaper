@@ -86,5 +86,5 @@ Exits non-zero if any paper's bigram recall drops by more than 0.005; smaller mo
 noise. Only bigram recall is checked. Refresh the baseline deliberately, with
 `--json > baseline.json`, when a change is an intended improvement.
 
-`baseline.json` is pinned against the default (rustium) backend, which is what a plain
-`scripts/build.sh` produces and what CI runs.
+`baseline.json` is pinned against what a plain `scripts/build.sh` produces, which is what CI
+runs.

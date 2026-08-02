@@ -1,24 +1,19 @@
 //! The boundary between "reading a PDF" and "understanding a paper".
 //!
-//! Everything above this trait is pure Rust operating on [`PageRaw`]. Two backends implement it:
-//! [`rustium`], a pure-Rust PDF interpreter, and [`pdfium`], the Chromium engine behind FFI.
-//! Which one is compiled in is a feature choice; nothing above this module can tell the
-//! difference, because the shape classification and page clipping that downstream passes depend
-//! on live here rather than in either backend.
+//! Everything above this trait is pure Rust operating on [`PageRaw`], produced by [`rustium`].
+//! The trait is still worth having: the shape classification and page clipping that downstream
+//! passes depend on live here rather than in the backend, so what the rest of the pipeline is
+//! promised does not move if the reader underneath it ever does.
 
 use crate::error::Result;
 use crate::ir::{FontTable, PageRaw, PathKind, Rect};
 
-#[cfg(feature = "pdfium")]
-pub mod pdfium;
-#[cfg(feature = "rustium")]
 pub mod rustium;
 
 /// A source of page primitives.
 ///
-/// Implementations are not required to be `Sync`: pdfium is not thread-safe, so ingest is
-/// serialised and the expensive pure-Rust stages are what get parallelised. The rustium backend
-/// *is* `Sync`, but the pipeline does not yet depend on that.
+/// Implementations are not required to be `Sync`, though [`rustium`]'s is, so ingest could be
+/// parallelised alongside the stages above it. The pipeline does not depend on that yet.
 pub trait PageSource {
     /// Number of pages in the document.
     fn page_count(&self) -> usize;
@@ -33,17 +28,10 @@ pub trait PageSource {
     fn render_region(&self, index: usize, region: Rect, dpi: f32) -> Result<Vec<u8>>;
 }
 
-/// The backend selected at compile time.
-///
-/// rustium wins the tie when both are enabled: it is the one that keeps the build pure Rust, so
-/// pdfium has to be asked for deliberately rather than fallen into.
-#[cfg(feature = "rustium")]
+/// The reader every page comes through.
 pub type Backend = rustium::RustiumBackend;
-#[cfg(all(feature = "pdfium", not(feature = "rustium")))]
-pub type Backend = pdfium::PdfiumBackend;
 
 /// Opens a PDF with the compiled-in backend.
-#[cfg(any(feature = "rustium", feature = "pdfium"))]
 pub fn open(path: impl AsRef<std::path::Path>) -> Result<Backend> {
     Backend::open(path)
 }
@@ -83,7 +71,7 @@ pub(crate) fn classify_path(bbox: &Rect) -> (PathKind, f32) {
 /// A clipped path reports the bounds of its *unclipped* geometry, which can run tens of
 /// thousands of points off-page. Taking that at face value let a single object drag a figure
 /// region to 6000% of the page and swallow every block on it. What is visible is what falls on
-/// the page, so that is what gets recorded. Both backends report unclipped geometry, so both
+/// the page, so that is what gets recorded. The reader reports unclipped geometry, so this
 /// need this.
 pub(crate) fn clip_to_page(bbox: Rect, width: f32, height: f32) -> Option<Rect> {
     if !bbox.x0.is_finite() || !bbox.y0.is_finite() || !bbox.x1.is_finite() || !bbox.y1.is_finite()
@@ -103,8 +91,8 @@ pub(crate) fn clip_to_page(bbox: Rect, width: f32, height: f32) -> Option<Rect> 
 ///
 /// TeX sets `fi` as one glyph, and a PDF that maps it faithfully hands back U+FB01. Every
 /// consumer downstream — de-hyphenation, the vocabulary, bigram scoring, search over the
-/// Markdown — wants the letters. pdfium expands these in its own glyph-name fallback, so doing
-/// it here is what makes the two backends agree rather than a preference of ours.
+/// Markdown — wants the letters. The backend expands these in its glyph-name fallback, so doing
+/// it here keeps the expansion in one place, above whatever reads the page.
 ///
 /// Returns `None` for the overwhelmingly common case of a character that is not a ligature.
 pub(crate) fn expand_ligature(c: char) -> Option<&'static str> {

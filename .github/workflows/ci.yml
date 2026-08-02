@@ -7,10 +7,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pin the pdfium build, for the one job that still needs it. The default
-  # build does not: it is pure Rust, which is what makes the crate a single
-  # binary with no C library beside it, and the wheel self-contained.
-  PDFIUM_RELEASE: chromium/7961
 
 jobs:
   rust:
@@ -60,17 +56,3 @@ jobs:
         working-directory: eval
         run: PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
 
-  # The pdfium backend is an escape hatch for documents rustium cannot yet
-  # read, and the reference the pure-Rust one is measured against. Nothing
-  # ships with it, but it has to keep compiling and passing — an escape hatch
-  # discovered to be broken at the moment it is needed is not one.
-  pdfium-backend:
-    name: pdfium feature
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Fetch pdfium
-        run: scripts/fetch-pdfium.sh
-      - run: cargo test --release --no-default-features --features pdfium

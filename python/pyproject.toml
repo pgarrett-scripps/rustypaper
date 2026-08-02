@@ -29,7 +29,6 @@ module-name = "rustypaper._rustypaper"
 # compiled extension, so `pip install rustypaper` yields an importable
 # `_rustypaper` and no `rustypaper` — the package the docs tell people to import.
 python-source = "."
-# Nothing to bundle. The default backend is pure Rust, so the extension is
-# self-contained and the wheel is the extension plus this package — no C
-# library travelling beside it, no per-platform copy to keep in step. A
-# wheel built with `--features pdfium` would need one; we do not build those.
+# Nothing to bundle. The reader is pure Rust, so the extension is
+# self-contained and the wheel is the extension plus this package: no native
+# library travelling beside it, and no per-platform copy to keep in step.

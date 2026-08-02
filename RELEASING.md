@@ -50,10 +50,9 @@ run it from the Actions tab with **dry run** left on.
 ## What ships
 
 The wheel is the extension module and the Python package around it, and
-nothing else. The default build is pure Rust — there is no pdfium to bundle,
-no per-platform C library to keep in step, and no `PDFIUM_DYNAMIC_LIB_PATH`
-for a user to discover. A wheel built `--features pdfium` would need all of
-that; we do not build those.
+nothing else. The PDF reader is pure Rust, so the wheel is self-contained:
+no native library beside it, nothing per-platform to keep in step, and no
+environment variable for a user to discover.
 
 One wheel per platform covers every supported Python, because the extension
 is built against the stable ABI (`abi3-py39`).

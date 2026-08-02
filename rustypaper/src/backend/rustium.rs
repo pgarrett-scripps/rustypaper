@@ -293,8 +293,8 @@ fn collect_glyphs(page: &Page, space: &Space, fonts: &mut FontTable, raw: &mut P
 /// rustium emits one item per painting operator, so a whole `tabular`'s rules — or an entire
 /// plot's axes — can arrive as a single path with dozens of subpaths. Classifying that by its
 /// combined bounding box calls a table grid one large `Other` and loses every rule in it, which
-/// is what table detection runs on. pdfium happens to report these pre-split, and matching that
-/// is what keeps downstream passes backend-independent.
+/// is what table detection runs on. Splitting here keeps the promise this module makes to
+/// everything above it: one item per subpath, whatever the reader underneath emits.
 fn subpaths(cmds: &[PathCmd]) -> Vec<&[PathCmd]> {
     let mut starts: Vec<usize> = cmds
         .iter()
@@ -327,8 +327,7 @@ const HAIRLINE: f32 = 0.1;
 /// This is load-bearing, not cosmetic. A horizontal rule is a single `m`/`l` segment whose
 /// geometric bounding box has **exactly zero height**, so without this it is discarded as
 /// degenerate before it can ever be classified — which silently cost every `\hline`, every
-/// `\toprule` and every fraction bar on the page. pdfium's bounds already include the stroke,
-/// which is why the same pipeline saw rules there and none here.
+/// `\toprule` and every fraction bar on the page.
 fn inflate_stroke(r: rustium::geom::Rect, line_width: f32) -> rustium::geom::Rect {
     let half = line_width.max(HAIRLINE) / 2.0;
     rustium::geom::Rect {

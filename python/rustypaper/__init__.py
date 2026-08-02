@@ -12,23 +12,8 @@ The heavy lifting is a Rust extension module; this package is the ergonomic surf
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
-
-# A released wheel is pure Rust and needs none of this. A checkout built with
-# `--features pdfium` does: pdfium is loaded at runtime rather than linked, and
-# the extension's own search paths are relative to the working directory, so
-# without a pointer it imports cleanly and fails on the first conversion. An
-# explicit PDFIUM_DYNAMIC_LIB_PATH still wins — someone who set it meant it.
-if "PDFIUM_DYNAMIC_LIB_PATH" not in os.environ:
-    for _candidate in (
-        Path(__file__).resolve().parent,                           # beside the extension
-        Path(__file__).resolve().parents[2] / "vendor/pdfium/lib",  # source checkout
-    ):
-        if list(_candidate.glob("*pdfium*")):
-            os.environ["PDFIUM_DYNAMIC_LIB_PATH"] = str(_candidate)
-            break
 
 from ._rustypaper import ScannedDocument, __version__, extract_json, to_json, to_markdown  # noqa: E402
 

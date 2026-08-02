@@ -178,13 +178,13 @@ fn renders_a_crop_at_the_requested_size() {
     assert!(region.x1 <= page.width && region.y1 <= page.height);
 }
 
-/// Extracting from several threads at once must stay memory-safe, whichever backend is built.
+/// Extracting from several threads at once must stay memory-safe.
 ///
-/// This began as a regression test for real heap corruption: pdfium-render's `thread_safe`
-/// feature only adds `Send`/`Sync` impls and does no locking, so without our own lock this
-/// aborted with `free(): corrupted unsorted chunks` within a handful of iterations. The rustium
-/// backend has no global state to corrupt, but the guarantee callers rely on is the same one,
-/// so the test follows whichever backend is compiled in rather than naming either.
+/// This began as a regression test for real heap corruption, back when reading was done through
+/// a C library whose thread-safe build added `Send`/`Sync` and no locking: without a lock of our
+/// own it aborted with `free(): corrupted unsorted chunks` within a handful of iterations. The
+/// reader has no global state to corrupt now, but the guarantee callers rely on is unchanged,
+/// so the test stays.
 #[test]
 fn concurrent_extraction_stays_sound() {
     let path = paper!("resnet.pdf");
@@ -241,7 +241,7 @@ fn words_are_segmented_correctly_on_body_text() {
         .join("\n");
 
     // `learning framework` is kerned to a 0.18 em ink gap against a 0.30 em typical space, so
-    // any fixed threshold safe for kerning merges it. pdfium's generated space marks it.
+    // any fixed threshold safe for kerning merges it. The generated space glyph marks it.
     assert!(
         text.contains("residual learning framework"),
         "kerned space was swallowed"
@@ -264,8 +264,8 @@ fn the_rotated_arxiv_stamp_is_excluded() {
 
     let rotated = rustypaper::text::lines::rotated_glyphs(page);
     assert!(!rotated.is_empty(), "resnet has a sideways arXiv stamp");
-    // pdfium reports a scaled size of 0 for purely rotated text; the backend must have
-    // substituted a usable size rather than letting a zero reach layout.
+    // A purely rotated glyph can carry a scaled size of 0; layout must receive a usable size
+    // rather than that zero.
     for &i in &rotated {
         assert!(page.glyphs[i].size > 0.0, "glyph size must be positive");
     }
@@ -277,9 +277,9 @@ fn the_rotated_arxiv_stamp_is_excluded() {
     );
 }
 
-/// pdfium's glyph-name fallback already resolves TeX ligatures, so the Unicode repair tables the
-/// plan budgeted for are not needed. This pins that: if a backend change ever regresses it, the
-/// classic dropped-ligature spellings reappear.
+/// The glyph-name fallback already resolves TeX ligatures, so the Unicode repair tables the plan
+/// budgeted for are not needed. This pins that: if a reader change ever regresses it, the classic
+/// dropped-ligature spellings reappear.
 #[test]
 fn tex_ligatures_survive_extraction() {
     for name in ["resnet.pdf", "adam.pdf", "bert.pdf", "transformer.pdf"] {
@@ -354,9 +354,8 @@ fn single_column_papers_are_not_split_into_columns() {
 
 /// Words split across a line break are rejoined.
 ///
-/// pdfium removes soft line-break hyphens entirely — Chrome does this so copy-paste rejoins
-/// hyphenated words — so there is no hyphen to key off and the break is invisible except in the
-/// words themselves. The document's own vocabulary supplies the evidence.
+/// Where a document leaves no hyphen at the break, it is invisible except in the words
+/// themselves, and the document's own vocabulary supplies the evidence.
 #[test]
 fn hyphenated_line_breaks_are_rejoined() {
     let path = paper!("resnet.pdf");
