@@ -7,3 +7,4 @@
 python/_rustypdf.so
 __pycache__/
 *.pyc
+/out

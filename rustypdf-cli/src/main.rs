@@ -330,13 +330,15 @@ fn convert(
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let assets = assets.clone().or_else(|| {
-            if batch {
-                dest.as_ref().map(|d| d.join(format!("{stem}_assets")))
-            } else {
-                None
-            }
-        });
+        // Figures are numbered from one per document, so a batch sharing a single directory
+        // has every paper's `figure-001.png` overwrite the last one's. Each paper gets its own
+        // subdirectory whether the caller named the location or not.
+        let assets = match (&assets, batch) {
+            (Some(dir), true) => Some(dir.join(&stem)),
+            (Some(dir), false) => Some(dir.clone()),
+            (None, true) => dest.as_ref().map(|d| d.join(format!("{stem}_assets"))),
+            (None, false) => None,
+        };
 
         let options = rustypdf::Options {
             assets,
