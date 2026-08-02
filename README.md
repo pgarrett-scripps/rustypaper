@@ -106,15 +106,25 @@ rather than scored.
 cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval
 ```
 
-Current mean bigram recall is **0.894** across the nine scorable papers. See
+Current scores across the nine scorable papers:
+
+| metric | value | what it says |
+|---|---|---|
+| prose bigram recall | **0.894** | prose comes out right, in the right order |
+| equation recall | **0.375** | most display equations are *not* found |
+| equation fidelity | **0.557** | those that are found are roughly half right |
+| tables | 57 found / 44 in source | badly distributed: 0 on one paper, over-detected on another |
+
+The maths numbers are the honest state of the differentiator, and they are the project's
+weakest point — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). See
 [`eval/README.md`](eval/README.md) for what the metrics mean and why plain edit distance is the
 wrong primary measure here.
 
 ## Testing
 
 ```sh
-cargo test                                    # unit tests always run; corpus tests skip if
-                                              # corpus/ is empty
+cargo test                                    # unit, robustness and corpus tests; corpus tests
+                                              # skip if corpus/ is empty
 python3 -m unittest discover -s eval/tests    # the eval harness's own tests
 cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval --baseline baseline.json
 ```

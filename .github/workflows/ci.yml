@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pin the pdfium build so CI tests the library the project ships against.
+  PDFIUM_RELEASE: chromium/7961
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Fetch pdfium
+        run: scripts/fetch-pdfium.sh
+
+      # The corpus is not committed — the PDFs are not ours to redistribute — so unit and
+      # robustness tests run everywhere and corpus tests skip unless it is present.
+      - name: Fetch corpus
+        run: scripts/fetch-corpus.sh
+        continue-on-error: true
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --release
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch pdfium
+        run: scripts/fetch-pdfium.sh
+
+      - name: Build the extension module
+        run: scripts/build.sh
+
+      - name: Harness self-tests
+        run: python3 -m unittest discover -s eval/tests
+
+      # Quality is a number, and it must not silently fall. Needs the corpus, so it is allowed
+      # to be skipped rather than failing the build when arXiv is unreachable.
+      - name: Fetch corpus
+        id: corpus
+        run: scripts/fetch-corpus.sh
+        continue-on-error: true
+
+      - name: Check for quality regressions
+        if: steps.corpus.outcome == 'success'
+        working-directory: eval
+        run: PYTHONPATH=.:../python python3 -m rp2m_eval --baseline baseline.json

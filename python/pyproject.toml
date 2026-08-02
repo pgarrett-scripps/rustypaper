@@ -1,0 +1,27 @@
+[project]
+name = "rustypdf"
+version = "0.1.0"
+description = "Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON."
+readme = "../README.md"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+keywords = ["pdf", "markdown", "typst", "science", "papers", "extraction"]
+classifiers = [
+  "Programming Language :: Rust",
+  "Topic :: Text Processing :: Markup",
+  "Topic :: Scientific/Engineering",
+]
+
+[project.urls]
+Repository = "https://github.com/tygarrett/rustypdf2markdown"
+
+# Built with maturin from the workspace root:
+#   maturin build -m rustypdf-py/Cargo.toml
+# `scripts/build.sh` is the no-maturin path: cargo produces an importable .so directly.
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+manifest-path = "../rustypdf-py/Cargo.toml"
+module-name = "_rustypdf"

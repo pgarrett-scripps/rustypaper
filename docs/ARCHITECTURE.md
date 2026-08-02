@@ -167,6 +167,32 @@ that family, not the general shape of a paper.** Every one of these was invisibl
 original four, and the new papers score *higher* once fixed — the two-column ML templates were
 the harder cases all along.
 
+## What the maths scorer found
+
+Scoring emitted LaTeX against the equations in each paper's own source — the measurement the
+original plan called for and did not get built until much later — gives the honest state of the
+project's headline claim:
+
+| | |
+|---|---|
+| equation recall | **0.375** |
+| equation fidelity | **0.557** |
+
+Recall ranges from 1.000 on ResNet, which has two equations, to 0.000 on BERT and unet and 0.036
+on a biology paper with 57. **Detection, not reconstruction, is the weaker half**: most display
+equations are never identified as such, and the ones that are come out around half right.
+
+It also condemns the confidence score. Mean reported confidence is 0.94 and 3 of 262 equations
+fall below the fallback threshold, against a measured recall of 0.38. Confidence reflects two
+specific snags — a guessed radical extent, an unnameable glyph — and none of the ways
+reconstruction actually goes wrong, so the image fallback it gates has effectively never fired.
+**A score that is always high is worse than no score**, because it silently disables the safety
+mechanism built on it.
+
+The fix has to start with detection: `math::display` requires a line to be centred in its column
+or to carry an equation number, and templates that indent display maths without centring it are
+invisible to it.
+
 ## Measurements
 
 Release build, whole corpus, best of three runs of ten:
