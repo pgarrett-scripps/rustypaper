@@ -89,8 +89,10 @@ instead. Conversion releases the GIL.
 
 ## Evaluation
 
-Quality is measured, not eyeballed. arXiv ships every paper's LaTeX source, which gives free
-ground truth for exactly this document class.
+Quality is measured, not eyeballed. Papers submitted to arXiv as TeX source come with the prose
+their PDF was rendered from, which is free ground truth for exactly this document class — for
+the subset of papers that have it. PDF-only submissions have none, and are reported as skipped
+rather than scored.
 
 ```sh
 cd eval && PYTHONPATH=.:../python python3 -m rp2m_eval

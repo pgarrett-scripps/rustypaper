@@ -22,8 +22,19 @@ mean bigram recall   0.862
 
 ## Where the ground truth comes from
 
-arXiv ships every paper's LaTeX source, so the prose a PDF was rendered *from* is available for
-free, at any scale, for exactly the document class this project targets. No hand annotation.
+Where a paper was written in TeX and submitted as source, arXiv serves that source, so the prose
+the PDF was rendered *from* is available without hand annotation.
+
+**This is not every paper.** arXiv requires source only when a submission was prepared in TeX; a
+PDF produced by Word, or by a tool the author did not submit source for, is accepted as a PDF.
+Some authors also route a finished PDF through the TeX path by wrapping it in a one-line
+`\includepdf` document, which yields an archive with no prose in it. `adam.pdf` — one of the
+four papers in this corpus — is exactly that case.
+
+So the harness treats ground truth as *available for some papers*, not all: anything with fewer
+than `MIN_REFERENCE_WORDS` of reference prose is reported as skipped rather than scored. Growing
+the corpus means sampling papers and keeping the ones that have usable source, not assuming
+every id will.
 
 `detex.py` reduces that source to prose. It is deliberately not a LaTeX implementation — no
 macro expansion, no package semantics. **Scores are therefore relative.** Whatever the reducer
