@@ -68,6 +68,11 @@ pub struct Line {
     pub baseline: f32,
     /// The dominant font size, taken from the widest run of same-size glyphs.
     pub size: f32,
+    /// Most of the line's glyphs are bold. Heading detection leans on this for templates that
+    /// set section titles in bold at body size rather than enlarging them.
+    pub bold: bool,
+    /// Most of the line's glyphs are italic.
+    pub italic: bool,
     pub glyphs: Vec<Placed>,
     pub words: Vec<Word>,
 }
@@ -224,6 +229,8 @@ fn absorb_scripts(page: &PageRaw, clusters: Vec<Vec<usize>>) -> Vec<Line> {
                 bbox: bounds(page, &glyphs),
                 baseline: 0.0,
                 size: 0.0,
+                bold: false,
+                italic: false,
                 glyphs: glyphs
                     .into_iter()
                     .map(|index| Placed {
@@ -357,6 +364,22 @@ fn recompute(page: &PageRaw, line: &mut Line) {
     }
     baselines.sort_by(f32::total_cmp);
     line.baseline = baselines[baselines.len() / 2];
+
+    // Emphasis is judged over the line as a whole: a single italic symbol in a sentence does not
+    // make the line italic, but a fully italicised caption lead-in is worth knowing about.
+    let total = line.glyphs.len().max(1);
+    let bold = line
+        .glyphs
+        .iter()
+        .filter(|p| page.glyphs[p.index].flags.is_bold())
+        .count();
+    let italic = line
+        .glyphs
+        .iter()
+        .filter(|p| page.glyphs[p.index].flags.is_italic())
+        .count();
+    line.bold = bold * 2 > total;
+    line.italic = italic * 2 > total;
 }
 
 /// Splits lines wherever they cross a gutter, so each resulting line belongs to one column.
@@ -390,6 +413,8 @@ pub fn split_at_gutters(page: &PageRaw, lines: Vec<Line>, gutters: &[(f32, f32)]
                 bbox: line.bbox,
                 baseline: line.baseline,
                 size: line.size,
+                bold: line.bold,
+                italic: line.italic,
                 glyphs,
                 words: Vec::new(),
             };

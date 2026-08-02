@@ -21,6 +21,14 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
+enum Format {
+    /// GitHub-flavoured Markdown.
+    Md,
+    /// The document model, which is the real output; every other format renders this.
+    Json,
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Dump extracted page primitives as JSON.
@@ -39,6 +47,16 @@ enum Command {
         #[arg(long)]
         pages: bool,
     },
+    /// Convert a PDF to structured text.
+    Convert {
+        pdf: PathBuf,
+        /// Output format.
+        #[arg(short, long, default_value = "md")]
+        format: Format,
+        /// Write to a file instead of stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Print reconstructed lines, one per output line. Reading order is not applied yet.
     Text {
         pdf: PathBuf,
@@ -56,6 +74,11 @@ fn main() -> Result<()> {
 
     let result = match Cli::parse().command {
         Command::Dump { pdf, page, pretty } => dump(&mut out, pdf, page, pretty),
+        Command::Convert {
+            pdf,
+            format,
+            out: dest,
+        } => convert(&mut out, pdf, format, dest),
         Command::Probe { pdf, pages } => probe(&mut out, pdf, pages),
         Command::Text {
             pdf,
@@ -162,7 +185,7 @@ fn probe(out: &mut impl Write, pdf: PathBuf, per_page: bool) -> Result<()> {
         for page in &doc.pages {
             writeln!(
                 out,
-                "    {:>3}: {:>5} glyphs  {:>3} paths  {:>2} images  {:.0}x{:.0}pt rot={}",
+                "    {:>3}: {:>5} glyphs  {:>3} paths  {:>2} images  {:.0}x{:.0}pt rot={}  {} lines  gutters={:?}",
                 page.index,
                 page.glyphs.len(),
                 page.paths.len(),
@@ -170,6 +193,17 @@ fn probe(out: &mut impl Write, pdf: PathBuf, per_page: bool) -> Result<()> {
                 page.width,
                 page.height,
                 page.rotation,
+                {
+                    let lines = build_lines(page);
+                    lines.len()
+                },
+                {
+                    let lines = build_lines(page);
+                    rustypdf::layout::columns::page_gutters(page, &lines)
+                        .iter()
+                        .map(|(a, b)| (a.round() as i32, b.round() as i32))
+                        .collect::<Vec<_>>()
+                },
             )?;
         }
     }
@@ -202,4 +236,25 @@ fn text(out: &mut impl Write, pdf: PathBuf, only: Option<usize>, geometry: bool)
         }
     }
     Ok(())
+}
+
+fn convert(
+    out: &mut impl Write,
+    pdf: PathBuf,
+    format: Format,
+    dest: Option<PathBuf>,
+) -> Result<()> {
+    let doc = rustypdf::convert(&pdf).with_context(|| format!("converting {}", pdf.display()))?;
+
+    let rendered = match format {
+        Format::Md => rustypdf::emit::markdown::render(&doc),
+        Format::Json => serde_json::to_string_pretty(&doc)? + "\n",
+    };
+
+    match dest {
+        Some(path) => {
+            std::fs::write(&path, rendered).with_context(|| format!("writing {}", path.display()))
+        }
+        None => out.write_all(rendered.as_bytes()).map_err(Into::into),
+    }
 }

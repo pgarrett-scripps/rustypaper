@@ -304,3 +304,70 @@ fn tex_ligatures_survive_extraction() {
         );
     }
 }
+
+/// End-to-end conversion of a two-column paper.
+#[test]
+fn converts_a_two_column_paper_in_reading_order() {
+    let path = paper!("resnet.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let md = rustypdf::emit::markdown::render(&doc);
+
+    assert_eq!(
+        doc.title.as_deref(),
+        Some("Deep Residual Learning for Image Recognition")
+    );
+    assert!(md.starts_with("# Deep Residual Learning for Image Recognition"));
+
+    // The abstract must read as continuous prose. Before the column pass it was interleaved
+    // line-by-line with the tick labels of the figure in the opposite column.
+    assert!(
+        md.contains("Deeper neural networks are more difficult to train. We present a residual"),
+        "abstract is not continuous"
+    );
+
+    // Sections must be found and ordered.
+    let heading_positions: Vec<usize> = ["## 1. Introduction", "## 2. Related Work"]
+        .iter()
+        .map(|h| md.find(h).unwrap_or_else(|| panic!("missing heading {h}")))
+        .collect();
+    assert!(
+        heading_positions.windows(2).all(|w| w[0] < w[1]),
+        "headings are out of order"
+    );
+}
+
+/// Single-column papers must not have phantom columns invented for them.
+#[test]
+fn single_column_papers_are_not_split_into_columns() {
+    for name in ["adam.pdf", "transformer.pdf"] {
+        let path = paper!(name);
+        let doc = rustypdf::extract(&path).expect("extraction failed");
+        for page in &doc.pages {
+            let lines = build_lines(page);
+            let found = rustypdf::layout::columns::page_gutters(page, &lines);
+            assert!(found.is_empty(), "{name} page {}: {found:?}", page.index);
+        }
+    }
+}
+
+/// Known gap, pinned so the fix is visible when it lands.
+///
+/// pdfium removes soft line-break hyphens from the text page entirely — Chrome does this so
+/// copy-paste rejoins hyphenated words — so the artifact is `learn ing`, not `learn- ing`. That
+/// means M2's de-hyphenation cannot key off a trailing hyphen; it has to notice a line ending
+/// mid-word and consult the document's own vocabulary.
+#[test]
+fn hyphenated_line_breaks_are_a_known_gap() {
+    let path = paper!("resnet.pdf");
+    let doc = rustypdf::convert(&path).expect("conversion failed");
+    let md = rustypdf::emit::markdown::render(&doc);
+
+    assert!(
+        md.contains("learn ing residual functions"),
+        "the split-word artifact changed shape; revisit de-hyphenation"
+    );
+    assert!(
+        !md.contains("learn- ing"),
+        "a trailing hyphen survived, so pdfium's behaviour changed"
+    );
+}

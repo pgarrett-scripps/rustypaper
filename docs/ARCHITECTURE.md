@@ -71,6 +71,52 @@ downstream: rectangles are cell shading and frames for table detection, while a 
 segments. On the corpus this moved `transformer.pdf` from `2602 boxes / 0 other` to
 `2255 / 347`, and `adam.pdf` from `676 / 0` to `39 / 637`.
 
+## Findings from M1
+
+### Word breaks come from whitespace glyphs, not from measuring gaps
+
+The plan had this backwards. LaTeX output contains almost no real space characters — 9 to 236
+per document across the corpus — but pdfium *generates* 5 000 to 8 500 per document from the
+font's advance widths, which the public API does not otherwise expose. Measured against those,
+gap analysis mis-segments kerned pairs: `learning framework` has a 0.18 em ink gap where a
+typical space on the same line is 0.30 em. Gap analysis is now the fallback for documents that
+emit no whitespace at all, and inferring a per-line threshold by Otsu may only *lower* it, never
+raise it — author lines have three gap classes and splitting at the widest yields `KaimingHe`.
+
+### The column profile must be built from glyphs, not lines
+
+Both columns of a paper usually sit on the same baseline grid, so before the gutter is known a
+"line" is often one row of *both* columns — and therefore spans the gutter it is meant to
+reveal. Profiling by line found the gutter on 2 of 12 pages of a plainly two-column paper;
+profiling by glyph finds it on 11. Two guards keep it honest: a band must have dense text within
+24pt on both sides, and a page reporting more than two gutters is treated as having none, since
+four or more columns means a wide table rather than columns.
+
+### XY-cut must cut at the widest gap, not at every gap
+
+Ordinary leading between two body lines is a gap. Cutting at all of them shreds the page into
+one band per line before the column structure can be seen, and the two columns then interleave
+line by line. Cutting only at the widest gap — and any within 15% of it, so uniformly-leaded
+lines stay together — lets the dominant structure win at each level and the rest be found by
+recursion. Full-width elements block vertical cuts by construction, which is why a title above
+two columns, and a wide figure dropped between them, both come out in the right order without a
+special case.
+
+### pdfium reports a font size of 0 for rotated text
+
+Every arXiv preprint carries a sideways stamp down the left margin, and pdfium gives all 70 of
+its glyphs a scaled size of 0. Size is load-bearing everywhere downstream, so the backend now
+substitutes the ink extent measured *across* the baseline — taking the larger dimension would
+report the advance and make a margin stamp look like display type. Rotated glyphs are excluded
+from running text; sideways table headers are excluded by the same rule and are not yet handled.
+
+### pdfium strips soft line-break hyphens
+
+There is no hyphen left in the glyph stream at a hyphenated line break, because Chrome removes
+them so that copy-paste rejoins words. The artifact is therefore `learn ing`, not `learn- ing`.
+M2's de-hyphenation cannot key off a trailing hyphen and has to notice a line ending mid-word,
+then consult the document's own vocabulary.
+
 ## Measurements
 
 Extraction only (M0 scope), release build, corpus of four arXiv papers:

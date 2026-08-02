@@ -8,8 +8,8 @@ GPU; GROBID is CPU-only and fast but is a JVM service that emits TEI and ignores
 crates that exist are generic text extractors with no notion of a paper. This aims at the gap:
 **structure-aware, maths-aware, CPU-only, single binary.**
 
-> Status: **M0**. Page primitives are extracted and inspectable. Nothing converts to Markdown
-> yet — see [the plan](#milestones).
+> Status: **M1**. Converts to Markdown with correct reading order on one- and two-column
+> papers. Tables, figures and maths are not handled yet — see [milestones](#milestones).
 
 ## Getting started
 
@@ -20,11 +20,14 @@ cargo build --release
 ```
 
 ```sh
-# What does the backend actually see?
-./target/release/rp2m probe corpus/resnet.pdf --pages
+# Convert.
+./target/release/rp2m convert corpus/resnet.pdf
+./target/release/rp2m convert corpus/resnet.pdf --format json
 
-# Page primitives as JSON, for one page or the whole document.
-./target/release/rp2m dump corpus/resnet.pdf --page 0 --pretty
+# Diagnostics.
+./target/release/rp2m probe corpus/resnet.pdf --pages   # counts, fonts, detected gutters
+./target/release/rp2m text  corpus/resnet.pdf --geometry # reconstructed lines
+./target/release/rp2m dump  corpus/resnet.pdf --page 0 --pretty
 ```
 
 `probe` prints per-page glyph/path/image counts and the font histogram. The font histogram is
@@ -41,6 +44,11 @@ The short version: the backend produces a `PageRaw` of glyphs, paths and images,
 stage is a pass over an IR. The `Document` JSON is the contract; Markdown and Typst are
 renderings of it.
 
+Unicode repair turned out not to be needed — pdfium's glyph-name fallback already resolves TeX
+ligatures, so the tables the plan budgeted for were dropped. De-hyphenation is still outstanding
+and is harder than expected: pdfium *removes* soft line-break hyphens, so the artifact is
+`learn ing` rather than `learn- ing` and there is no hyphen left to key off.
+
 Maths is reconstructed geometrically, MaxTract-style, from exact glyph identities and positions
 rather than by OCR — a born-digital PDF hands you perfect character information, so image-to-
 LaTeX models are solving a problem this pipeline does not have. Equations carry a confidence
@@ -54,8 +62,8 @@ pretending.
 | | | status |
 |---|---|---|
 | **M0** | Backend, `PageRaw`, CLI, corpus, thread-safety spike | done |
-| **M1** | Unicode repair, lines/words, furniture removal, columns, reading order → Markdown | next |
-| **M2** | Figures, captions, footnotes, lists, de-hyphenation | |
+| **M1** | Lines/words, furniture removal, columns, reading order → Markdown | done |
+| **M2** | Figures, captions, footnotes, lists, de-hyphenation | next |
 | **M3** | Tables (booktabs → lattice → stream) | |
 | **M4** | Maths detection and reconstruction | |
 | **M5** | References, citation linking, CSL-JSON | |
