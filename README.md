@@ -30,14 +30,14 @@ cargo build --release
 ./target/release/rp2m dump  corpus/resnet.pdf --page 0 --pretty
 ```
 
-`probe` prints per-page glyph/path/image counts and the font histogram. The font histogram is
-the first thing to look at when text comes out wrong: TeX maths fonts (`CMMI`, `CMSY`, `CMEX`)
-where prose is expected means the Unicode repair pass has work to do.
+`probe` prints per-page counts, the font histogram and the detected gutters. Gutters are the
+first thing to check when a two-column paper comes out interleaved; the font histogram is the
+first thing to check when text comes out wrong.
 
 ## Design
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the pipeline, the coordinate convention,
-and the three things M0 discovered the hard way — most importantly that pdfium-render's
+and the eight things M0 and M1 discovered the hard way — most importantly that pdfium-render's
 `thread_safe` feature does no locking at all.
 
 The short version: the backend produces a `PageRaw` of glyphs, paths and images, and every later

@@ -93,7 +93,7 @@ pub fn assemble(pages: &[Vec<Line>], stats: Stats) -> Document {
 }
 
 /// Splits a page's ordered lines into block-sized groups.
-fn group_lines<'a>(lines: &'a [Line], stats: Stats) -> Vec<Vec<&'a Line>> {
+fn group_lines(lines: &[Line], stats: Stats) -> Vec<Vec<&Line>> {
     let mut groups: Vec<Vec<&Line>> = Vec::new();
     let mut current: Vec<&Line> = Vec::new();
 
