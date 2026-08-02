@@ -54,7 +54,7 @@ pub fn is_bibliography_heading(text: &str) -> bool {
         .filter(|c| c.is_alphabetic() || c.is_whitespace())
         .collect();
     let cleaned = cleaned.trim();
-    HEADINGS.iter().any(|h| cleaned == *h)
+    HEADINGS.contains(&cleaned)
 }
 
 /// How many characters to strip if this block *opens* with a bibliography heading.
@@ -286,7 +286,7 @@ fn find_authors(text: &str) -> Vec<String> {
     };
 
     let names: Vec<String> = head
-        .split(|c| c == ',' || c == ';')
+        .split([',', ';'])
         .flat_map(|part| part.split(" and "))
         .map(str::trim)
         .filter(|part| {

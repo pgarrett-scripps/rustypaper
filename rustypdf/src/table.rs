@@ -197,8 +197,8 @@ fn column_boundaries(
     let mut start: Option<usize> = None;
     let mut gap_start: Option<usize> = None;
 
-    for i in 0..bins {
-        let empty = occupied[i] <= ceiling;
+    for (i, count) in occupied.iter().enumerate() {
+        let empty = *count <= ceiling;
         match (empty, start, gap_start) {
             (false, None, _) => {
                 start = Some(i);

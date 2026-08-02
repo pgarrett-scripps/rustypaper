@@ -165,7 +165,7 @@ fn cell(text: &str) -> String {
 }
 
 /// Removes a leading list marker, which the emitter re-adds in Markdown's own form.
-fn strip_marker(text: &str) -> &str {
+pub(crate) fn strip_marker(text: &str) -> &str {
     let rest = text
         .strip_prefix(|c: char| {
             matches!(c, '•' | '◦' | '‣' | '▪' | '·' | '∗' | '*' | '–' | '—' | '-')

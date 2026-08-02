@@ -8,8 +8,8 @@ GPU; GROBID is CPU-only and fast but is a JVM service that emits TEI and ignores
 crates that exist are generic text extractors with no notion of a paper. This aims at the gap:
 **structure-aware, maths-aware, CPU-only, single binary.**
 
-> Status: **M1**. Converts to Markdown with correct reading order on one- and two-column
-> papers. Tables, figures and maths are not handled yet — see [milestones](#milestones).
+> Status: **feature complete**. Converts one- and two-column papers to Markdown, Typst, plain
+> text or JSON, with reading order, figures, tables, mathematics and references.
 
 ## Getting started
 
@@ -22,7 +22,8 @@ scripts/build.sh            # cargo build --release, plus installing the Python 
 ```sh
 # Convert.
 ./target/release/rp2m convert corpus/resnet.pdf
-./target/release/rp2m convert corpus/resnet.pdf --format json
+./target/release/rp2m convert corpus/resnet.pdf --format typst --assets figures/
+./target/release/rp2m convert corpus/*.pdf --out out/        # batch
 
 # Diagnostics.
 ./target/release/rp2m probe corpus/resnet.pdf --pages   # counts, fonts, detected gutters
@@ -64,11 +65,11 @@ pretending.
 |---|---|---|
 | **M0** | Backend, `PageRaw`, CLI, corpus, thread-safety spike | done |
 | **M1** | Lines/words, furniture removal, columns, reading order → Markdown | done |
-| **M2** | Figures, captions, footnotes, lists, de-hyphenation | in progress |
-| **M3** | Tables (booktabs → lattice → stream) | |
-| **M4** | Maths detection and reconstruction | |
-| **M5** | References, citation linking, CSL-JSON | |
-| **M6** | Typst emitter, performance pass, batch mode | |
+| **M2** | Figures, captions, footnotes, lists, de-hyphenation | done |
+| **M3** | Tables | done |
+| **M4** | Maths detection and reconstruction | done |
+| **M5** | References and citation linking | done |
+| **M6** | Typst emitter, performance pass, batch mode | done |
 
 ## Python
 

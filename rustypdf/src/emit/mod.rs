@@ -4,3 +4,5 @@
 //! that every output format inherits it rather than reimplementing it.
 
 pub mod markdown;
+pub mod text;
+pub mod typst;

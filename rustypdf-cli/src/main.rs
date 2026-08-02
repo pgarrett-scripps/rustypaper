@@ -21,12 +21,27 @@ struct Cli {
     command: Command,
 }
 
+impl Format {
+    fn extension(self) -> &'static str {
+        match self {
+            Format::Md => "md",
+            Format::Json => "json",
+            Format::Typst => "typ",
+            Format::Text => "txt",
+        }
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
 enum Format {
     /// GitHub-flavoured Markdown.
     Md,
     /// The document model, which is the real output; every other format renders this.
     Json,
+    /// Typst, which models figures, tables and references natively.
+    Typst,
+    /// Plain text, for indexing.
+    Text,
 }
 
 #[derive(Subcommand)]
@@ -47,13 +62,14 @@ enum Command {
         #[arg(long)]
         pages: bool,
     },
-    /// Convert a PDF to structured text.
+    /// Convert one or more PDFs to structured text.
     Convert {
-        pdf: PathBuf,
+        #[arg(required = true)]
+        pdf: Vec<PathBuf>,
         /// Output format.
         #[arg(short, long, default_value = "md")]
         format: Format,
-        /// Write to a file instead of stdout.
+        /// Write to a file instead of stdout. With several inputs, a directory.
         #[arg(short, long)]
         out: Option<PathBuf>,
         /// Extract figures into this directory and reference them from the output.
@@ -263,25 +279,74 @@ fn text(out: &mut impl Write, pdf: PathBuf, only: Option<usize>, geometry: bool)
 
 fn convert(
     out: &mut impl Write,
-    pdf: PathBuf,
+    pdfs: Vec<PathBuf>,
     format: Format,
     dest: Option<PathBuf>,
     assets: Option<PathBuf>,
     figure_dpi: f32,
 ) -> Result<()> {
-    let options = rustypdf::Options { assets, figure_dpi };
-    let doc = rustypdf::convert_with(&pdf, &options)
-        .with_context(|| format!("converting {}", pdf.display()))?;
-
-    let rendered = match format {
-        Format::Md => rustypdf::emit::markdown::render(&doc),
-        Format::Json => serde_json::to_string_pretty(&doc)? + "\n",
-    };
-
-    match dest {
-        Some(path) => {
-            std::fs::write(&path, rendered).with_context(|| format!("writing {}", path.display()))
-        }
-        None => out.write_all(rendered.as_bytes()).map_err(Into::into),
+    let batch = pdfs.len() > 1;
+    if batch && dest.is_none() {
+        anyhow::bail!("converting several files needs --out <directory>");
     }
+    if batch {
+        if let Some(dir) = &dest {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+    }
+
+    // Sequential on purpose. Each conversion already parallelises its own pure-Rust stages, and
+    // ingest is serialised behind pdfium's lock whatever the caller does, so converting several
+    // documents at once in one process buys nothing and multiplies peak memory. Shard across
+    // processes to scale out.
+    let mut failed = 0;
+    for pdf in &pdfs {
+        let stem = pdf
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let assets = assets.clone().or_else(|| {
+            if batch {
+                dest.as_ref().map(|d| d.join(format!("{stem}_assets")))
+            } else {
+                None
+            }
+        });
+
+        let options = rustypdf::Options { assets, figure_dpi };
+        let doc = match rustypdf::convert_with(pdf, &options) {
+            Ok(doc) => doc,
+            // One unreadable file must not abandon the rest of a batch.
+            Err(e) if batch => {
+                eprintln!("{}: {e}", pdf.display());
+                failed += 1;
+                continue;
+            }
+            Err(e) => return Err(e).with_context(|| format!("converting {}", pdf.display())),
+        };
+
+        let rendered = match format {
+            Format::Md => rustypdf::emit::markdown::render(&doc),
+            Format::Json => serde_json::to_string_pretty(&doc)? + "\n",
+            Format::Typst => rustypdf::emit::typst::render(&doc),
+            Format::Text => rustypdf::emit::text::render(&doc),
+        };
+
+        match &dest {
+            Some(path) if batch => {
+                let file = path.join(format!("{stem}.{}", format.extension()));
+                std::fs::write(&file, rendered)
+                    .with_context(|| format!("writing {}", file.display()))?;
+            }
+            Some(path) => std::fs::write(path, rendered)
+                .with_context(|| format!("writing {}", path.display()))?,
+            None => out.write_all(rendered.as_bytes())?,
+        }
+    }
+
+    if failed > 0 {
+        anyhow::bail!("{failed} of {} files failed", pdfs.len());
+    }
+    Ok(())
 }

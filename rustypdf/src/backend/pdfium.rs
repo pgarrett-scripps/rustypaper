@@ -363,13 +363,17 @@ fn collect_glyphs(page: &PdfPage, xform: &Transform, fonts: &mut FontTable, raw:
     let chars = text.chars();
     raw.glyphs.reserve(chars.len());
 
-    // Consecutive characters nearly always share a font, so remembering the last name turns the
-    // per-glyph font lookup into a string compare instead of a hash.
+    // Consecutive characters nearly always share a font, so the previous name is remembered and
+    // the descriptor flags cached alongside it.
+    //
+    // The caching is worth real time. Every per-character property is an FFI call, and reading
+    // the nine flags plus the weight for each glyph accounted for ten of the roughly eighteen
+    // calls a glyph cost. They depend only on the font, so they are read once per font run
+    // rather than once per character.
     //
     // TODO(perf): `font_name()` still allocates a `String` per character inside pdfium-render.
-    // If ingest shows up in the profile, drop to the raw `FPDFText_GetFontInfo` binding and read
-    // into a reusable buffer.
-    let mut last: Option<(String, FontId)> = None;
+    // Removing that needs the raw `FPDFText_GetFontInfo` binding and a reusable buffer.
+    let mut last: Option<(String, FontId, FontFlags)> = None;
 
     for ch in chars.iter() {
         let Some(c) = ch.unicode_char() else {
@@ -382,12 +386,13 @@ fn collect_glyphs(page: &PdfPage, xform: &Transform, fonts: &mut FontTable, raw:
         }
 
         let name = ch.font_name();
-        let font = match &last {
-            Some((prev, id)) if *prev == name => *id,
+        let (font, flags) = match &last {
+            Some((prev, id, flags)) if *prev == name => (*id, *flags),
             _ => {
                 let id = fonts.intern(&name);
-                last = Some((name, id));
-                id
+                let flags = read_flags(&ch);
+                last = Some((name, id, flags));
+                (id, flags)
             }
         };
 
@@ -406,20 +411,6 @@ fn collect_glyphs(page: &PdfPage, xform: &Transform, fonts: &mut FontTable, raw:
             .origin()
             .map(|(x, y)| xform.point(x.value, y.value))
             .unwrap_or(Point::new(bbox.x0, bbox.y1));
-
-        let mut flags = FontFlags::default();
-        flags.set(FontFlags::ITALIC, ch.font_is_italic());
-        flags.set(FontFlags::SERIF, ch.font_is_serif());
-        flags.set(FontFlags::SANS_SERIF, ch.font_is_sans_serif());
-        flags.set(FontFlags::SYMBOLIC, ch.font_is_symbolic());
-        flags.set(FontFlags::FIXED_PITCH, ch.font_is_fixed_pitch());
-        flags.set(FontFlags::CURSIVE, ch.font_is_cursive());
-        flags.set(FontFlags::SMALL_CAPS, ch.font_is_small_caps());
-        flags.set(FontFlags::ALL_CAPS, ch.font_is_all_caps());
-        // The descriptor's "bold" bit alone misses fonts that are bold by weight but not by
-        // flag, which is common in publisher-typeset PDFs.
-        let bold = ch.font_weight().is_some_and(is_bold_weight) || ch.font_is_bold_reenforced();
-        flags.set(FontFlags::BOLD, bold);
 
         let angle = ch.angle_radians().unwrap_or(0.0);
         raw.glyphs.push(Glyph {
@@ -478,6 +469,24 @@ fn glyph_size(ch: &PdfPageTextChar, bbox: &Rect, angle: f32) -> f32 {
     } else {
         1.0
     }
+}
+
+/// Reads a font's descriptor flags. Cached per font run by the caller.
+fn read_flags(ch: &PdfPageTextChar) -> FontFlags {
+    let mut flags = FontFlags::default();
+    flags.set(FontFlags::ITALIC, ch.font_is_italic());
+    flags.set(FontFlags::SERIF, ch.font_is_serif());
+    flags.set(FontFlags::SANS_SERIF, ch.font_is_sans_serif());
+    flags.set(FontFlags::SYMBOLIC, ch.font_is_symbolic());
+    flags.set(FontFlags::FIXED_PITCH, ch.font_is_fixed_pitch());
+    flags.set(FontFlags::CURSIVE, ch.font_is_cursive());
+    flags.set(FontFlags::SMALL_CAPS, ch.font_is_small_caps());
+    flags.set(FontFlags::ALL_CAPS, ch.font_is_all_caps());
+    // The descriptor's "bold" bit alone misses fonts that are bold by weight but not by flag,
+    // which is common in publisher-typeset PDFs.
+    let bold = ch.font_weight().is_some_and(is_bold_weight) || ch.font_is_bold_reenforced();
+    flags.set(FontFlags::BOLD, bold);
+    flags
 }
 
 fn is_bold_weight(weight: PdfFontWeight) -> bool {

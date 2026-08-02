@@ -734,3 +734,29 @@ fn citations_link_to_their_entries() {
         );
     }
 }
+
+/// Every emitter must render every paper without panicking, and produce something.
+#[test]
+fn all_emitters_render_the_corpus() {
+    for name in ["resnet.pdf", "bert.pdf", "transformer.pdf", "adam.pdf"] {
+        let path = paper!(name);
+        let doc = rustypdf::convert(&path).expect("conversion failed");
+
+        let md = rustypdf::emit::markdown::render(&doc);
+        let typ = rustypdf::emit::typst::render(&doc);
+        let txt = rustypdf::emit::text::render(&doc);
+        let json = serde_json::to_string(&doc).expect("the document model must serialise");
+
+        for (format, output) in [("markdown", &md), ("typst", &typ), ("text", &txt)] {
+            assert!(output.len() > 5_000, "{name}: {format} output is suspiciously short");
+        }
+        assert!(json.contains("\"type\":\"paragraph\""));
+
+        // Typst's maths goes through mitex, so the import must be present whenever maths is.
+        if doc.blocks.iter().any(|b| b.math.is_some()) {
+            assert!(typ.starts_with("#import"), "{name}: mitex import missing");
+        }
+        // Plain text must carry no markup.
+        assert!(!txt.contains("#table("), "{name}: markup leaked into plain text");
+    }
+}
