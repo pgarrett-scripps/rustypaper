@@ -28,6 +28,33 @@ const MIN_SEED_FRACTION: f32 = 0.10;
 /// And at least this many seeds outright.
 const MIN_SEEDS: usize = 2;
 
+/// Characters an equation number may hold between its brackets.
+const MAX_NUMBER_LENGTH: usize = 5;
+
+/// A number floating mid-line is only a number if this many ems of space precede it.
+const NUMBER_GAP: f32 = 2.0;
+
+/// A line whose right edge comes this close to the column's is set against the margin.
+const NUMBER_MARGIN_SLACK: f32 = 1.5;
+
+/// Against the margin, this much of a gap is enough — see [`trailing_number`].
+const NUMBER_GAP_AT_MARGIN: f32 = 0.6;
+
+/// A stacked fragment may sit this many ems from the block it joins, vertically.
+///
+/// Generous, because the parts of one formula are set to touch: a numerator's box and its
+/// denominator's overlap the rule between them, and the gap is often negative.
+const STACK_MAX_GAP: f32 = 0.6;
+
+/// And it must sit within this many ems of the block's horizontal span.
+const STACK_SLACK: f32 = 1.0;
+
+/// A fragment is short. Anything longer is a line in its own right.
+const STACK_MAX_WORDS: usize = 6;
+
+/// A fragment set below this fraction of the block's size is a script of it, whatever else it is.
+const SCRIPT_SIZE_RATIO: f32 = 0.92;
+
 /// A run of glyphs on one line that forms mathematics.
 #[derive(Debug, Clone)]
 pub struct Span {
@@ -46,6 +73,12 @@ pub struct Display {
     pub formula: Formula,
     /// The equation number, if the line carries one.
     pub number: Option<String>,
+    /// Every line the equation is built from, `line` included, in page order. A display equation
+    /// is one *formula* but often several lines: a summation's limits, a fraction's numerator
+    /// and denominator and a grown parenthesis each arrive as a line of their own.
+    pub lines: Vec<usize>,
+    /// The union of those lines' boxes.
+    pub bbox: crate::ir::Rect,
 }
 
 /// Whether a glyph is unambiguous evidence of mathematics.
@@ -186,86 +219,381 @@ pub fn spans(page: &PageRaw, fonts: &FontTable, lines: &[Line], line: usize) -> 
         .collect()
 }
 
+/// What a line offers as evidence that it is a display equation.
+///
+/// Gathered in one place because the admission rule below weighs several signals against one
+/// another, and because a diagnostic that cannot see the same numbers the rule sees is no
+/// diagnostic at all.
+#[derive(Debug, Clone)]
+pub struct Evidence {
+    /// Glyphs on the line.
+    pub glyphs: usize,
+    /// Of those, how many are unambiguous mathematics.
+    pub seeds: usize,
+    pub seed_fraction: f32,
+    pub words: usize,
+    /// Words that are ordinary prose.
+    pub prose_words: usize,
+    /// A trailing right-aligned equation number, if the line carries one.
+    pub number: Option<String>,
+    /// Where the body ends, once any equation number is split off.
+    pub body_end: usize,
+    /// Distance from the column's left edge to the line's, and from the line's right edge to
+    /// the column's.
+    pub left: f32,
+    pub right: f32,
+    /// Set symmetrically within its column, and clear of the left margin.
+    pub centred: bool,
+}
+
+/// Measures one line against everything the display rule cares about.
+pub fn evidence(
+    page: &PageRaw,
+    fonts: &FontTable,
+    target: &Line,
+    column: crate::ir::Rect,
+) -> Evidence {
+    let seeds = target
+        .glyphs
+        .iter()
+        .filter(|p| is_seed(page, fonts, p.index))
+        .count();
+    let prose_words = target
+        .words
+        .iter()
+        .filter(|w| classify(page, fonts, target, w) == Role::Prose)
+        .count();
+    let (number, body_end) = trailing_number(page, target, column);
+    let left = target.bbox.x0 - column.x0;
+    let right = column.x1 - target.bbox.x1;
+    Evidence {
+        glyphs: target.glyphs.len(),
+        seeds,
+        seed_fraction: if target.glyphs.is_empty() {
+            0.0
+        } else {
+            seeds as f32 / target.glyphs.len() as f32
+        },
+        words: target.words.len(),
+        prose_words,
+        number,
+        body_end,
+        left,
+        right,
+        centred: (left - right).abs() <= target.size * 2.0 && left > target.size * 2.0,
+    }
+}
+
 /// Whether a line is a display equation, and what its number is.
 ///
 /// Display maths is set apart from the text: centred in its column, or indented well clear of
 /// the margin, and usually followed by a right-aligned `(3)`. Requiring the line to be mostly
 /// mathematics as well keeps a centred section heading out.
+/// `taken` marks the lines already claimed by an equation found earlier, which this one may not
+/// claim again; pass an empty slice when nothing has been.
 pub fn display(
     page: &PageRaw,
     fonts: &FontTable,
     lines: &[Line],
     line: usize,
     column: crate::ir::Rect,
+    taken: &[bool],
 ) -> Option<Display> {
     let target = &lines[line];
     if target.glyphs.is_empty() {
         return None;
     }
 
-    let seeds = target
-        .glyphs
-        .iter()
-        .filter(|p| is_seed(page, fonts, p.index))
-        .count();
-    if seeds < MIN_SEEDS || (seeds as f32) < target.glyphs.len() as f32 * MIN_SEED_FRACTION {
+    let ev = evidence(page, fonts, target, column);
+    if ev.seeds < MIN_SEEDS || ev.seed_fraction < MIN_SEED_FRACTION {
         return None;
     }
-
-    let prose_words = target
-        .words
-        .iter()
-        .filter(|w| classify(page, fonts, target, w) == Role::Prose)
-        .count();
-    if prose_words * 4 > target.words.len() {
+    if ev.prose_words * 4 > ev.words {
         return None;
     }
-
-    let (number, body_end) = trailing_number(target);
 
     // Centred in its column, or carrying an equation number. Mere indentation is not enough:
     // in a single-column paper with wide margins, almost every line is indented relative to the
     // text block once a figure or a table has widened it.
-    let left = target.bbox.x0 - column.x0;
-    let right = column.x1 - target.bbox.x1;
-    let centred = (left - right).abs() <= target.size * 2.0 && left > target.size * 2.0;
-    if !(centred || number.is_some()) {
+    if !(ev.centred || ev.number.is_some()) {
         return None;
     }
 
-    let indices: Vec<usize> = target.glyphs[..body_end].iter().map(|p| p.index).collect();
+    let (used, bbox) = stack(page, fonts, lines, line, column, ev.body_end, taken);
+    let mut indices: Vec<usize> = Vec::new();
+    for &i in &used {
+        let end = if i == line {
+            ev.body_end
+        } else {
+            lines[i].glyphs.len()
+        };
+        indices.extend(lines[i].glyphs[..end].iter().map(|p| p.index));
+    }
     Some(Display {
         line,
         formula: build::build(page, &indices),
-        number,
+        number: ev.number,
+        lines: used,
+        bbox,
     })
 }
 
-/// Splits off a trailing right-aligned equation number, returning it and where the body ends.
-fn trailing_number(line: &Line) -> (Option<String>, usize) {
-    let Some(last) = line.words.last() else {
-        return (None, line.glyphs.len());
-    };
-    let looks_numbered = last.text.starts_with('(')
-        && last.text.ends_with(')')
-        && last.text[1..last.text.len() - 1]
-            .chars()
-            .all(|c| c.is_ascii_digit() || matches!(c, '.' | 'a'..='z' | 'A'..='Z'));
+/// The lines one display equation is set across, and the box they occupy.
+///
+/// TeX breaks a display equation into as many lines as it has vertical structure: a summation's
+/// sign, the limits under it, a fraction's numerator, its denominator and a grown parenthesis are
+/// each their own run of glyphs at their own baseline, and line assembly — which knows only about
+/// baselines — hands them over separately. Reconstruction is two-dimensional and wants them
+/// *together*: given the whole stack, `build` recovers the fraction and the limits, and given one
+/// line of it, it can only emit the fragment. unet's `E = \sum_{x \in \Omega} w(x) \log(...)` came
+/// out as `E = w(x) log(...)` for exactly this reason, and matched nothing.
+///
+/// A fragment has to be short, free of prose, close above or below, inside the block's horizontal
+/// span, and — the rule that earned itself the hard way — *material `build` knows how to place*:
+/// a large operator's limits, a fraction's numerator or denominator, or a grown delimiter. Merging
+/// on adjacency alone fuses two equations set one above the other, and since reconstruction sorts
+/// a region left to right, the result is the two of them interleaved a character at a time:
+/// transformer's two positional-encoding equations came out as
+/// `PEP_(E_pos,2i+1)^(pos,2i)==scoins(...)`, and four of optics's matrix rows likewise. Both had
+/// scored well as separate lines. Prose is the other load-bearing exclusion: the line under a
+/// display equation is usually the paragraph that continues past it.
+fn stack(
+    page: &PageRaw,
+    fonts: &FontTable,
+    lines: &[Line],
+    line: usize,
+    column: crate::ir::Rect,
+    body_end: usize,
+    taken: &[bool],
+) -> (Vec<usize>, crate::ir::Rect) {
+    let target = &lines[line];
+    // The equation number is not part of the formula's extent, so a fragment is not asked to sit
+    // inside the whole width of the column the number reaches across.
+    let mut claimed: Vec<usize> = target.glyphs[..body_end].iter().map(|p| p.index).collect();
+    let mut bbox = claimed
+        .iter()
+        .filter_map(|&i| page.glyphs.get(i).map(|g| g.bbox))
+        .reduce(|a, b| a.union(&b))
+        .unwrap_or(target.bbox);
+    let size = target.size;
+    let mut used = vec![line];
 
-    // It has to be set apart from the formula, or `(3)` is just a factor.
-    let detached = line.words.len() > 1 && {
-        let previous = &line.words[line.words.len() - 2];
-        last.bbox.x0 - previous.bbox.x1 > line.size * 2.0
-    };
+    let rules: Vec<crate::ir::Rect> = page
+        .paths
+        .iter()
+        .filter(|p| p.kind == crate::ir::PathKind::HorizontalRule)
+        .map(|p| p.bbox)
+        .collect();
 
-    if looks_numbered && detached {
-        (
-            Some(last.text[1..last.text.len() - 1].to_owned()),
-            last.start,
-        )
-    } else {
-        (None, line.glyphs.len())
+    for direction in [-1isize, 1] {
+        let mut at = line as isize;
+        loop {
+            at += direction;
+            let Some(index) = usize::try_from(at).ok().filter(|&i| i < lines.len()) else {
+                break;
+            };
+            if taken.get(index).copied().unwrap_or(false) {
+                break;
+            }
+            let candidate = &lines[index];
+            if !is_fragment(page, fonts, candidate, column, bbox, size) {
+                break;
+            }
+            if !is_placeable(page, &claimed, &rules, candidate, bbox, size) {
+                break;
+            }
+            bbox = bbox.union(&candidate.bbox);
+            claimed.extend(candidate.glyphs.iter().map(|p| p.index));
+            used.push(index);
+        }
     }
+
+    used.sort_unstable();
+    (used, bbox)
+}
+
+/// Whether a line is a piece of the display equation occupying `bbox`.
+fn is_fragment(
+    page: &PageRaw,
+    fonts: &FontTable,
+    candidate: &Line,
+    column: crate::ir::Rect,
+    bbox: crate::ir::Rect,
+    size: f32,
+) -> bool {
+    if candidate.glyphs.is_empty() || candidate.words.len() > STACK_MAX_WORDS {
+        return false;
+    }
+    // Its own equation number makes it another equation, not a piece of this one.
+    if trailing_number(page, candidate, column).0.is_some() {
+        return false;
+    }
+    if candidate
+        .words
+        .iter()
+        .any(|w| classify(page, fonts, candidate, w) == Role::Prose)
+    {
+        return false;
+    }
+    let gap = if candidate.bbox.center_y() < bbox.center_y() {
+        bbox.y0 - candidate.bbox.y1
+    } else {
+        candidate.bbox.y0 - bbox.y1
+    };
+    gap <= size * STACK_MAX_GAP
+        && candidate.bbox.x0 >= bbox.x0 - size * STACK_SLACK
+        && candidate.bbox.x1 <= bbox.x1 + size * STACK_SLACK
+}
+
+/// Whether reconstruction has somewhere to put this fragment.
+///
+/// Four shapes, and only these four, because they are the vertical structures
+/// [`build`](build::build) recovers. Anything else it would sort into the block left to right,
+/// which for two independent lines means interleaving them.
+fn is_placeable(
+    page: &PageRaw,
+    claimed: &[usize],
+    rules: &[crate::ir::Rect],
+    candidate: &Line,
+    bbox: crate::ir::Rect,
+    size: f32,
+) -> bool {
+    let inner = candidate.bbox;
+
+    // A script set low or high enough to have been given a line of its own. Size is what
+    // separates it from the next equation of an aligned block, which is set at body size.
+    if candidate.size < size * SCRIPT_SIZE_RATIO {
+        return true;
+    }
+    let covers = |outer: crate::ir::Rect| {
+        outer.x0 <= inner.x0 + size * STACK_SLACK && outer.x1 >= inner.x1 - size * STACK_SLACK
+    };
+
+    // A grown delimiter or a large operator, set on a line of its own because it is taller than
+    // the body it belongs to. TeX gives `\sum` and a grown `(` their own baseline.
+    let mut chars = candidate
+        .glyphs
+        .iter()
+        .filter_map(|p| match page.glyphs.get(p.index)?.text {
+            crate::ir::GlyphText::Char(c) => (!c.is_whitespace()).then_some(c),
+            crate::ir::GlyphText::Expanded(_) => Some('x'),
+        })
+        .peekable();
+    if chars.peek().is_some() && chars.all(is_grown_symbol) {
+        return true;
+    }
+
+    // The limits of a large operator the block already holds.
+    if claimed
+        .iter()
+        .filter_map(|&i| page.glyphs.get(i))
+        .any(|glyph| {
+            let large = matches!(glyph.text, crate::ir::GlyphText::Char(c) if is_grown_symbol(c));
+            large && glyph.bbox.height() > glyph.size * 1.1 && covers(glyph.bbox)
+        })
+    {
+        return true;
+    }
+
+    // A numerator or a denominator, across a fraction bar wide enough to span it.
+    let top = bbox.y0.min(inner.y0);
+    let bottom = bbox.y1.max(inner.y1);
+    rules
+        .iter()
+        .any(|rule| covers(*rule) && rule.center_y() > top && rule.center_y() < bottom)
+}
+
+/// Symbols TeX grows to fit their contents, and therefore sets on their own baseline.
+fn is_grown_symbol(c: char) -> bool {
+    matches!(
+        c,
+        '∑' | '∏'
+            | '∐'
+            | '∫'
+            | '∬'
+            | '∮'
+            | '⋃'
+            | '⋂'
+            | '√'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | '|'
+            | '⟨'
+            | '⟩'
+            | '⌈'
+            | '⌉'
+            | '⌊'
+            | '⌋'
+    )
+}
+
+/// Splits off a trailing right-aligned equation number, returning it and where the body ends.
+///
+/// Read off the glyphs rather than the words. The number is often the only thing on its side of
+/// a wide gap, and a gap that wide is exactly where a `PageSource` may leave no space mark — so
+/// `w(x) = wc(x) + w0 · exp(...)` and its `(2)` arrive as *one* word, and a rule phrased over
+/// words never sees the number at all. Both of unet's display equations were lost that way.
+fn trailing_number(
+    page: &PageRaw,
+    line: &Line,
+    column: crate::ir::Rect,
+) -> (Option<String>, usize) {
+    let chars: Vec<(usize, char, crate::ir::Rect)> = line
+        .glyphs
+        .iter()
+        .enumerate()
+        .filter_map(|(at, placed)| {
+            let glyph = page.glyphs.get(placed.index)?;
+            let crate::ir::GlyphText::Char(c) = glyph.text else {
+                return None;
+            };
+            (!c.is_whitespace()).then_some((at, c, glyph.bbox))
+        })
+        .collect();
+
+    let none = (None, line.glyphs.len());
+    if !matches!(chars.last(), Some((_, ')', _))) {
+        return none;
+    }
+    // Walk back to the opening bracket over the label's own characters. `(3)`, `(2a)` and
+    // `(A.12)` are all numbers a paper uses; anything longer is a parenthesis, not a label.
+    let opening = chars[..chars.len() - 1]
+        .iter()
+        .rposition(|&(_, c, _)| c == '(')
+        .filter(|&open| {
+            let inner = &chars[open + 1..chars.len() - 1];
+            !inner.is_empty()
+                && inner.len() <= MAX_NUMBER_LENGTH
+                && inner
+                    .iter()
+                    .all(|&(_, c, _)| c.is_ascii_alphanumeric() || c == '.')
+        });
+    let Some(open) = opening else { return none };
+    let Some(&(_, _, before)) = chars.get(open.wrapping_sub(1)) else {
+        return none;
+    };
+
+    // It has to be set apart from the formula, or `(3)` is just a factor. A number pushed out to
+    // the column's right edge needs less of a gap to be unmistakable than one floating mid-line:
+    // a two-column measure leaves a long equation barely a word space to spare, and requiring
+    // two ems there loses the number on a line that is manifestly numbered.
+    let gap = chars[open].2.x0 - before.x1;
+    let at_the_margin = column.x1 - line.bbox.x1 <= line.size * NUMBER_MARGIN_SLACK;
+    let detached =
+        gap > line.size * NUMBER_GAP || (at_the_margin && gap > line.size * NUMBER_GAP_AT_MARGIN);
+    if !detached {
+        return none;
+    }
+
+    let label: String = chars[open + 1..chars.len() - 1]
+        .iter()
+        .map(|&(_, c, _)| c)
+        .collect();
+    (Some(label), chars[open].0)
 }
 
 #[cfg(test)]
@@ -338,6 +666,17 @@ mod tests {
         }
     }
 
+    /// The display equation at `line`, with no other equation yet claiming anything.
+    fn display_at(
+        page: &PageRaw,
+        fonts: &FontTable,
+        lines: &[Line],
+        line: usize,
+        column: Rect,
+    ) -> Option<Display> {
+        display(page, fonts, lines, line, column, &[])
+    }
+
     #[test]
     fn inline_maths_is_found_inside_prose() {
         let (page, fonts) = Builder::new()
@@ -374,7 +713,7 @@ mod tests {
         let column = Rect::from_corners(72.0, 0.0, 540.0, 792.0);
         let (page, fonts) = Builder::new().math("a=b+c", 293.0, 300.0, 10.0).page();
         let lines = build_lines(&page);
-        let found = display(&page, &fonts, &lines, 0, column);
+        let found = display_at(&page, &fonts, &lines, 0, column);
         assert!(
             found.is_some(),
             "centred formula was not a display equation"
@@ -388,7 +727,7 @@ mod tests {
             .text("this line starts at the margin and is prose", 72.0, 300.0)
             .page();
         let lines = build_lines(&page);
-        assert!(display(&page, &fonts, &lines, 0, column).is_none());
+        assert!(display_at(&page, &fonts, &lines, 0, column).is_none());
     }
 
     /// A centred line with one stray symbol is not an equation. This is the author line of a
@@ -403,7 +742,7 @@ mod tests {
             .math("\u{2217}", 360.0, 120.0, 10.0)
             .page();
         let lines = build_lines(&page);
-        assert!(display(&page, &fonts, &lines, 0, column).is_none());
+        assert!(display_at(&page, &fonts, &lines, 0, column).is_none());
     }
 
     #[test]
@@ -414,8 +753,89 @@ mod tests {
             .text("(3)", 520.0, 300.0)
             .page();
         let lines = build_lines(&page);
-        let found = display(&page, &fonts, &lines, 0, column).expect("display equation");
+        let found = display_at(&page, &fonts, &lines, 0, column).expect("display equation");
         assert_eq!(found.number.as_deref(), Some("3"));
+    }
+
+    /// The number is read off the glyphs, not the words. A gap wide enough to hold an equation
+    /// number is exactly where a reader may leave no space mark, so the formula and its `(2)`
+    /// arrive as one word — and a two-em rule phrased over words never sees it. Both of unet's
+    /// display equations were lost this way.
+    #[test]
+    fn a_number_at_the_margin_needs_no_word_break() {
+        let column = Rect::from_corners(72.0, 0.0, 355.0, 792.0);
+        let (page, fonts) = Builder::new()
+            .math("a=b+c", 300.0, 300.0, 10.0)
+            .text("(2)", 340.0, 300.0)
+            .page();
+        let lines = build_lines(&page);
+        let found = display_at(&page, &fonts, &lines, 0, column).expect("display equation");
+        assert_eq!(found.number.as_deref(), Some("2"));
+        // The number is not part of the formula.
+        assert!(!latex::render(&found.formula.root).contains('2'));
+    }
+
+    /// A line of prose that happens to end in a citation is not a numbered equation: the gap
+    /// before it is a word space, not the width of a column's tail.
+    #[test]
+    fn a_word_space_before_a_bracket_is_not_a_number() {
+        let column = Rect::from_corners(72.0, 0.0, 355.0, 792.0);
+        let (page, fonts) = Builder::new()
+            .math("a=b+c", 300.0, 300.0, 10.0)
+            .text(" (2)", 325.0, 300.0)
+            .page();
+        let lines = build_lines(&page);
+        assert!(display_at(&page, &fonts, &lines, 0, column).is_none());
+    }
+
+    /// A display equation is one formula and often several lines. Given the whole stack,
+    /// reconstruction recovers the summation; given the middle line alone, it emits the body and
+    /// silently drops the operator.
+    #[test]
+    fn a_summation_set_across_three_lines_is_one_equation() {
+        let column = Rect::from_corners(72.0, 0.0, 540.0, 792.0);
+        let (page, fonts) = Builder::new()
+            .math("\u{2211}", 280.0, 288.0, 10.0)
+            .math("E=w(x)+log(y)", 270.0, 300.0, 10.0)
+            .math("x\u{2208}\u{03A9}", 280.0, 306.0, 7.0)
+            .page();
+        let lines = build_lines(&page);
+        assert_eq!(lines.len(), 3, "expected three lines, got {}", lines.len());
+        let found = display_at(&page, &fonts, &lines, 1, column).expect("display equation");
+        assert_eq!(found.lines, vec![0, 1, 2]);
+        let latex = latex::render(&found.formula.root);
+        assert!(latex.contains(r"\sum"), "the operator was dropped: {latex}");
+        assert!(latex.contains(r"\Omega"), "the limit was dropped: {latex}");
+    }
+
+    /// The equation *below* a display equation is another equation, not a piece of it. Merging
+    /// on adjacency alone interleaved transformer's two positional-encoding equations a
+    /// character at a time, and both had scored well apart.
+    #[test]
+    fn the_next_equation_down_is_not_absorbed() {
+        let column = Rect::from_corners(72.0, 0.0, 540.0, 792.0);
+        let (page, fonts) = Builder::new()
+            .math("E=w(x)+log(y)", 270.0, 300.0, 10.0)
+            .math("E=w(x)+cos(y)", 272.0, 312.0, 10.0)
+            .page();
+        let lines = build_lines(&page);
+        assert_eq!(lines.len(), 2);
+        let found = display_at(&page, &fonts, &lines, 0, column).expect("display equation");
+        assert_eq!(found.lines, vec![0], "the second equation was swallowed");
+    }
+
+    /// A line already lifted into the equation above cannot be lifted into this one as well.
+    #[test]
+    fn a_claimed_line_is_left_alone() {
+        let column = Rect::from_corners(72.0, 0.0, 540.0, 792.0);
+        let (page, fonts) = Builder::new()
+            .math("\u{2211}", 280.0, 288.0, 10.0)
+            .math("E=w(x)+log(y)", 270.0, 300.0, 10.0)
+            .page();
+        let lines = build_lines(&page);
+        let found =
+            display(&page, &fonts, &lines, 1, column, &[true, false]).expect("display equation");
+        assert_eq!(found.lines, vec![1]);
     }
 
     /// `(3)` immediately after a formula is a factor, not an equation number.
@@ -424,7 +844,7 @@ mod tests {
         let column = Rect::from_corners(72.0, 0.0, 540.0, 792.0);
         let (page, fonts) = Builder::new().math("a=b(3)", 291.0, 300.0, 10.0).page();
         let lines = build_lines(&page);
-        let found = display(&page, &fonts, &lines, 0, column).expect("display equation");
+        let found = display_at(&page, &fonts, &lines, 0, column).expect("display equation");
         assert_eq!(found.number, None);
     }
 }

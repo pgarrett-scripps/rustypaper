@@ -265,20 +265,31 @@ fn lift_equations(
             let mut found_here = Vec::new();
 
             for i in 0..lines.len() {
+                // A line already taken as part of the equation above it is not the start of
+                // another one.
+                if is_display[i] {
+                    continue;
+                }
                 let gutters = layout::columns::gutters_at(page_bands, lines[i].bbox.center_y());
                 let column = column_of(lines[i].bbox, extent, gutters);
-                let Some(found) = math::display(page, &raw.fonts, lines, i, column) else {
+                let Some(found) = math::display(page, &raw.fonts, lines, i, column, &is_display)
+                else {
                     continue;
                 };
                 let latex = math::latex::render(&found.formula.root);
                 if latex.trim().is_empty() {
                     continue;
                 }
-                is_display[i] = true;
+                for &line in &found.lines {
+                    is_display[line] = true;
+                }
+                // The equation belongs where its *first* line sat, which is not always the line
+                // the evidence was found on: a summation's sign is set above its body.
+                let first = found.lines.first().copied().unwrap_or(i);
                 found_here.push((
                     page.index,
-                    at.get(i).copied().unwrap_or(i),
-                    lines[i].bbox,
+                    at.get(first).copied().unwrap_or(first),
+                    found.bbox,
                     doc::MathData {
                         latex,
                         number: found.number,

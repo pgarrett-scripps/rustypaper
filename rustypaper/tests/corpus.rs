@@ -654,6 +654,64 @@ fn display_equations_are_reconstructed() {
         .all(|m| (0.0..=1.0).contains(&m.confidence)));
 }
 
+/// Every paper that sets its formulae in a maths font must yield display equations.
+///
+/// The papers named here found their equations by *font family*, and each was at or near zero
+/// before the family was recognised: unet's two equations are numbered but not centred, pinsage
+/// and medimaging set their maths in newtx rather than Computer Modern, and biology's arrive as
+/// styled Unicode from an OpenType maths font.
+#[test]
+fn display_equations_are_found_in_every_template() {
+    for (name, least) in [
+        ("unet.pdf", 2),
+        ("pinsage.pdf", 2),
+        ("medimaging.pdf", 8),
+        ("biology.pdf", 40),
+        ("optics.pdf", 60),
+    ] {
+        let path = paper!(name);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        let found = doc
+            .blocks
+            .iter()
+            .filter(|b| b.kind == rustypaper::doc::BlockKind::Equation)
+            .count();
+        assert!(
+            found >= least,
+            "{name}: expected at least {least} display equations, found {found}"
+        );
+    }
+}
+
+/// A display equation set across several lines is lifted as one block, not as a body with its
+/// summation sign left behind in the prose.
+#[test]
+fn a_stacked_equation_keeps_its_operator() {
+    let path = paper!("unet.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let latex: Vec<&str> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| b.math.as_ref())
+        .map(|m| m.latex.as_str())
+        .collect();
+    assert!(
+        latex
+            .iter()
+            .any(|l| l.contains(r"\sum") && l.contains(r"\Omega")),
+        "the cross-entropy equation lost its summation: {latex:?}"
+    );
+    // And the pieces are gone from the prose, rather than left as one-character paragraphs.
+    for block in &doc.blocks {
+        if block.kind == rustypaper::doc::BlockKind::Paragraph {
+            assert!(
+                !block.text.trim().eq("∑"),
+                "a summation sign was left standing in the prose"
+            );
+        }
+    }
+}
+
 /// Inline mathematics must stay inside the formula, not swallow the sentence around it.
 #[test]
 fn inline_maths_does_not_swallow_prose() {
