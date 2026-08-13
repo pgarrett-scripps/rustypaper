@@ -213,12 +213,11 @@ fn restore_maths(text: &str, formulae: &[String]) -> String {
 
 /// Removes a leading discourse connective, with its comma.
 fn strip_openers(text: &str) -> String {
-    let lower = text.to_lowercase();
     for opener in OPENERS {
         for suffix in [", ", " "] {
             let prefix = format!("{opener}{suffix}");
-            if lower.starts_with(&prefix) {
-                return capitalise(text[prefix.len()..].trim_start());
+            if let Some(len) = lowercase_prefix_len(text, &prefix) {
+                return capitalise(text[len..].trim_start());
             }
         }
     }
@@ -233,28 +232,55 @@ fn replace_phrases(text: &str) -> String {
     out
 }
 
+/// Length, in bytes of `text`, of a leading run whose lowercase form is exactly `needle`.
+///
+/// `needle` must already be lowercase. The comparison is made character by character against the
+/// original text, so the length returned is a valid offset *into `text`* — which an offset found
+/// in `text.to_lowercase()` is not, because lowercasing can change a character's byte length
+/// (`'İ'` is two bytes and lowercases to three) and shift everything after it. A character whose
+/// lowercase form only partly matches the end of `needle` is not a match: the run has to end on a
+/// character boundary of `text`.
+fn lowercase_prefix_len(text: &str, needle: &str) -> Option<usize> {
+    let mut wanted = needle.chars();
+    for (at, ch) in text.char_indices() {
+        if wanted.as_str().is_empty() {
+            return Some(at);
+        }
+        for lowered in ch.to_lowercase() {
+            if wanted.next() != Some(lowered) {
+                return None;
+            }
+        }
+    }
+    wanted.as_str().is_empty().then_some(text.len())
+}
+
 /// Case-insensitive whole-phrase replacement.
 fn replace_ignoring_case(text: &str, phrase: &str, replacement: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let lower = text.to_lowercase();
     let mut cursor = 0;
+    // The character before the candidate, taken from the original text rather than a lowercased
+    // copy: see [`lowercase_prefix_len`] for why a lowercased copy cannot be indexed into.
+    let mut before: Option<char> = None;
 
-    while let Some(found) = lower[cursor..].find(phrase) {
-        let at = cursor + found;
+    while let Some(ch) = text[cursor..].chars().next() {
+        let rest = &text[cursor..];
+        // A zero-length match would not advance the cursor; an empty phrase replaces nothing.
+        let Some(len) = lowercase_prefix_len(rest, phrase).filter(|&len| len > 0) else {
+            out.push(ch);
+            before = Some(ch);
+            cursor += ch.len_utf8();
+            continue;
+        };
         // Must be a whole phrase, not part of a longer word.
-        let before_ok = at == 0 || !lower.as_bytes()[at - 1].is_ascii_alphanumeric();
-        let end = at + phrase.len();
-        let after_ok = end >= lower.len() || !lower.as_bytes()[end].is_ascii_alphanumeric();
+        let after = rest[len..].chars().next();
+        let whole = !before.is_some_and(|c| c.is_ascii_alphanumeric())
+            && !after.is_some_and(|c| c.is_ascii_alphanumeric());
 
-        out.push_str(&text[cursor..at]);
-        if before_ok && after_ok {
-            out.push_str(replacement);
-        } else {
-            out.push_str(&text[at..end]);
-        }
-        cursor = end;
+        out.push_str(if whole { replacement } else { &rest[..len] });
+        before = rest[..len].chars().next_back();
+        cursor += len;
     }
-    out.push_str(&text[cursor..]);
     out
 }
 
@@ -382,6 +408,27 @@ mod tests {
     fn a_phrase_inside_a_word_is_not_replaced() {
         // `as well as` must not fire inside `assessment`.
         assert!(compress_text("Assessment of the data").starts_with("Assessment"));
+    }
+
+    /// `'İ'` is two bytes and lowercases to three, so an offset found in a lowercased copy of the
+    /// text does not point at the same place in the text itself. Every later offset is shifted,
+    /// which mangles the output and, when the shift lands inside a multi-byte character, panics.
+    #[test]
+    fn a_character_that_changes_length_when_lowercased_does_not_shift_the_replacements() {
+        assert_eq!(
+            compress_text("İstanbul in order to improve the results"),
+            "İstanbul to improve results"
+        );
+        // The character after the replaced phrase is multi-byte: a shifted end offset falls
+        // inside it.
+        assert_eq!(
+            compress_text("İstanbul in order to—grow"),
+            "İstanbul to—grow"
+        );
+        assert_eq!(
+            compress_text_at("İİİ due to the fact that data is scarce", Level::Hard),
+            "İİİ because data scarce"
+        );
     }
 
     #[test]

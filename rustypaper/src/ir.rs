@@ -252,8 +252,9 @@ pub struct Glyph {
     pub flags: FontFlags,
     pub color: Rgba,
     /// The backend synthesised this character (typically a space) rather than reading it from a
-    /// content stream. We do our own gap-based word segmentation, so this is a cross-check, not
-    /// a source of truth.
+    /// content stream. Segmentation treats these marks as authoritative on any line that carries
+    /// them — measuring gaps instead splits inside words — so a backend that emits them owes the
+    /// pipeline a complete set. The [`lines`](crate::text::lines) pass states the full contract.
     pub generated: bool,
 }
 

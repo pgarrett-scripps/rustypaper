@@ -7,8 +7,10 @@
 //!   into three lines. They have to be absorbed into their host line, and knowing which glyphs
 //!   are scripts is exactly the signal maths reconstruction needs later, so the classification
 //!   is recorded rather than thrown away.
-//! * **LaTeX frequently emits no space glyphs at all.** Word boundaries come from measuring
-//!   inter-glyph gaps against the font size, not from looking for `' '`.
+//! * **LaTeX frequently emits no space glyphs at all.** Where the backend marks word breaks —
+//!   reading them from the content stream or synthesising them — those marks decide the
+//!   boundaries outright. Measuring inter-glyph gaps is only the fallback for a line that carries
+//!   no marks, because a gap after a narrow letter looks exactly like a space (`I mage`).
 //! * **Lines can span columns.** Both columns of a two-column paper usually sit on the same
 //!   baseline grid, so a baseline cluster is often *two* lines of text. Splitting them needs the
 //!   gutter positions, which the layout pass finds; [`split_at_gutters`] applies the result.
