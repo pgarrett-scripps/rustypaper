@@ -87,7 +87,7 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     // stages disappear into the same clock. `cargo run --release -p rustypaper --example
     // ingest_share` prints the split. The reader is `Sync`, so parallelising it is available
     // and is the one change here with real headroom left in it.
-    let mut pages = build_pages(&raw);
+    let (mut pages, bands) = build_pages(&raw);
     layout::furniture::strip(&mut pages, &heights);
 
     // Figure regions are found once and used twice: table detection needs them to know which
@@ -116,7 +116,7 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     // sat in its page's ordered line stream. That index is what puts a lifted table or equation
     // back in the right place — see [`place_lifted`].
     let (tables, mut prose, mut lines_at) = lift_tables(&raw, ordered, stats, &figures);
-    let equations = lift_equations(&raw, &mut prose, &mut lines_at);
+    let equations = lift_equations(&raw, &bands, &mut prose, &mut lines_at);
 
     let vocab = text::vocab::Vocabulary::build(&prose);
     let (mut document, starts) = doc::assemble_placed(&prose, &heights, stats, &vocab);
@@ -134,18 +134,50 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     Ok(document)
 }
 
-/// Recovers each page's lines, split at its column gutters.
-fn build_pages(raw: &DocRaw) -> Vec<Vec<text::lines::Line>> {
-    raw.pages
+/// Recovers each page's lines, split at its column gutters, and the column geometry it found.
+fn build_pages(raw: &DocRaw) -> (Vec<Vec<text::lines::Line>>, Vec<Vec<layout::columns::Band>>) {
+    let built: Vec<Vec<text::lines::Line>> =
+        raw.pages.par_iter().map(text::lines::build_lines).collect();
+
+    // Gutters are measured before splitting, because a line spanning two columns is exactly what
+    // the coverage profile needs to see in order to discount it. The whole document is measured
+    // at once, so that a page whose own profile is drowned by a full-page table can still be
+    // given the columns the rest of the document uses.
+    let bands = layout::columns::document_bands(&raw.pages, &built);
+
+    let split = raw
+        .pages
         .par_iter()
-        .map(|page| {
-            let lines = text::lines::build_lines(page);
-            // Gutters are measured before splitting, because a line spanning two columns is
-            // exactly what the coverage profile needs to see in order to discount it.
-            let gutters = layout::columns::page_gutters(page, &lines);
-            text::lines::split_at_gutters(page, lines, &gutters)
-        })
-        .collect()
+        .zip(built)
+        .zip(&bands)
+        .map(|((page, lines), bands)| split_into_columns(page, lines, bands))
+        .collect();
+    (split, bands)
+}
+
+/// Splits every line at the gutters of the band it sits in.
+///
+/// Bands are disjoint and ordered down the page, so splitting them one at a time and joining the
+/// results keeps the page in the top-to-bottom order the reading-order pass expects.
+fn split_into_columns(
+    page: &ir::PageRaw,
+    lines: Vec<text::lines::Line>,
+    bands: &[layout::columns::Band],
+) -> Vec<text::lines::Line> {
+    if let [only] = bands {
+        return text::lines::split_at_gutters(page, lines, &only.gutters);
+    }
+
+    let mut out = Vec::with_capacity(lines.len());
+    let mut rest = lines;
+    for band in bands {
+        let (mine, others) = rest
+            .into_iter()
+            .partition(|line| band.contains(line.bbox.center_y()));
+        out.extend(text::lines::split_at_gutters(page, mine, &band.gutters));
+        rest = others;
+    }
+    out
 }
 
 /// Lifts tables out of the line stream, returning them, the prose that remains, and where each
@@ -214,6 +246,7 @@ fn lift_tables(
 /// carry them so that everything downstream sees `$x^2$` as one word.
 fn lift_equations(
     raw: &DocRaw,
+    bands: &[Vec<layout::columns::Band>],
     prose: &mut [Vec<text::lines::Line>],
     lines_at: &mut [Vec<usize>],
 ) -> Vec<PlacedEquation> {
@@ -227,12 +260,13 @@ fn lift_equations(
             // text extent is the wrong yardstick: an equation centred in the left column sits
             // far left of the pair, and reads as not centred at all. Every unnumbered display
             // equation in a two-column paper was being rejected on that basis.
-            let gutters = layout::columns::page_gutters(page, lines);
+            let page_bands = bands.get(page.index).map_or(&[][..], Vec::as_slice);
             let mut is_display = vec![false; lines.len()];
             let mut found_here = Vec::new();
 
             for i in 0..lines.len() {
-                let column = column_of(lines[i].bbox, extent, &gutters);
+                let gutters = layout::columns::gutters_at(page_bands, lines[i].bbox.center_y());
+                let column = column_of(lines[i].bbox, extent, gutters);
                 let Some(found) = math::display(page, &raw.fonts, lines, i, column) else {
                     continue;
                 };
@@ -281,15 +315,61 @@ type PlacedEquation = (usize, usize, ir::Rect, doc::MathData);
 /// stream each remaining line sat.
 type PageTables = (Vec<PlacedTable>, Vec<text::lines::Line>, Vec<usize>);
 
+/// Where a paragraph *ends* with a bibliography heading, the byte offset the heading starts at.
+///
+/// The mirror image of [`refs::opens_bibliography`], and it happens for the same reason. A
+/// heading set at body size is not a heading to paragraph assembly, so it fuses into whichever
+/// paragraph it is nearer: into the first entry where the entries follow it closely, and into the
+/// last paragraph of the appendix where — as in the Springer journal class — the section above it
+/// is nearer than the bibliography below. `imagenet.pdf` ends a paragraph
+/// `...abusing the system. Bibliography` and its hundred entries were invisible because of it.
+///
+/// A finished sentence has to come first, so that a paragraph merely mentioning its references
+/// does not start a bibliography.
+fn closes_with_bibliography_heading(text: &str) -> Option<usize> {
+    let trimmed = text.trim_end();
+    // Two words, because `works cited` and `literature cited` are two.
+    let mut cut = trimmed.len();
+    for _ in 0..2 {
+        let (at, space) = trimmed[..cut]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())?;
+        let start = at + space.len_utf8();
+        if refs::is_bibliography_heading(&trimmed[start..]) {
+            return trimmed[..at]
+                .trim_end()
+                .ends_with(['.', '!', '?', ':'])
+                .then_some(start);
+        }
+        cut = at;
+    }
+    None
+}
+
+/// True for a heading that *names* the bibliography without being it: a contents entry.
+///
+/// `is_bibliography_heading` ignores punctuation and digits, so a REVTeX contents page offering
+/// `References 21` is as good a heading as the real one — and being twenty pages earlier, it wins.
+/// `topological.pdf` published three paragraphs of its own introduction as bibliography entries
+/// on that basis. A heading names a section; the number *after* it is a page number, and no
+/// bibliography heading ends in one. Only headings are asked, because an entry ending in a year
+/// is perfectly ordinary.
+fn names_the_bibliography_elsewhere(text: &str) -> bool {
+    text.trim_end().ends_with(|c: char| c.is_ascii_digit())
+}
+
 /// Turns the bibliography into structured entries and links the citations that point at them.
 fn extract_bibliography(document: &mut doc::Document) {
     // Either a heading of its own, or a body-size heading that assembly merged into the first
     // entry — both happen across the corpus.
     let mut start = None;
     let mut strip = 0usize;
+    let mut fused_tail = None;
     for (i, block) in document.blocks.iter().enumerate() {
         if matches!(block.kind, doc::BlockKind::Heading { .. })
             && refs::is_bibliography_heading(&block.text)
+            && !names_the_bibliography_elsewhere(&block.text)
         {
             start = Some(i + 1);
             break;
@@ -306,11 +386,23 @@ fn extract_bibliography(document: &mut doc::Document) {
                 strip = offset;
                 break;
             }
+            if i + 1 < document.blocks.len() {
+                if let Some(offset) = closes_with_bibliography_heading(&block.text) {
+                    start = Some(i + 1);
+                    fused_tail = Some((i, offset));
+                    break;
+                }
+            }
         }
     }
     let Some(first) = start else {
         return;
     };
+    if let Some((block, offset)) = fused_tail {
+        document.blocks[block].text.truncate(offset);
+        let trimmed = document.blocks[block].text.trim_end().len();
+        document.blocks[block].text.truncate(trimmed);
+    }
 
     // The bibliography runs to the next heading — papers put appendices after it.
     let end = document.blocks[first..]
@@ -949,5 +1041,41 @@ mod tests {
 
         let kinds: Vec<doc::BlockKind> = document.blocks.iter().map(|b| b.kind.clone()).collect();
         assert_eq!(kinds, [doc::BlockKind::Equation, doc::BlockKind::Table]);
+    }
+
+    /// A body-size heading fuses into whichever paragraph is nearer, and where the section above
+    /// it is nearer than the entries below, that is the paragraph *before*.
+    #[test]
+    fn a_heading_fused_onto_the_end_of_a_paragraph_still_opens_the_bibliography() {
+        let text = "...and in practice we have never had a problem. Bibliography";
+        assert_eq!(
+            closes_with_bibliography_heading(text),
+            Some(text.len() - "Bibliography".len())
+        );
+        assert_eq!(
+            closes_with_bibliography_heading("...as set out above. Works Cited"),
+            Some("...as set out above. ".len())
+        );
+    }
+
+    /// A paragraph that merely mentions its references does not open a bibliography, and neither
+    /// does one that ends mid-sentence on the word.
+    #[test]
+    fn a_paragraph_about_references_does_not_open_the_bibliography() {
+        for text in [
+            "the reader is referred to the references",
+            "we thank the reviewers for the additional references.",
+            "Bibliography of a kind",
+        ] {
+            assert_eq!(closes_with_bibliography_heading(text), None, "{text}");
+        }
+    }
+
+    /// A contents page names the bibliography twenty pages before it starts.
+    #[test]
+    fn a_contents_entry_is_not_the_bibliography_heading() {
+        assert!(names_the_bibliography_elsewhere("References 21"));
+        assert!(!names_the_bibliography_elsewhere("References"));
+        assert!(!names_the_bibliography_elsewhere("7 References"));
     }
 }

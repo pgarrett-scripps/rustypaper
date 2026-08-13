@@ -1187,21 +1187,16 @@ fn elsevier_springer_and_jmlr_sections_are_found() {
 
 /// Where a publisher's bibliography is parsed at all, and where it is not.
 ///
-/// **Known gap, and the largest one these six papers found.** Four of the six yield entries.
-/// The two that yield none are the two whose bibliography is set in a two-column block that the
-/// column pass does not separate: the IEEE paper's forty-one entries and the Springer paper's
-/// author-year list both arrive as one run-on paragraph with the columns interleaved
-/// (`...1990.[30] I. Yoo and...`), and `REFERENCES` appears mid-sentence inside it rather than
-/// as a heading. Nothing downstream can recover entries from that, so the count is zero rather
-/// than wrong — which is the right way round, but it is still zero.
+/// Every publisher template's bibliography is found.
+///
+/// Two of the six used to yield nothing: the IEEE paper's forty-one entries and the Springer
+/// paper's author-year list arrived as one run-on paragraph with the two columns of the
+/// bibliography zipped together (`...1990.[30] I. Yoo and...`), because the gutter the column
+/// pass reported reached past the hanging `[nn]` labels and into the entries themselves, and the
+/// line splitter needs a pair of glyphs straddling the whole gutter before it will cut.
 #[test]
-fn publisher_bibliographies_are_found_where_they_are_found() {
-    for name in [
-        "pinsage.pdf",
-        "topological.pdf",
-        "medimaging.pdf",
-        "sklearn.pdf",
-    ] {
+fn publisher_bibliographies_are_found() {
+    for name in PUBLISHER_PAPERS {
         let path = paper!(name);
         let doc = rustypaper::convert(&path).expect("conversion failed");
         let refs: Vec<&rustypaper::refs::Reference> = doc
@@ -1216,44 +1211,89 @@ fn publisher_bibliographies_are_found_where_they_are_found() {
             "{name}: an implausible year was parsed"
         );
     }
+}
 
-    // for name in ["metasurface.pdf", "imagenet.pdf"] {
-    //     let path = paper!(name);
-    //     let doc = rustypaper::convert(&path).expect("conversion failed");
-    //     assert!(doc.blocks.iter().any(|b| b.reference.is_some()), "{name}");
-    // }
+/// A numbered two-column bibliography comes back entry by entry, not column by column.
+///
+/// `metasurface.pdf` is the case that proves the columns are separated: its forty-one `[n]`
+/// labels can only be found once each column reads on its own, and until they were, the paper
+/// yielded nothing at all.
+#[test]
+fn a_two_column_bibliography_yields_every_entry() {
+    let path = paper!("metasurface.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let labels: Vec<&str> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| b.reference.as_ref()?.label.as_deref())
+        .collect();
+    assert!(
+        labels.len() >= 40,
+        "expected the paper's 41 entries, got {}",
+        labels.len()
+    );
+    // The labels run 1..=41 in order; a zipped page loses that as well as the entries.
+    let numbers: Vec<u32> = labels.iter().filter_map(|l| l.parse().ok()).collect();
+    assert_eq!(numbers.len(), labels.len(), "a label was not a number");
+    assert!(
+        numbers.windows(2).all(|w| w[0] < w[1]),
+        "entries are out of order: {numbers:?}"
+    );
 }
 
 /// A gutter that one wide line crosses must not cost the page its columns.
 ///
-/// **Known gap.** It does. `pinsage.pdf` is a clean two-column acmart paper on eight of its ten
-/// pages, and on the two where a display equation overhangs the gutter — the column profile
-/// needs the band to be empty — no gutter is found and the two columns interleave line by line
-/// (`...is smaller than that of thenode independently. Empirically, we do not...`). It costs
-/// that paper 0.664 bigram recall against a corpus mean of 0.878: the worst score in the corpus,
-/// on a paper whose text extracts perfectly.
-///
-/// What is asserted is the eight pages that do work, so that a fix to the other two is an
-/// improvement rather than a test rewrite.
+/// It used to. `pinsage.pdf` is a clean two-column acmart paper, and on the two pages where a
+/// display equation overhangs the gutter the sparse column beside it fell below half the page's
+/// *peak* ink, the flanking test rejected a corridor with no ink in it at all, and the two
+/// columns then interleaved line by line (`...is smaller than that of thenode independently.
+/// Empirically, we do not...`). The flanking test now asks for half the page's typical ink.
 #[test]
-fn two_column_gutters_are_found_on_most_pages() {
+fn two_column_gutters_are_found_on_every_page() {
     let path = paper!("pinsage.pdf");
     let doc = rustypaper::extract(&path).expect("extraction failed");
 
-    let with_gutter = doc
+    let without: Vec<usize> = doc
         .pages
         .iter()
         .filter(|page| {
             let lines = build_lines(page);
-            !rustypaper::layout::columns::page_gutters(page, &lines).is_empty()
+            rustypaper::layout::columns::page_gutters(page, &lines).is_empty()
         })
-        .count();
+        .map(|page| page.index)
+        .collect();
     assert!(
-        with_gutter >= 8,
-        "only {with_gutter} of {} pages of a two-column paper have a gutter",
-        doc.pages.len()
+        without.is_empty(),
+        "pages {without:?} of a two-column paper have no gutter"
     );
-    // assert_eq!(with_gutter, doc.pages.len());
+}
+
+/// The columns a page cannot see in its own profile are the document's to supply.
+///
+/// A table spanning the measure holds the corridor open on every baseline it occupies, so the
+/// text below it has no dip deep enough to read. Four pages of `medimaging.pdf` are that shape,
+/// and each of them interleaved everything the table did not cover.
+#[test]
+fn columns_hidden_by_a_full_width_table_are_recovered_from_the_document() {
+    let path = paper!("medimaging.pdf");
+    let raw = rustypaper::extract(&path).expect("extraction failed");
+    let lines: Vec<Vec<_>> = raw.pages.iter().map(build_lines).collect();
+
+    let alone = raw
+        .pages
+        .iter()
+        .zip(&lines)
+        .filter(|(page, lines)| !rustypaper::layout::columns::page_gutters(page, lines).is_empty())
+        .count();
+    let together = rustypaper::layout::columns::document_bands(&raw.pages, &lines)
+        .iter()
+        .filter(|bands| bands.iter().any(|band| !band.gutters.is_empty()))
+        .count();
+
+    assert!(
+        together > alone,
+        "the document found no columns its pages had missed ({alone} pages either way)"
+    );
 }
 
 /// A title set at body size, distinguished only by capitals and position, must still be found.

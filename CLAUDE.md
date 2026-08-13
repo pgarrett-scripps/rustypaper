@@ -35,10 +35,14 @@ Current, over the fifteen scorable papers:
 
 | prose bigram | equation recall | equation fidelity | tables | corpus tests |
 | --- | --- | --- | --- | --- |
-| 0.878 | 0.336 | 0.559 | 46/90 | 42/42 |
+| 0.880 | 0.336 | 0.559 | 46/90 | 44/44 |
 
 Maths and tables are the project's weak point, and the honest place to work next. The corpus
 converts in 1.4 s and 66 MB of resident memory.
+
+`pinsage.pdf` scores 0.670 and is *not* the worst-converted paper in the corpus: a third of its
+arXiv source sits inside `\cut{...}`, which discards it, so the reference holds prose the PDF
+never printed. Against what the PDF prints it scores 0.920. Fix `detex` before reading that row.
 
 ## Rules that have earned their place
 
