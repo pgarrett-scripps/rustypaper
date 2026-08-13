@@ -142,11 +142,12 @@ Current scores across the fifteen scorable papers:
 
 | metric | value | what it says |
 |---|---|---|
-| prose bigram recall | **0.899** | prose comes out right, in the right order |
-| equation recall | **0.337** | most display equations are *not* found |
-| equation fidelity | **0.559** | those that are found are roughly half right |
-| tables | 46 found / 90 in source | badly distributed: 9 of ResNet's 17, 9 of ImageNet's 26, one invented on a paper with none |
-| references | 376 found / 1174 in source | five bibliographies are complete; two arrive as run-together blocks and account for most of the rest |
+| prose bigram recall | **0.900** | prose comes out right, in the right order |
+| equation recall | **0.565** | most display equations are found; templates vary widely |
+| equation fidelity | **0.677** | the found ones are mostly right, not wholly right |
+| tables | 62 found / 90 in source | five papers complete; ImageNet's 9/26 is the largest gap |
+| references | 971 found / 1174 in source | eight bibliographies complete; topological's 163/368 is a column gap, not a parsing one |
+| sections | 206 matched / 264 in source | the deficit is subsections set bold at body size |
 
 The maths numbers are the honest state of the differentiator, and they are the project's
 weakest point — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). See

@@ -16,24 +16,24 @@ a bare build leaves that stale.
 converter=extension  scorer=difflib
 paper             bigram  cover   eq  eq rec  eq fid   tables     refs  sections    sec
 -------------------------------------------------------------------------------------------
-bert.pdf           0.878  0.922    6   0.000   0.000      6/8    47/56     16/29   0.06
-biology.pdf        0.916  0.962   57   0.053   0.553      2/4      1/?     27/30   0.18
-gan.pdf            0.882  0.961   14   0.500   0.712      1/4    31/31       9/9   0.04
-imagenet.pdf       0.856  0.930    7   0.429   0.607     9/26   11/102     27/34   0.17
-medimaging.pdf     0.923  0.941   11   0.091   0.897     7/11   21/350     17/33   0.15
-metasurface.pdf    0.926  0.986   23   0.217   0.624      1/0    41/41       5/8   0.04
-numbertheory.pdf   0.878  0.987  103   0.728   0.824      0/0    21/21       8/9   0.06
-optics.pdf         0.857  0.932  215   0.209   0.726      0/0    27/27      9/18   0.07
-pinsage.pdf        0.929  0.987    2   0.000   0.000      2/6    31/31     15/17   0.08
-resnet.pdf         0.915  0.969    2   1.000   0.618     9/17    50/50     13/14   0.06
-sklearn.pdf        0.938  0.969    0   0.000   0.000      0/1     8/16       6/6   0.02
-statistics.pdf     0.912  0.952   18   0.444   0.623      0/2    27/27     10/10   0.06
-topological.pdf    0.882  0.903   21   0.619   0.793      3/2    6/368     15/18   0.15
-transformer.pdf    0.852  0.921   19   0.421   0.851      4/7    40/40     22/22   0.14
-unet.pdf           0.939  0.982    2   0.000   0.000      2/2    14/14       7/7   0.02
+bert.pdf           0.878  0.922    6   0.000   0.000      8/8    47/56     16/29   0.06
+biology.pdf        0.916  0.962   57   0.632   0.691      4/4     33/?     27/30   0.18
+gan.pdf            0.883  0.961   14   0.643   0.694      1/4    31/31       9/9   0.04
+imagenet.pdf       0.856  0.930    7   0.429   0.641     9/26   97/102     27/34   0.18
+medimaging.pdf     0.924  0.941   11   0.909   0.776    11/11  341/350     17/33   0.16
+metasurface.pdf    0.927  0.986   23   0.261   0.657      1/0    41/41       5/8   0.04
+numbertheory.pdf   0.878  0.987  103   0.845   0.865      0/0    21/21       8/9   0.07
+optics.pdf         0.857  0.932  215   0.353   0.716      0/0    27/27      9/18   0.08
+pinsage.pdf        0.933  0.987    2   0.500   0.671      4/6    31/31     15/17   0.08
+resnet.pdf         0.918  0.969    2   1.000   0.659    15/17    50/50     13/14   0.06
+sklearn.pdf        0.939  0.969    0   0.000   0.000      0/1     8/16       6/6   0.02
+statistics.pdf     0.912  0.952   18   0.500   0.662      0/2    27/27     10/10   0.06
+topological.pdf    0.882  0.903   21   0.809   0.847      3/2  163/368     15/18   0.16
+transformer.pdf    0.852  0.921   19   0.526   0.868      4/7    40/40     22/22   0.14
+unet.pdf           0.939  0.982    2   0.500   0.733      2/2    14/14       7/7   0.02
 -------------------------------------------------------------------------------------------
-mean               0.899               0.337   0.559
-total                                                   46/90 376/1174   206/264
+mean               0.900               0.565   0.677
+total                                                   62/90 971/1174   206/264
 
   skipped adam.pdf: arXiv source carries no LaTeX prose (converted to 5474 words, 226 blocks)
 ```
@@ -43,8 +43,9 @@ Every paper is converted **once** — `rustypaper.convert` returns the Markdown 
 model from a single pipeline run, where scoring both used to mean reading each PDF twice.
 
 The worst rows are publisher templates the corpus added late, which is the corpus doing its job:
-`imagenet.pdf` still parses 11 of 102 references, and `topological.pdf` and `medimaging.pdf`
-carry bibliographies that arrive as run-together blocks rather than typed entries.
+`imagenet.pdf` still loses most of its tables, and `topological.pdf`'s bibliography is capped at
+163 of 368 because the remainder never reaches the reference parser — a column-extraction gap,
+not a parsing one.
 
 ## Where the ground truth comes from
 

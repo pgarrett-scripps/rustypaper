@@ -35,11 +35,12 @@ Current, over the fifteen scorable papers:
 
 | prose bigram | equation recall | equation fidelity | tables | references | sections | corpus tests |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0.899 | 0.337 | 0.559 | 46/90 | 376/1174 | 206/264 | 47/47 |
+| 0.900 | 0.565 | 0.677 | 62/90 | 971/1174 | 206/264 | 52/52 |
 
-Maths and tables are the project's weak point, and the honest place to work next; the reference
-deficit is concentrated in two papers whose bibliographies arrive as run-together blocks
-(topological 6/368, medimaging 21/350). The corpus converts in 1.4 s and 62 MB of resident
+The honest places to work next: equation detection on the templates still under half
+(metasurface 0.261, optics 0.353), imagenet's tables (9/26), topological's bibliography (163/368
+— the rest never reaches refs.rs, a column-extraction gap), and the subsection level of the
+section map (bold-at-body-size headings). The corpus converts in 1.5 s and 61 MB of resident
 memory.
 
 A reference can lie: a third of pinsage's arXiv source sat inside `\cut{...}`, a macro defined
