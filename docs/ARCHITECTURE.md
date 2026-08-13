@@ -174,19 +174,10 @@ one of them typeset by a publisher rather than by a call for papers. Six more we
 IEEEtran with a drop capital (`metasurface.pdf`), acmart (`pinsage.pdf`), REVTeX
 (`topological.pdf`), Elsevier's elsarticle (`medimaging.pdf`), a Springer journal in svjour3
 (`imagenet.pdf`) and JMLR (`sklearn.pdf`) — and unlike the last widening, these are not four bugs
-with four fixes. They are four *shapes* of failure, none of them fixed yet, all of them now
-pinned in `tests/corpus.rs`:
+with four fixes. They are four *shapes* of failure, all of them pinned in `tests/corpus.rs`. The
+two that were about columns are fixed and are written up in the next section; the two that
+remain are:
 
-- **A gutter that one line crosses costs the page its columns.** The column profile needs the
-  band between the columns to be empty, so a single display equation whose subscript overhangs
-  the gutter suppresses it, and the whole page interleaves line by line. It happens on 2 of
-  `pinsage.pdf`'s 10 pages and takes that paper to **0.664** bigram recall — the worst in the
-  corpus, on a paper whose glyphs extract perfectly. The other eight pages are exact.
-- **A two-column bibliography interleaves even where the gutter *is* found.** `metasurface.pdf`
-  yields 0 references from 41, `imagenet.pdf` 0 from about 100: the entries arrive as one
-  paragraph of two columns zipped together (`...1990.[30] I. Yoo and...`), and `REFERENCES` lands
-  mid-sentence inside it rather than as a heading. This is the "References heading fuses into the
-  first entry" report from production, and it is not a heading bug — the whole page is zipped.
 - **A drop capital is placed where it sits.** `\IEEEPARstart` sets the first letter of the
   introduction three lines deep in the margin, so reading order puts it three lines in:
   `Conformal antennas...` becomes `onformal antennas are essential components in
@@ -202,6 +193,70 @@ Roman-numeral sections and acmart's capitalised ones are found (`II. TOPOLOGICAL
 `3.1 Problem Setup`), and four of the six titles come out exactly right. Roman numerals are only
 missed where the heading is set at body size in the body face, as IEEEtran does from section II
 onwards — the numeral alone is not evidence, and nothing else distinguishes it.
+
+## What the gutter was being measured against
+
+Both column failures the publisher templates found were the same mistake made twice: a local
+question answered with a page-wide number.
+
+**The flanking text was measured against the page's peak ink.** A gutter has to have text beside
+it, or the sparse interior of a figure reads as a column boundary. Requiring both sides to reach
+half of the densest bin *on the page* assumes the two columns are equally dense, and they are
+not: one of them holds the algorithm float, the ragged appendix list, the bibliography set two
+points smaller. Worse, the densest bin is usually the left margin, where every line of the page
+starts. So a corridor 20pt wide with *no ink in it at all* was rejected on 2 of `pinsage.pdf`'s
+10 pages and 4 of `imagenet.pdf`'s, and those pages then interleaved line by line. Measured
+against the page's *median* text bin instead, they are found — and so is the page of
+`imagenet.pdf` whose right-hand column is a sparse table.
+
+The same rule then had to be told what a collapse is. A single column's right edge is ragged
+rather than square: coverage decays over the last inch of the measure, and a page-wide threshold
+cuts that slope somewhere, so `adam.pdf` reported an 11pt gutter inside its own right margin —
+in a band holding four fifths of the ink of the text beside it. A gutter is a *collapse*, so the
+band must be empty by comparison with the text immediately flanking it, not merely with the
+page's average.
+
+**The gutter's edges were where coverage came back, not where the text did.** A bibliography
+hangs its `[12]` labels in a column of their own at the inner edge of the text, and they appear
+on only the first line of each entry — a fifth as often as running text, which is below any
+threshold that also lets a title cross. So the reported band swallowed the label column and its
+far edge landed *inside* the entries. `split_at_gutters` wants a pair of glyphs straddling the
+whole band before it will cut, and the lines it therefore could not cut were exactly the ones
+that open an entry: `metasurface.pdf` yielded 0 references from 41, `imagenet.pdf` 0 from about
+100, both arriving as one paragraph of two columns zipped together (`...1990.[30] I. Yoo and...`).
+Trimming each band to its own floor — the corridor that is actually empty — puts the edges back.
+Where the floor is not zero, because a title crosses the gutter, every bin is at it and the band
+is returned untouched, which is what has to happen for a full-width line to keep crossing.
+
+With both fixed, `metasurface.pdf` gives all 41 of its entries in order.
+
+### One page is not always enough to read
+
+A wide table holds the corridor open on every baseline it occupies, so the columns of running
+text above or below it leave no dip deep enough to see: four pages of `medimaging.pdf`, one of
+`resnet.pdf`, one of `imagenet.pdf`. Looking for gutters inside horizontal slices of the page
+finds them — and finds plenty of others that are not gutters. Measured across the corpus, an
+unconstrained band search invents a column boundary in a table or an author block on eight pages
+of *single-column* papers, which is precisely where splitting lines does the most damage.
+
+So the search is anchored. A document that sets two columns sets them in the same place on every
+page, so the gutters agreed by the pages that could be read become the document's spine, and a
+band may only report a gutter that lands on it. `document_bands` is the whole-document pass that
+does this, and a page that reads its own columns is still one band covering the page.
+
+### A score can be an artifact of its reference
+
+`pinsage.pdf` was recorded above as the worst paper in the corpus at 0.664 bigram recall, and
+that was read as the cost of its two interleaved pages. It was not. Its arXiv source wraps 3 754
+of its 10 686 reference words — a third of the paper — in `\cut{...}`, a macro that discards
+them, so the eval's reference contains prose the PDF never printed. Scored against the prose the
+PDF *does* print, that paper reads **0.920**, at the top of the corpus rather than the bottom.
+
+Fixing the interleave moved it from 0.911 to 0.920 on that honest reference, and from 0.664 to
+0.670 on the harness's. Both are the same repair: zipping two columns line by line breaks the
+bigram only at each line join, so it costs about one bigram per line and no more. The lesson is
+for the scoreboard rather than the converter — **a low score is a question, not a diagnosis**, and
+this one had been attributed to the wrong cause. `detex` should treat `\cut` as discarding.
 
 ## What the maths scorer found
 
