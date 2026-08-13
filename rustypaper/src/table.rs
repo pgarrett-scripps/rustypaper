@@ -19,6 +19,18 @@ const MIN_RULE_OVERLAP: f32 = 0.6;
 /// Rules further apart than this vertically are not the same table.
 const MAX_RULE_SPACING: f32 = 320.0;
 
+/// The shorter of two rules must be at least this fraction of the longer to be its table's.
+///
+/// `aligned` measures overlap against the *shorter* rule, which it has to: a `\cmidrule` under
+/// one column of a table is short by design and lies wholly within the `\toprule` above it, so
+/// it scores 1.0 and belongs. But so does a 10 pt `\frac` bar lying within a 467 pt page rule,
+/// and that one does not. Overlap alone cannot tell them apart; the ratio of their lengths can.
+/// Across the corpus the tightest real pairing is BERT's Table 8, whose `\cmidrule`s are 0.36 of
+/// its `\toprule`, and the loosest false one is a biology `\frac` bar at 0.07 of the separator
+/// above the page's running footer — the rule that, before this, turned a system of ODEs into a
+/// 59-row table by vouching for the whole stack of fraction bars beneath it.
+const MIN_RULE_WIDTH_RATIO: f32 = 0.25;
+
 /// A group needs one rule at least this wide, in body font sizes, to be a table's rules.
 ///
 /// `\frac` draws its bar as a filled rectangle, so every fraction in the document arrives here
@@ -62,25 +74,65 @@ impl Table {
 }
 
 /// Finds the tables on a page.
-pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32) -> Vec<Table> {
+///
+/// `figures` are the page's drawn regions, as [`crate::figure::regions`] reports them. A rule
+/// inside one is not a table's — see [`inside_a_figure`] — and a figure between two rules means
+/// they bound different things — see [`separated_by_a_figure`].
+pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32, figures: &[Rect]) -> Vec<Table> {
     let mut rules: Vec<Rect> = page
         .paths
         .iter()
         .filter(|p| p.kind == PathKind::HorizontalRule)
         .map(|p| p.bbox)
+        .filter(|bbox| !inside_a_figure(bbox, figures))
         .collect();
     rules.sort_by(|a, b| a.y0.total_cmp(&b.y0));
 
     let mut tables = Vec::new();
     let mut used: Vec<bool> = vec![false; lines.len()];
 
-    for group in group_rules(&rules, body_size) {
+    for group in group_rules(&rules, body_size, figures) {
         if let Some(table) = build(&group, lines, body_size, &mut used) {
             tables.push(table);
         }
     }
 
     tables
+}
+
+/// Whether a rule lies wholly within one of the page's drawn figure regions.
+///
+/// A plot is not made of prose, but it is full of straight horizontal lines: error bars, box
+/// plots, legend keys, the frame around a panel. Every one of them arrives as a
+/// `HorizontalRule`, indistinguishable from a `\toprule` by width alone — biology's population
+/// plots draw pairs of 17.5 em lines 117 pt apart, which is a textbook `booktabs` signature —
+/// and what they enclose is the letterspaced subset-font text of the plot's own labels. The
+/// result reads as a table of `5 D Z  G D W D`.
+///
+/// Containment has to be total, and in both axes. A real table often shares a column with a
+/// figure and so lies inside its region's *horizontal* span: ResNet's Table 1 spans exactly the
+/// x-range of the plot below it, and testing x alone would have discarded the paper's largest
+/// table. Nor is the padded margin that [`crate::pipeline`] uses for stray labels right here — a
+/// table directly under a figure is adjacent to it, not part of it.
+fn inside_a_figure(rule: &Rect, figures: &[Rect]) -> bool {
+    figures.iter().any(|region| region.contains(rule))
+}
+
+/// Whether a whole figure sits in the gap between two rules.
+///
+/// Rules that far apart are already the doubtful case — [`MAX_RULE_SPACING`] allows 320 pt,
+/// because a real table can run that long between its `\midrule` and its `\bottomrule` — and a
+/// drawing lying in the gap settles it: whatever the two rules bound, it is not one tabular.
+/// ResNet's page 5 carries Table 1, then Figure 4, then Table 2, and the axis ticks under
+/// Table 1 overlap Table 2's rules well enough to pass `aligned`, which fused the pair into a
+/// single 240 pt "table" of legend text and lost Table 2 entirely.
+///
+/// The figure has to lie *entirely* within the gap. A tall figure merely beside a table in the
+/// other column straddles its rules rather than parting them, and that is the common case.
+fn separated_by_a_figure(above: &Rect, below: &Rect, figures: &[Rect]) -> bool {
+    figures
+        .iter()
+        .any(|region| region.y0 >= above.y1 && region.y1 <= below.y0)
 }
 
 /// Clusters rules that plausibly belong to the same table.
@@ -95,7 +147,7 @@ pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32) -> Vec<Table> {
 /// Where several chains could take a rule, the best-overlapping one does, and the most recent of
 /// those wins a tie. With a single table on the page there is only ever one chain, so this is
 /// exactly the old behaviour.
-fn group_rules(rules: &[Rect], body_size: f32) -> Vec<Vec<Rect>> {
+fn group_rules(rules: &[Rect], body_size: f32, figures: &[Rect]) -> Vec<Vec<Rect>> {
     let mut groups: Vec<Vec<Rect>> = Vec::new();
 
     for &rule in rules {
@@ -103,7 +155,9 @@ fn group_rules(rules: &[Rect], body_size: f32) -> Vec<Vec<Rect>> {
             .iter_mut()
             .filter(|group| {
                 let last = group.last().unwrap();
-                rule.y0 - last.y1 <= MAX_RULE_SPACING && aligned(last, &rule)
+                rule.y0 - last.y1 <= MAX_RULE_SPACING
+                    && aligned(last, &rule)
+                    && !separated_by_a_figure(last, &rule, figures)
             })
             .max_by(|a, b| {
                 overlap_fraction(a.last().unwrap(), &rule)
@@ -128,7 +182,12 @@ fn overlap_fraction(a: &Rect, b: &Rect) -> f32 {
 }
 
 fn aligned(a: &Rect, b: &Rect) -> bool {
-    overlap_fraction(a, b) >= MIN_RULE_OVERLAP
+    let (shorter, longer) = if a.width() < b.width() {
+        (a.width(), b.width())
+    } else {
+        (b.width(), a.width())
+    };
+    overlap_fraction(a, b) >= MIN_RULE_OVERLAP && shorter / longer.max(1.0) >= MIN_RULE_WIDTH_RATIO
 }
 
 /// Builds a table from a group of rules and the lines they enclose.
@@ -414,7 +473,7 @@ mod tests {
     #[test]
     fn reconstructs_a_booktabs_table() {
         let (page, lines) = booktabs();
-        let tables = detect(&page, &lines, 10.0);
+        let tables = detect(&page, &lines, 10.0, &[]);
         assert_eq!(tables.len(), 1, "expected one table, got {tables:?}");
 
         let table = &tables[0];
@@ -428,7 +487,7 @@ mod tests {
     #[test]
     fn the_midrule_marks_the_header() {
         let (page, lines) = booktabs();
-        let tables = detect(&page, &lines, 10.0);
+        let tables = detect(&page, &lines, 10.0, &[]);
         assert_eq!(tables[0].header_rows, 1);
     }
 
@@ -439,7 +498,7 @@ mod tests {
             row(120.0, &[("a", 76.0, 90.0), ("b", 200.0, 214.0)]),
             row(140.0, &[("c", 76.0, 90.0), ("d", 200.0, 214.0)]),
         ];
-        let tables = detect(&page, &lines, 10.0);
+        let tables = detect(&page, &lines, 10.0, &[]);
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].header_rows, 0);
     }
@@ -447,7 +506,7 @@ mod tests {
     #[test]
     fn consumed_lines_are_reported() {
         let (page, lines) = booktabs();
-        let tables = detect(&page, &lines, 10.0);
+        let tables = detect(&page, &lines, 10.0, &[]);
         assert_eq!(tables[0].consumed, vec![0, 1, 2]);
     }
 
@@ -456,7 +515,7 @@ mod tests {
     fn one_rule_is_not_a_table() {
         let page = page_with(vec![rule(100.0, 72.0, 400.0)]);
         let lines = vec![row(120.0, &[("a", 76.0, 90.0), ("b", 200.0, 214.0)])];
-        assert!(detect(&page, &lines, 10.0).is_empty());
+        assert!(detect(&page, &lines, 10.0, &[]).is_empty());
     }
 
     /// One table's rules are one group, which is what they were before chains went plural.
@@ -467,7 +526,7 @@ mod tests {
             Rect::from_corners(72.0, 120.0, 400.0, 120.6),
             Rect::from_corners(72.0, 170.0, 400.0, 170.6),
         ];
-        let groups = group_rules(&rules, 10.0);
+        let groups = group_rules(&rules, 10.0, &[]);
         assert_eq!(groups.len(), 1, "expected one group, got {groups:?}");
         assert_eq!(groups[0].len(), 3);
     }
@@ -482,7 +541,7 @@ mod tests {
             Rect::from_corners(320.0, 110.0, 540.0, 110.6),
             Rect::from_corners(50.0, 120.0, 280.0, 120.6),
         ];
-        let groups = group_rules(&rules, 10.0);
+        let groups = group_rules(&rules, 10.0, &[]);
         assert_eq!(groups.len(), 1, "expected one group, got {groups:?}");
         assert_eq!(groups[0].len(), 2);
         assert!(
@@ -513,7 +572,7 @@ mod tests {
             row(162.0, &[("34", 324.0, 344.0), ("2.8", 460.0, 480.0)]),
         ];
 
-        let tables = detect(&page, &lines, 10.0);
+        let tables = detect(&page, &lines, 10.0, &[]);
         assert_eq!(tables.len(), 2, "expected two tables, got {tables:?}");
         assert_eq!(tables[0].rows[0], ["Model", "Top-1"]);
         assert_eq!(tables[1].rows[0], ["Layers", "Error"]);
@@ -532,7 +591,7 @@ mod tests {
             row(112.0, &[("x", 152.0, 160.0), ("(3)", 210.0, 228.0)]),
             row(136.0, &[("y", 154.0, 162.0), ("(4)", 212.0, 230.0)]),
         ];
-        let tables = detect(&page, &lines, 10.0);
+        let tables = detect(&page, &lines, 10.0, &[]);
         assert!(tables.is_empty(), "fractions became a table: {tables:?}");
     }
 
@@ -541,7 +600,7 @@ mod tests {
     fn unaligned_rules_do_not_form_a_table() {
         let page = page_with(vec![rule(100.0, 72.0, 200.0), rule(140.0, 400.0, 540.0)]);
         let lines = vec![row(120.0, &[("a", 76.0, 90.0), ("b", 420.0, 434.0)])];
-        assert!(detect(&page, &lines, 10.0).is_empty());
+        assert!(detect(&page, &lines, 10.0, &[]).is_empty());
     }
 
     /// A rule far above and one far below are page furniture, not a table's extent.
@@ -552,7 +611,7 @@ mod tests {
             row(300.0, &[("body", 76.0, 110.0), ("text", 200.0, 230.0)]),
             row(320.0, &[("more", 76.0, 110.0), ("text", 200.0, 230.0)]),
         ];
-        assert!(detect(&page, &lines, 10.0).is_empty());
+        assert!(detect(&page, &lines, 10.0, &[]).is_empty());
     }
 
     /// Centred prose between two rules has no column structure and must not become a table.
@@ -563,7 +622,7 @@ mod tests {
             row(120.0, &[("a line of running text here", 76.0, 390.0)]),
             row(140.0, &[("and another line of text", 76.0, 380.0)]),
         ];
-        assert!(detect(&page, &lines, 10.0).is_empty());
+        assert!(detect(&page, &lines, 10.0, &[]).is_empty());
     }
 
     #[test]
@@ -593,7 +652,7 @@ mod tests {
                 ],
             ),
         ];
-        let tables = detect(&page, &lines, 10.0);
+        let tables = detect(&page, &lines, 10.0, &[]);
         assert_eq!(tables.len(), 1);
         assert_eq!(
             tables[0].columns(),
@@ -601,5 +660,116 @@ mod tests {
             "the spanning title erased the columns"
         );
         assert_eq!(tables[0].rows[1], ["A", "1.0", "2.0"]);
+    }
+
+    /// A plot's own lines, wide enough to pass for `\toprule` and `\bottomrule`, with the plot's
+    /// legend text between them. Only the figure region tells them apart.
+    fn plot_shaped_like_a_table() -> (PageRaw, Vec<Line>, Rect) {
+        let page = page_with(vec![rule(100.0, 80.0, 280.0), rule(200.0, 80.0, 280.0)]);
+        let lines = vec![
+            row(130.0, &[("5 D Z", 90.0, 130.0), ("G D W D", 200.0, 250.0)]),
+            row(160.0, &[("3 H D N", 90.0, 136.0), ("0 L V", 200.0, 240.0)]),
+        ];
+        (page, lines, Rect::from_corners(60.0, 60.0, 400.0, 300.0))
+    }
+
+    /// The rules inside a figure are the figure's, whatever they measure.
+    #[test]
+    fn rules_inside_a_figure_are_not_a_table() {
+        let (page, lines, figure) = plot_shaped_like_a_table();
+        assert_eq!(
+            detect(&page, &lines, 10.0, &[]).len(),
+            1,
+            "the fixture must look exactly like a table without the figure"
+        );
+
+        let tables = detect(&page, &lines, 10.0, &[figure]);
+        assert!(tables.is_empty(), "a plot became a table: {tables:?}");
+    }
+
+    /// Containment is in both axes. A table under a figure shares its column, and so lies inside
+    /// the figure's *horizontal* span — testing x alone discarded ResNet's largest table.
+    #[test]
+    fn a_table_below_a_figure_survives_it() {
+        let figure = Rect::from_corners(60.0, 60.0, 400.0, 300.0);
+        let page = page_with(vec![rule(400.0, 80.0, 280.0), rule(470.0, 80.0, 280.0)]);
+        let lines = vec![
+            row(420.0, &[("plain", 90.0, 124.0), ("27.94", 200.0, 236.0)]),
+            row(450.0, &[("ResNet", 90.0, 132.0), ("27.88", 200.0, 236.0)]),
+        ];
+
+        let tables = detect(&page, &lines, 10.0, &[figure]);
+        assert_eq!(tables.len(), 1, "the figure above swallowed the table");
+        assert_eq!(tables[0].rows[0], ["plain", "27.94"]);
+    }
+
+    /// ResNet's page 5: Table 1, then Figure 4, then Table 2. The two tables' rules pass
+    /// `aligned`, and without the figure between them they fuse into one span of legend text.
+    #[test]
+    fn a_figure_between_two_tables_keeps_them_apart() {
+        let page = page_with(vec![
+            rule(100.0, 80.0, 420.0),
+            rule(160.0, 80.0, 420.0),
+            rule(400.0, 100.0, 280.0),
+            rule(460.0, 100.0, 280.0),
+        ]);
+        let lines = vec![
+            row(120.0, &[("layer", 90.0, 124.0), ("output", 300.0, 342.0)]),
+            row(140.0, &[("conv1", 90.0, 124.0), ("112", 300.0, 322.0)]),
+            row(420.0, &[("plain", 110.0, 144.0), ("27.94", 210.0, 246.0)]),
+            row(440.0, &[("ResNet", 110.0, 152.0), ("27.88", 210.0, 246.0)]),
+        ];
+        assert_eq!(
+            detect(&page, &lines, 10.0, &[]).len(),
+            1,
+            "without the figure the two must be indistinguishable from one table"
+        );
+
+        let figure = Rect::from_corners(80.0, 200.0, 420.0, 340.0);
+        let tables = detect(&page, &lines, 10.0, &[figure]);
+        assert_eq!(tables.len(), 2, "expected two tables, got {tables:?}");
+        assert_eq!(tables[0].rows[0], ["layer", "output"]);
+        assert_eq!(tables[1].rows[0], ["plain", "27.94"]);
+    }
+
+    /// Biology's page separator, above the running footer, spans the text block — so every
+    /// `\frac` bar on the page lies wholly inside it and scores a perfect overlap against it.
+    /// One rule that no table owns must not vouch for a stack of fraction bars.
+    #[test]
+    fn a_page_wide_rule_does_not_recruit_fraction_bars() {
+        let page = page_with(vec![
+            rule(100.0, 200.0, 212.0),
+            rule(140.0, 200.0, 212.0),
+            rule(180.0, 200.0, 212.0),
+            rule(300.0, 50.0, 500.0),
+        ]);
+        let lines = vec![
+            row(220.0, &[("dE", 60.0, 80.0), ("(1)", 300.0, 320.0)]),
+            row(260.0, &[("dQ", 60.0, 80.0), ("(2)", 300.0, 320.0)]),
+        ];
+
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert!(tables.is_empty(), "a footer rule made a table: {tables:?}");
+    }
+
+    /// The other side of that ratio: a `\cmidrule` really is much shorter than its `\toprule`,
+    /// and still belongs. BERT's Table 8 sets the tightest real pairing in the corpus.
+    #[test]
+    fn a_cmidrule_still_belongs_to_its_table() {
+        let page = page_with(vec![
+            rule(100.0, 100.0, 320.0),
+            rule(130.0, 100.0, 179.0),
+            rule(200.0, 100.0, 320.0),
+        ]);
+        let lines = vec![
+            row(120.0, &[("Masking", 110.0, 158.0), ("Dev", 240.0, 264.0)]),
+            row(150.0, &[("80%", 110.0, 134.0), ("84.2", 240.0, 266.0)]),
+            row(180.0, &[("100%", 110.0, 140.0), ("84.3", 240.0, 266.0)]),
+        ];
+
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables.len(), 1, "the cmidrule split its own table");
+        assert_eq!(tables[0].header_rows, 1);
+        assert_eq!(tables[0].rows[1], ["80%", "84.2"]);
     }
 }

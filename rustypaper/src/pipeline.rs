@@ -90,6 +90,16 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     let mut pages = build_pages(&raw);
     layout::furniture::strip(&mut pages, &heights);
 
+    // Figure regions are found once and used twice: table detection needs them to know which
+    // horizontal rules belong to a plot rather than to a tabular, and `attach_figures` needs the
+    // regions themselves. Finding them here rather than in each pass also moves the work off the
+    // serial tail and into the parallel body.
+    let figures: Vec<Vec<ir::Rect>> = raw
+        .pages
+        .par_iter()
+        .map(|page| figure::regions(page).into_iter().map(|r| r.bbox).collect())
+        .collect();
+
     // Measured after furniture removal so running heads cannot skew the body size, and before
     // reading order because neither depends on the other.
     let stats = layout::stats::Stats::measure(&pages);
@@ -105,14 +115,14 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     // `lines_at` follows the prose through both lifts: for each line still standing, where it
     // sat in its page's ordered line stream. That index is what puts a lifted table or equation
     // back in the right place — see [`place_lifted`].
-    let (tables, mut prose, mut lines_at) = lift_tables(&raw, ordered, stats);
+    let (tables, mut prose, mut lines_at) = lift_tables(&raw, ordered, stats, &figures);
     let equations = lift_equations(&raw, &mut prose, &mut lines_at);
 
     let vocab = text::vocab::Vocabulary::build(&prose);
     let (mut document, starts) = doc::assemble_placed(&prose, &heights, stats, &vocab);
 
     place_lifted(&mut document, &starts, &lines_at, tables, equations);
-    attach_figures(&backend, &raw, &mut document, options)?;
+    attach_figures(&backend, &figures, &mut document, options)?;
     crop_uncertain_equations(&backend, &mut document, options)?;
     extract_bibliography(&mut document);
 
@@ -144,6 +154,7 @@ fn lift_tables(
     raw: &DocRaw,
     ordered: Vec<Vec<text::lines::Line>>,
     stats: layout::stats::Stats,
+    figures: &[Vec<ir::Rect>],
 ) -> (
     Vec<PlacedTable>,
     Vec<Vec<text::lines::Line>>,
@@ -154,7 +165,8 @@ fn lift_tables(
         .par_iter()
         .zip(ordered)
         .map(|(page, lines)| {
-            let found = table::detect(page, &lines, stats.body_size);
+            let regions = figures.get(page.index).map_or(&[][..], Vec::as_slice);
+            let found = table::detect(page, &lines, stats.body_size, regions);
             let mut consumed = vec![false; lines.len()];
             let mut tables = Vec::new();
 
@@ -604,7 +616,7 @@ fn crop_uncertain_equations(
 /// Binds detected figure regions to their captions, optionally rasterising them.
 fn attach_figures(
     backend: &impl PageSource,
-    raw: &DocRaw,
+    figures: &[Vec<ir::Rect>],
     document: &mut doc::Document,
     options: &Options,
 ) -> Result<()> {
@@ -618,15 +630,15 @@ fn attach_figures(
     let mut counter = 0usize;
     let mut swallowed: Vec<(usize, ir::Rect)> = Vec::new();
 
-    for page in &raw.pages {
-        for region in figure::regions(page) {
+    for (index, regions) in figures.iter().enumerate() {
+        for &region in regions {
             counter += 1;
-            swallowed.push((page.index, region.bbox));
+            swallowed.push((index, region));
 
             let asset = match &options.assets {
                 Some(dir) => {
                     let name = format!("figure-{:03}.png", counter);
-                    let png = backend.render_region(page.index, region.bbox, options.figure_dpi)?;
+                    let png = backend.render_region(index, region, options.figure_dpi)?;
                     let file = dir.join(&name);
                     std::fs::write(&file, png)
                         .map_err(|source| Error::Io { path: file, source })?;
@@ -638,12 +650,12 @@ fn attach_figures(
                 None => None,
             };
 
-            match caption_for(document, page.index, &region.bbox) {
-                Some(index) => {
-                    document.blocks[index].kind = doc::BlockKind::Figure;
-                    document.blocks[index].asset = asset;
+            match caption_for(document, index, &region) {
+                Some(caption) => {
+                    document.blocks[caption].kind = doc::BlockKind::Figure;
+                    document.blocks[caption].asset = asset;
                 }
-                None => insert_figure(document, page.index, region.bbox, asset),
+                None => insert_figure(document, index, region, asset),
             }
         }
     }
