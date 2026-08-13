@@ -110,8 +110,19 @@ PYTHONPATH=python python3 -c "
 import rustypaper
 print(rustypaper.to_markdown('corpus/resnet.pdf')[:80])
 doc = rustypaper.to_document('corpus/resnet.pdf')   # the document model as a dict
+for section in doc['sections']:                     # the outline, with block ranges
+    print(section['level'], section['title'], section['start'], section['end'])
+
+markdown, doc = rustypaper.convert('corpus/resnet.pdf')   # both, from one pipeline run
+print(rustypaper.to_typst('corpus/resnet.pdf')[:80])
+print(rustypaper.to_text('corpus/resnet.pdf')[:80])
 "
 ```
+
+`sections` is the document's outline: each entry has a `title` (`None` for the front matter that
+precedes every heading), a `level`, a half-open `start`/`end` range into `blocks` that includes
+its nested `children`, and the pages it spans. A consumer that wants the methods section can
+slice the blocks rather than re-deriving structure from the Markdown.
 
 `ScannedDocument` is raised for image-only PDFs, so callers can route those to an OCR pipeline
 instead. Conversion releases the GIL, so several threads convert in parallel.

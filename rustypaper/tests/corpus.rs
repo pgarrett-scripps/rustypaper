@@ -1310,6 +1310,239 @@ fn columns_hidden_by_a_full_width_table_are_recovered_from_the_document() {
     );
 }
 
+// --------------------------------------------------------------------------------------------
+// The section map. Derived from the heading blocks, so these tests say two things at once: that
+// the tree is built correctly, and that the headings underneath it are still being found.
+// --------------------------------------------------------------------------------------------
+
+/// The titles of a level of the tree, in order. `None` is the untitled front matter.
+fn section_titles(sections: &[rustypaper::doc::Section]) -> Vec<Option<&str>> {
+    sections.iter().map(|s| s.title.as_deref()).collect()
+}
+
+/// A section of the tree by its title, at any depth.
+fn find_section<'a>(
+    sections: &'a [rustypaper::doc::Section],
+    wanted: &str,
+) -> Option<&'a rustypaper::doc::Section> {
+    for section in sections {
+        if section.title.as_deref().map(str::trim) == Some(wanted) {
+            return Some(section);
+        }
+        if let Some(found) = find_section(&section.children, wanted) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The Transformer paper numbers three levels, so its tree is the one to pin in full.
+#[test]
+fn the_section_map_reproduces_a_numbered_papers_outline() {
+    let path = paper!("transformer.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let sections = doc.sections();
+
+    // The paper's top-level outline, front matter first.
+    assert_eq!(
+        section_titles(&sections),
+        [
+            None,
+            Some("Abstract"),
+            Some("1 Introduction"),
+            Some("2 Background"),
+            Some("3 Model Architecture"),
+            Some("4 Why Self-Attention"),
+            Some("5 Training"),
+            Some("6 Results"),
+            Some("7 Conclusion"),
+            Some("References"),
+        ]
+    );
+
+    // Numbering decides nesting: 3.x sits under 3, and 3.2.x under 3.2.
+    let architecture = find_section(&sections, "3 Model Architecture").expect("section 3");
+    assert_eq!(
+        section_titles(&architecture.children),
+        [
+            Some("3.1 Encoder and Decoder Stacks"),
+            Some("3.2 Attention"),
+            Some("3.3 Position-wise Feed-Forward Networks"),
+            Some("3.4 Embeddings and Softmax"),
+            Some("3.5 Positional Encoding"),
+        ]
+    );
+    let attention = find_section(&sections, "3.2 Attention").expect("section 3.2");
+    assert_eq!(attention.level, 2);
+    assert_eq!(
+        section_titles(&attention.children),
+        [
+            Some("3.2.1 Scaled Dot-Product Attention"),
+            Some("3.2.2 Multi-Head Attention"),
+            Some("3.2.3 Applications of Attention in our Model"),
+        ]
+    );
+
+    // A section's range starts at its own heading and swallows its subsections.
+    assert_eq!(
+        doc.blocks[architecture.start].text.trim(),
+        "3 Model Architecture"
+    );
+    let last = attention.children.last().expect("a subsubsection");
+    assert!(
+        architecture.start < attention.start && last.end <= attention.end,
+        "a child's range must lie inside its parent's"
+    );
+
+    // And the pages it spans are the pages of the blocks it holds.
+    assert!(
+        architecture.first_page <= attention.first_page
+            && architecture.last_page >= attention.last_page,
+        "a parent must span at least its children's pages"
+    );
+}
+
+/// IEEEtran sets its sections at body size and numbers them with Roman numerals, so this tree
+/// exists only because the numeral is read as numbering.
+#[test]
+fn the_section_map_finds_roman_numeral_sections() {
+    let path = paper!("metasurface.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let sections = doc.sections();
+
+    for wanted in ["I. INTRODUCTION", "II. THEORY", "IV. CONCLUSION"] {
+        let section = find_section(&sections, wanted)
+            .unwrap_or_else(|| panic!("no section {wanted:?} in {:?}", section_titles(&sections)));
+        assert_eq!(section.level, 1, "{wanted}: numbered sections are level 1");
+        assert_eq!(doc.blocks[section.start].text.trim(), wanted);
+        assert!(section.end > section.start, "{wanted}: an empty range");
+    }
+
+    // The four are in the order the paper prints them, and each ends where the next begins.
+    let numbered: Vec<&rustypaper::doc::Section> = sections
+        .iter()
+        .filter(|s| {
+            s.title
+                .as_deref()
+                .is_some_and(|t| t.starts_with("I.") || t.starts_with("II") || t.starts_with("IV"))
+        })
+        .collect();
+    for pair in numbered.windows(2) {
+        assert_eq!(
+            pair[0].end, pair[1].start,
+            "sections {:?} and {:?} do not meet",
+            pair[0].title, pair[1].title
+        );
+    }
+}
+
+/// The invariants a consumer indexes on, over every paper in the corpus: ranges ordered, never
+/// overlapping, always inside `blocks`, and children contained by their parent.
+#[test]
+fn section_ranges_are_valid_across_the_corpus() {
+    fn check(name: &str, doc: &rustypaper::doc::Document, sections: &[rustypaper::doc::Section]) {
+        let mut cursor = None::<usize>;
+        for section in sections {
+            assert!(
+                section.start < section.end && section.end <= doc.blocks.len(),
+                "{name}: {:?} has range {}..{} against {} blocks",
+                section.title,
+                section.start,
+                section.end,
+                doc.blocks.len()
+            );
+            if let Some(previous_end) = cursor {
+                assert!(
+                    section.start >= previous_end,
+                    "{name}: {:?} starts at {} inside the section before it, which ends at \
+                     {previous_end}",
+                    section.title,
+                    section.start
+                );
+            }
+            cursor = Some(section.end);
+
+            // A titled section names the block it starts at; the front matter names nothing.
+            match &section.title {
+                Some(title) => assert_eq!(
+                    doc.blocks[section.start].text.trim(),
+                    title.trim(),
+                    "{name}: a section's title is not the heading it starts at"
+                ),
+                None => assert_eq!(
+                    section.level,
+                    rustypaper::doc::FRONT_MATTER_LEVEL,
+                    "{name}: only the front matter goes untitled"
+                ),
+            }
+
+            // The page span is the span of the blocks in the range, not a guess.
+            let pages: Vec<usize> = doc.blocks[section.start..section.end]
+                .iter()
+                .map(|b| b.page)
+                .collect();
+            assert_eq!(
+                (section.first_page, section.last_page),
+                (
+                    pages.iter().copied().min().unwrap_or(0),
+                    pages.iter().copied().max().unwrap_or(0)
+                ),
+                "{name}: {:?} reports the wrong page span",
+                section.title
+            );
+
+            for child in &section.children {
+                assert!(
+                    child.start > section.start && child.end <= section.end,
+                    "{name}: {:?} escapes its parent {:?}",
+                    child.title,
+                    section.title
+                );
+                assert!(
+                    child.level > section.level,
+                    "{name}: {:?} is not deeper than its parent {:?}",
+                    child.title,
+                    section.title
+                );
+            }
+            check(name, doc, &section.children);
+        }
+    }
+
+    for name in [
+        "transformer.pdf",
+        "resnet.pdf",
+        "bert.pdf",
+        "adam.pdf",
+        "numbertheory.pdf",
+        "optics.pdf",
+        "biology.pdf",
+        "statistics.pdf",
+        "unet.pdf",
+        "gan.pdf",
+        "metasurface.pdf",
+        "pinsage.pdf",
+        "topological.pdf",
+        "medimaging.pdf",
+        "imagenet.pdf",
+        "sklearn.pdf",
+    ] {
+        let path = paper!(name);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        let sections = doc.sections();
+        assert!(!sections.is_empty(), "{name}: no sections at all");
+        check(name, &doc, &sections);
+
+        // Every block belongs to exactly one top-level section: the ranges tile the document.
+        let covered: usize = sections.iter().map(|s| s.end - s.start).sum();
+        assert_eq!(
+            covered,
+            doc.blocks.len(),
+            "{name}: the top level does not cover the document"
+        );
+    }
+}
+
 /// A title set at body size, distinguished only by capitals and position, must still be found.
 #[test]
 fn titles_are_found_in_every_template() {

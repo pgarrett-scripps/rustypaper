@@ -1,6 +1,7 @@
 //! Python bindings.
 //!
-//! The surface is deliberately small: convert a PDF, get Markdown or the document model. The
+//! The surface is deliberately small: convert a PDF, get Markdown, Typst, plain text or the
+//! document model — every one of them a rendering of the same `Document`. The
 //! reason it exists is that everything *around* a converter — evaluation, corpus management,
 //! comparison against other tools, notebook work — is scripting, and Rust is the wrong language
 //! for that while being the right one for the per-glyph algorithms underneath.
@@ -89,6 +90,57 @@ fn to_json(py: Python<'_>, path: &str, caveman: Option<&str>) -> PyResult<String
     })
 }
 
+/// Converts a PDF to Typst markup.
+#[pyfunction]
+#[pyo3(signature = (path, caveman = None))]
+fn to_typst(py: Python<'_>, path: &str, caveman: Option<&str>) -> PyResult<String> {
+    render_with(py, path, caveman, rustypaper::emit::typst::render)
+}
+
+/// Converts a PDF to plain text, for indexing and search.
+#[pyfunction]
+#[pyo3(signature = (path, caveman = None))]
+fn to_text(py: Python<'_>, path: &str, caveman: Option<&str>) -> PyResult<String> {
+    render_with(py, path, caveman, rustypaper::emit::text::render)
+}
+
+/// Converts a PDF once and renders it with `emit`.
+fn render_with(
+    py: Python<'_>,
+    path: &str,
+    caveman: Option<&str>,
+    emit: fn(&rustypaper::doc::Document) -> String,
+) -> PyResult<String> {
+    let options = rustypaper::Options {
+        caveman: caveman_level(caveman)?,
+        ..Default::default()
+    };
+    py.detach(|| {
+        rustypaper::convert_with(path, &options)
+            .map(|doc| emit(&doc))
+            .map_err(to_py_err)
+    })
+}
+
+/// Converts a PDF once, returning its Markdown and its document model as JSON.
+///
+/// Both renderings come from a single pipeline run. Callers that want the structure *and* the
+/// prose — which is most of them — were otherwise converting the same PDF twice, paying for the
+/// whole pipeline to get two views of one result.
+#[pyfunction]
+#[pyo3(signature = (path, caveman = None))]
+fn convert_json(py: Python<'_>, path: &str, caveman: Option<&str>) -> PyResult<(String, String)> {
+    let options = rustypaper::Options {
+        caveman: caveman_level(caveman)?,
+        ..Default::default()
+    };
+    py.detach(|| {
+        let doc = rustypaper::convert_with(path, &options).map_err(to_py_err)?;
+        let json = serde_json::to_string(&doc).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok((rustypaper::emit::markdown::render(&doc), json))
+    })
+}
+
 /// Extracts page primitives without interpreting them, as JSON. For diagnostics.
 #[pyfunction]
 fn extract_json(py: Python<'_>, path: &str) -> PyResult<String> {
@@ -104,6 +156,9 @@ fn _rustypaper(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("ScannedDocument", module.py().get_type::<ScannedDocument>())?;
     module.add_function(wrap_pyfunction!(to_markdown, module)?)?;
     module.add_function(wrap_pyfunction!(to_json, module)?)?;
+    module.add_function(wrap_pyfunction!(to_typst, module)?)?;
+    module.add_function(wrap_pyfunction!(to_text, module)?)?;
+    module.add_function(wrap_pyfunction!(convert_json, module)?)?;
     module.add_function(wrap_pyfunction!(extract_json, module)?)?;
     Ok(())
 }

@@ -15,6 +15,23 @@ PDF --[backend]--> PageRaw   glyphs, paths, images
 `Document` is the real output. Markdown is one rendering of it, which is why Typst can be added
 later as an emitter rather than a rewrite.
 
+### The section map is a view, not a field
+
+`Document::sections` derives the outline — title, level, a half-open block range including nested
+subsections, and a page span — from the heading blocks, and `Document`'s hand-written `Serialize`
+puts it in the JSON beside `title` and `blocks`. It is computed on the way out rather than stored
+because **assembly is not the last pass that touches `blocks`**: the pipeline lifts tables and
+display equations back in, splits the bibliography into entries, attaches figures, and `compress`
+rewrites text. A tree of block indices frozen at assembly time would be quietly wrong by the time
+a caller read it, and a stale index is worse than an absent one — it points confidently at the
+wrong paragraph. The cost is one linear walk per serialisation, against a conversion that reads a
+PDF.
+
+Content before the first heading is reported as one section with `title: null` at level 0 rather
+than left out of the tree. It is a real part of the document — the abstract is in it — and the
+question "which section is block 3 in?" deserves an answer; what would be dishonest is giving it
+a heading the paper never printed.
+
 ## The reader boundary
 
 Reading a PDF happens behind one trait, `backend::PageSource`, implemented over
@@ -319,6 +336,31 @@ silently disables the safety mechanism built on it.
 The fix has to start with detection: `math::display` requires a line to be centred in its column
 or to carry an equation number, and templates that indent display maths without centring it are
 invisible to it.
+
+## What the sections scorer found
+
+Scoring the section map's titles against the `\section` and `\subsection` titles of each paper's
+own source — the first measurement of an outline this project had ever taken — gives **206 of
+264**, or 0.78, across the fifteen scorable papers. Unlike tables and references this is a match
+rather than a count: finding the right *number* of headings and the wrong ones scores badly, which
+is the point, since the map is what a consumer navigates by.
+
+**Most of what is lost is the level below the one the corpus has been checking.** `bert.pdf`
+scores 16/29 with every top-level section found and almost every subsection missing — `2.1
+Unsupervised Feature-based Approaches`, `4.1 GLUE`, `SQuAD v1.1`, `SWAG`. `medimaging.pdf` at
+17/33 is the same picture: `Introduction`, `Discussion` and `Overview of deep learning methods`
+are there, while `brain`, `eye`, `chest` and `cardiac` are not. Those headings are set bold at
+body size, which `is_heading` accepts only when *every* line of the group is bold and the block
+is short — and existing corpus tests all assert top-level headings, so nothing was watching.
+
+`optics.pdf` at 9/18 is a different failure and the one worth chasing: it loses its own
+`Introduction` and `Conclusion`, emits seven headings for eighteen, and one of the seven is
+`tinmcid oern tt feield` — two columns zipped together. A paper whose headings are being built
+out of interleaved text is not a heading-detection problem.
+
+Nothing here says the tree is built wrongly. Every paper's ranges are ordered, non-overlapping
+and valid — `section_ranges_are_valid_across_the_corpus` checks all sixteen — so what the number
+measures is heading detection, which is where the work is.
 
 ## Measurements
 

@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="a previous --json report; fail if any paper regresses against it in bigram "
         "recall, equation recall or equation fidelity (by more than 0.005), loses tables, "
-        "or stops being scored at all",
+        "references or sections, or stops being scored at all",
     )
     args = parser.parse_args(argv)
 
@@ -46,8 +46,7 @@ def main(argv: list[str] | None = None) -> int:
 
     for paper in papers:
         started = time.perf_counter()
-        markdown = convert.to_markdown(paper.pdf)
-        document = convert.to_document(paper.pdf)
+        markdown, document = convert.convert(paper.pdf)
         elapsed = time.perf_counter() - started
 
         kinds = Counter(block["kind"]["type"] for block in document["blocks"])
@@ -75,6 +74,11 @@ def main(argv: list[str] | None = None) -> int:
         refs_wanted = formula.reference_bibitems(paper.bibliography) or None
         refs_found = kinds.get("reference", 0)
 
+        # The section map, against the outline the source declares. Same shape as references:
+        # a paper whose source sets no sections is unknown, not zero.
+        sections = formula.compare_sections(paper.source, _section_titles(document))
+        sections_wanted = sections.reference or None
+
         result = score.compare(paper.reference, markdown)
         row.update(
             bigram_recall=round(score.bigram_recall(paper.reference, markdown), 4),
@@ -88,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
             tables_found=tables_found,
             references=refs_wanted,
             references_found=refs_found,
+            sections=sections_wanted,
+            sections_found=sections.found,
         )
         report["papers"][paper.pdf.name] = row
 
@@ -105,28 +111,73 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _section_titles(document: dict) -> list[str]:
+    """Every title in a document's section map, at every depth.
+
+    The map is what is being measured, so it is what is read — but a document produced by a build
+    that predates it still has its heading blocks, and falling back to those keeps the harness
+    usable against an older binary rather than silently scoring it zero.
+    """
+    sections = document.get("sections")
+    if sections is None:
+        return [
+            block["text"]
+            for block in document["blocks"]
+            if block["kind"]["type"] == "heading"
+        ]
+
+    titles: list[str] = []
+    stack = list(sections)
+    while stack:
+        section = stack.pop()
+        if section.get("title"):
+            titles.append(section["title"])
+        stack.extend(section.get("children", ()))
+    return titles
+
+
+def _totals(rows: list[dict], fields: tuple[str, ...]) -> dict[str, str]:
+    """Corpus-wide `found/wanted` for each counting column.
+
+    Everything found is counted, but only the papers whose source says how many there *should*
+    be contribute to the denominator — biology's bibliography is real and parsed even though its
+    source declares no entry list to measure it against.
+    """
+    summary = {}
+    for field in fields:
+        found = sum(r.get(f"{field}_found", 0) for r in rows)
+        wanted = sum(r[field] for r in rows if r.get(field) is not None)
+        summary[field] = f"{found}/{wanted}"
+    return summary
+
+
 def _print_table(report: dict) -> None:
     print(f"converter={report['backend']}  scorer={report['scorer']}")
+    # `sections` is a found/wanted count of the section map; `sec` is seconds, as it always was.
     print(
         f"{'paper':<16} {'bigram':>7} {'cover':>6} "
-        f"{'eq':>4} {'eq rec':>7} {'eq fid':>7} {'tables':>8} {'refs':>8} {'sec':>6}"
+        f"{'eq':>4} {'eq rec':>7} {'eq fid':>7} {'tables':>8} {'refs':>8} "
+        f"{'sections':>9} {'sec':>6}"
     )
-    print("-" * 81)
+    print("-" * 91)
     for name, row in sorted(report["papers"].items()):
         tables = f"{row['tables_found']}/{row['tables']}"
         # A paper whose source declares no bibliography is reported as unknown, not as zero.
         wanted = row.get("references")
         refs = f"{row.get('references_found', 0)}/{wanted if wanted is not None else '?'}"
+        outline = row.get("sections")
+        sections = f"{row.get('sections_found', 0)}/{outline if outline is not None else '?'}"
         print(
             f"{name:<16} {row['bigram_recall']:>7.3f} {row['coverage']:>6.3f} "
             f"{row['equations']:>4} {row['equation_recall']:>7.3f} "
-            f"{row['equation_fidelity']:>7.3f} {tables:>8} {refs:>8} {row['seconds']:>6.2f}"
+            f"{row['equation_fidelity']:>7.3f} {tables:>8} {refs:>8} {sections:>9} "
+            f"{row['seconds']:>6.2f}"
         )
 
     rows = list(report["papers"].values())
     if rows:
         with_maths = [r for r in rows if r["equations"]]
-        print("-" * 81)
+        print("-" * 91)
         print(f"{'mean':<16} {sum(r['bigram_recall'] for r in rows) / len(rows):>7.3f}", end="")
         if with_maths:
             recall = sum(r["equation_recall"] for r in with_maths) / len(with_maths)
@@ -134,6 +185,14 @@ def _print_table(report: dict) -> None:
             print(f" {'':>6} {'':>4} {recall:>7.3f} {fidelity:>7.3f}")
         else:
             print()
+
+        # The counting columns total rather than average: 46/90 tables is a fact about the
+        # corpus, where the mean of sixteen ratios is a fact about nothing in particular.
+        totals = _totals(rows, ("tables", "references", "sections"))
+        print(
+            f"{'total':<16} {'':>7} {'':>6} {'':>4} {'':>7} {'':>7} "
+            f"{totals['tables']:>8} {totals['references']:>8} {totals['sections']:>9}"
+        )
 
     for name, row in sorted(report.get("unscorable", {}).items()):
         print(f"\n  skipped {name}: {row['reason']} "
@@ -157,8 +216,8 @@ def _check_regressions(
     """Compare against a stored report. Small movements are noise, not regressions.
 
     Fails on three kinds of loss: a scored paper's bigram recall, equation recall or equation
-    fidelity dropping by more than `tolerance`; the number of tables or references it found
-    dropping at all; and a paper the baseline scored no longer being scored — it stopped converting, or lost its
+    fidelity dropping by more than `tolerance`; the number of tables, references or sections it
+    found dropping at all; and a paper the baseline scored no longer being scored — it stopped converting, or lost its
     ground truth. That last one was the hole: iterating the new report alone means a paper that
     vanished is a paper nobody checks, and a crash reads as a clean run. `check_missing` is off
     for a `--only` run, which never claims to cover the rest of the corpus.
@@ -216,6 +275,16 @@ def _check_regressions(
             failed = True
         elif found_before is not None and found_now > found_before:
             print(f"  improve {name} refs: {found_before} -> {found_now}")
+
+        # Sections are a count of matched titles, gated exactly as references are: a fall is a
+        # real loss, and a baseline that predates the column says nothing rather than zero.
+        outline_before = before.get("sections_found")
+        outline_now = row.get("sections_found", 0)
+        if outline_before is not None and outline_now < outline_before:
+            print(f"  REGRESS {name} sections: {outline_before} -> {outline_now}")
+            failed = True
+        elif outline_before is not None and outline_now > outline_before:
+            print(f"  improve {name} sections: {outline_before} -> {outline_now}")
     return 1 if failed else 0
 
 

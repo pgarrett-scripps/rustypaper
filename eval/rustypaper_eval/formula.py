@@ -1,4 +1,4 @@
-"""Scoring mathematics, tables and the bibliography against the LaTeX source.
+"""Scoring mathematics, tables, sections and the bibliography against the LaTeX source.
 
 Prose is scored by comparing word streams, which works because both sides are prose. Formulae
 need their own treatment: the reference is LaTeX the author wrote, and the output is LaTeX
@@ -22,6 +22,8 @@ from __future__ import annotations
 import difflib
 import re
 from dataclasses import dataclass
+
+from . import detex
 
 #: Environments whose bodies are display equations.
 _ENVIRONMENTS = (
@@ -97,6 +99,112 @@ def reference_bibitems(source: str) -> int:
     first, because an entry an author commented out is not in the printed bibliography.
     """
     return len(_BIBITEM.findall(_TEX_COMMENT.sub("", source)))
+
+
+#: The start of a `\section{`, `\subsection{`, or either one starred, with an optional short
+#: form for the running head — `\section[Short]{The full title}` — skipped before the argument.
+_SECTION_HEAD = re.compile(r"\\(?:sub)?section\*?\s*(?:\[[^\[\]]*\])?\s*\{")
+
+#: A section number leading a title: `3`, `3.2`, `3.2.1`, `III.`, `A.`, `A.1`. Matched after
+#: lowering, which is why the Roman numerals are lower case here.
+#:
+#: A *lettered* label has to carry its punctuation, exactly as the converter's own
+#: `numbered_heading` requires: without that rule, `A Survey of Methods` is section `A` and every
+#: title beginning with an article loses its first word.
+_NUMBER_PREFIX = re.compile(
+    r"^(?:"
+    r"[0-9]+(?:\.[0-9a-z]+)*[.):]?"  # 3, 3.2, 3.2.1, 3.
+    r"|(?:[ivxlcdm]+|[a-z])(?:\.[0-9a-z]+)+[.):]?"  # a.1, iv.2
+    r"|(?:[ivxlcdm]+|[a-z])[.):]"  # iii., a)
+    r")\s+"
+)
+
+_NOT_TEXT = re.compile(r"[^0-9a-z\s]+")
+
+
+def _braced_argument(source: str, opening: int) -> str:
+    """The brace-balanced argument starting at `opening`, which must be a `{`."""
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[opening + 1 : index]
+    return source[opening + 1 :]
+
+
+def normalise_heading(text: str) -> str:
+    """Reduce a heading to the words a reader would use to name it.
+
+    Case, numbering, markup and punctuation all differ between the two sides — the source says
+    ``\\section{Model Architecture}`` and the PDF prints ``3 Model Architecture`` — and none of
+    those differences is the converter getting anything wrong.
+    """
+    text = detex.strip(text).lower()
+    text = _NUMBER_PREFIX.sub("", text)
+    text = _NOT_TEXT.sub(" ", text)
+    return " ".join(text.split())
+
+
+def reference_sections(source: str) -> list[str]:
+    """The normalised titles of every `\\section` and `\\subsection` a source sets.
+
+    Deduplicated, because an arXiv archive routinely carries the same file twice — a submission
+    and a camera-ready copy — and a paper does not gain sections by being shipped twice. Titles
+    that reduce to nothing (a section titled only with a symbol) are dropped rather than counted
+    as something no heading can ever match.
+    """
+    stripped = _TEX_COMMENT.sub("", source)
+
+    titles: list[str] = []
+    for match in _SECTION_HEAD.finditer(stripped):
+        title = normalise_heading(_braced_argument(stripped, match.end() - 1))
+        if title and title not in titles:
+            titles.append(title)
+    return titles
+
+
+#: A containment match needs at least this many characters on the shorter side. Without a floor,
+#: a one-word heading is a substring of half the outline and every paper scores well.
+MIN_SECTION_TITLE = 4
+
+
+def _matches(wanted: str, found: str) -> bool:
+    """Whether an emitted heading names the section the source declares.
+
+    Equality, or containment either way: the PDF may print more than the source declares — a
+    running head fused onto the heading, or a subtitle — and it may print less, where a long
+    title broke across lines and only one of them was typed as a heading. Containment is only
+    allowed when the shorter side is long enough to mean something.
+    """
+    if wanted == found:
+        return True
+    shorter, longer = sorted((wanted, found), key=len)
+    return len(shorter) >= MIN_SECTION_TITLE and shorter in longer
+
+
+@dataclass(frozen=True)
+class SectionScore:
+    reference: int
+    """Distinct section titles the source declares."""
+
+    found: int
+    """Of those, how many the converter's section map names."""
+
+    @property
+    def recall(self) -> float:
+        return self.found / self.reference if self.reference else 0.0
+
+
+def compare_sections(source: str, headings: list[str]) -> SectionScore:
+    """Score a document's section titles against the sections its source declares."""
+    wanted = reference_sections(source)
+    emitted = [normalise_heading(h) for h in headings]
+    emitted = [h for h in emitted if h]
+    found = sum(1 for title in wanted if any(_matches(title, h) for h in emitted))
+    return SectionScore(len(wanted), found)
 
 
 @dataclass(frozen=True)

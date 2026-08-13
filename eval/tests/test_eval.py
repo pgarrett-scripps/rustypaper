@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rustypaper_eval import corpus, detex, formula, score  # noqa: E402
-from rustypaper_eval.__main__ import _check_regressions  # noqa: E402
+from rustypaper_eval.__main__ import _check_regressions, _section_titles  # noqa: E402
 
 
 class TestDetex(unittest.TestCase):
@@ -221,6 +221,108 @@ class TestBibliography(unittest.TestCase):
         self.assertEqual(corpus.select_bibliography(files), "")
 
 
+class TestSections(unittest.TestCase):
+    """The source side of the sections metric, and the rule that matches the two sides up."""
+
+    def test_extracts_sections_and_subsections(self):
+        source = r"""
+        \section{Introduction}
+        \subsection*{A starred one}
+        \section[Short running head]{The Full Title}
+        \subsubsection{Too deep to count}
+        """
+        self.assertEqual(
+            formula.reference_sections(source),
+            ["introduction", "a starred one", "the full title"],
+        )
+
+    def test_a_duplicated_source_file_does_not_double_the_outline(self):
+        # arXiv archives ship a submission and a camera-ready copy of the same paper.
+        source = r"\section{Introduction}\section{Method}" * 2
+        self.assertEqual(formula.reference_sections(source), ["introduction", "method"])
+
+    def test_commented_out_sections_do_not_count(self):
+        source = "\\section{Kept}\n% \\section{Cut before submission}\n"
+        self.assertEqual(formula.reference_sections(source), ["kept"])
+
+    def test_markup_inside_a_title_is_reduced(self):
+        source = r"\section{Learning $\alpha$ with \emph{care}}"
+        self.assertEqual(formula.reference_sections(source), ["learning with care"])
+
+    def test_numbering_and_case_do_not_have_to_match(self):
+        # What the source declares, against what the PDF prints in four different templates.
+        source = (
+            r"\section{Model Architecture}\section{Theory}"
+            r"\section{Proofs}\subsection{Ablation Studies}"
+        )
+        result = formula.compare_sections(
+            source, ["3 Model Architecture", "II. THEORY", "A.1 Proofs", "6.2. Ablation Studies"]
+        )
+        self.assertEqual((result.reference, result.found), (4, 4))
+        self.assertEqual(result.recall, 1.0)
+
+    def test_a_title_beginning_with_an_article_keeps_it(self):
+        # `A Survey of Methods` is not section A: a lettered label carries its full stop.
+        self.assertEqual(
+            formula.normalise_heading("A Survey of Methods"), "a survey of methods"
+        )
+        self.assertEqual(formula.normalise_heading("A. Further Results"), "further results")
+
+    def test_a_heading_may_carry_more_than_the_source_declares(self):
+        # A long title broken across lines, and a heading with a subtitle fused onto it.
+        source = r"\section{Results and Discussion}\section{Conclusion}"
+        result = formula.compare_sections(
+            source, ["6 Results and Discussion of the Ablations", "Conclusion"]
+        )
+        self.assertEqual(result.found, 2)
+
+    def test_a_short_heading_does_not_match_everything(self):
+        # The floor on containment: `of` is inside half an outline and names none of it.
+        source = r"\section{Proof of the Main Theorem}"
+        self.assertEqual(formula.compare_sections(source, ["of"]).found, 0)
+
+    def test_a_missed_section_is_not_found(self):
+        source = r"\section{Introduction}\subsection{GLUE}"
+        result = formula.compare_sections(source, ["1 Introduction"])
+        self.assertEqual((result.reference, result.found), (2, 1))
+        self.assertEqual(result.recall, 0.5)
+
+    def test_a_paper_declaring_no_sections_scores_zero_not_an_error(self):
+        result = formula.compare_sections("no sectioning at all", ["Introduction"])
+        self.assertEqual((result.reference, result.found), (0, 0))
+        self.assertEqual(result.recall, 0.0)
+
+
+class TestSectionTitles(unittest.TestCase):
+    """Reading the titles out of a converted document."""
+
+    def test_the_section_map_is_read_at_every_depth(self):
+        document = {
+            "blocks": [],
+            "sections": [
+                {"title": None, "children": []},
+                {
+                    "title": "1 Introduction",
+                    "children": [{"title": "1.1 Background", "children": []}],
+                },
+            ],
+        }
+        self.assertEqual(
+            sorted(_section_titles(document)), ["1 Introduction", "1.1 Background"]
+        )
+
+    def test_a_document_without_a_section_map_falls_back_to_headings(self):
+        # An older extension has heading blocks and no `sections` key; scoring it zero would
+        # blame the converter for the harness being newer than the binary.
+        document = {
+            "blocks": [
+                {"kind": {"type": "heading", "level": 1}, "text": "1 Introduction"},
+                {"kind": {"type": "paragraph"}, "text": "Body."},
+            ]
+        }
+        self.assertEqual(_section_titles(document), ["1 Introduction"])
+
+
 class TestRegressionGate(unittest.TestCase):
     """The gate has to fail on real losses and stay quiet about what a baseline never recorded."""
 
@@ -241,4 +343,19 @@ class TestRegressionGate(unittest.TestCase):
         # Baselines predate this column. An old one says nothing about references, which must
         # not be mistaken for "it used to find none".
         report = self._report(references_found=0, references=41)
+        self.assertEqual(_check_regressions(report, self._report()), 0)
+
+    def test_fewer_sections_found_is_a_regression(self):
+        report = self._report(sections_found=9, sections=22)
+        baseline = self._report(sections_found=22, sections=22)
+        self.assertEqual(_check_regressions(report, baseline), 1)
+
+    def test_more_sections_found_passes(self):
+        report = self._report(sections_found=22, sections=22)
+        baseline = self._report(sections_found=9, sections=22)
+        self.assertEqual(_check_regressions(report, baseline), 0)
+
+    def test_a_baseline_without_sections_is_not_read_as_zero(self):
+        # The baseline this column was added against records no sections at all.
+        report = self._report(sections_found=0, sections=22)
         self.assertEqual(_check_regressions(report, self._report()), 0)

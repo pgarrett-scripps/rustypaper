@@ -73,6 +73,21 @@ def to_document(pdf: Path) -> dict:
     return json.loads(_run(["convert", str(pdf), "--format", "json"]))
 
 
+def convert(pdf: Path) -> tuple[str, dict]:
+    """Both renderings of one conversion: the Markdown and the document model.
+
+    Every paper is scored on its prose *and* its structure, and converting twice for that meant
+    reading and interpreting each PDF twice — the harness's whole runtime, doubled, for two views
+    of one result. `rustypaper.convert` does the work once. The CLI has no such entry point, so
+    the fallback still pays twice; it is the path nobody measures on.
+    """
+    single_run = getattr(_module, "convert", None)
+    if single_run is not None:
+        markdown, document = single_run(str(pdf))
+        return markdown, document
+    return to_markdown(pdf), to_document(pdf)
+
+
 def _run(args: list[str]) -> str:
     if not CLI.exists():
         raise RuntimeError(

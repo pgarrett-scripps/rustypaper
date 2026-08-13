@@ -3,7 +3,8 @@
 //! This is the contract the emitters render. Markdown, Typst and plain text are all projections
 //! of a [`Document`]; nothing downstream of here looks at geometry again.
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeStruct;
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::ir::Rect;
 use crate::layout::stats::Stats;
@@ -162,10 +163,150 @@ impl Block {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// The level reported for the front matter, which no heading introduces.
+///
+/// Zero rather than one: a consumer that filters on `level >= 1` gets exactly the sections the
+/// paper actually numbers, and one that walks the whole tree still sees the abstract.
+pub const FRONT_MATTER_LEVEL: u8 = 0;
+
+/// One section of a document: a heading and everything under it.
+///
+/// `start..end` indexes [`Document::blocks`] and is half-open. It *includes* the heading block
+/// itself at `start`, and everything belonging to nested subsections, so
+/// `&document.blocks[section.start..section.end]` is the section as a reader would see it and
+/// `start + 1..end` is its body. Children's ranges are contained in their parent's, and siblings'
+/// ranges never overlap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Section {
+    /// The heading text as printed, numbering and all — `None` for the front matter, which has
+    /// no heading to take a title from. Inventing one would be a wrong field where an absent one
+    /// says the true thing: this content precedes every heading the paper sets.
+    pub title: Option<String>,
+    /// Heading level, 1 for a top-level section; [`FRONT_MATTER_LEVEL`] for the front matter.
+    pub level: u8,
+    /// Index of the heading block in [`Document::blocks`]; 0 for the front matter.
+    pub start: usize,
+    /// One past the last block of the section, nested subsections included.
+    pub end: usize,
+    /// Zero-based first page the section's blocks touch.
+    pub first_page: usize,
+    /// Zero-based last page the section's blocks touch, inclusive.
+    pub last_page: usize,
+    /// Subsections, in reading order.
+    pub children: Vec<Section>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Document {
     pub title: Option<String>,
     pub blocks: Vec<Block>,
+}
+
+/// Serialised with a `sections` field beside `title` and `blocks`.
+///
+/// The section map is *derived on the way out* rather than stored, because assembly is not the
+/// last pass that touches `blocks`: the pipeline lifts tables and display equations back in,
+/// splits the bibliography into entries, attaches figures, and `compress` rewrites text. Any
+/// index recorded at assembly time would be stale by the time a caller saw it, and a stale block
+/// index is worse than none — it points confidently at the wrong paragraph. Deriving it from the
+/// blocks as they are cannot go out of step with them.
+///
+/// The cost is one linear walk per serialisation, against a conversion that reads a PDF.
+impl Serialize for Document {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("Document", 3)?;
+        state.serialize_field("title", &self.title)?;
+        state.serialize_field("blocks", &self.blocks)?;
+        state.serialize_field("sections", &self.sections())?;
+        state.end()
+    }
+}
+
+impl Document {
+    /// The document's section tree, derived from its [`BlockKind::Heading`] blocks.
+    ///
+    /// Nesting follows heading levels: a heading opens a child of the nearest preceding heading
+    /// set at a lower level, and closes when one at its own level or lower arrives. A paper that
+    /// numbers nothing still nests, because levels are assigned from size rank where numbering is
+    /// absent.
+    ///
+    /// Blocks before the first heading — title, authors, abstract — are reported as one
+    /// untitled front-matter section at [`FRONT_MATTER_LEVEL`], rather than left out of the tree
+    /// altogether. They are a real part of the document and a consumer asking "which section is
+    /// block 3 in?" deserves an answer; what would be dishonest is giving them a heading the
+    /// paper never printed, so their title is `None`. A document that sets no headings at all is
+    /// therefore all front matter, which is exactly what it is.
+    pub fn sections(&self) -> Vec<Section> {
+        if self.blocks.is_empty() {
+            return Vec::new();
+        }
+
+        let headings: Vec<(usize, u8)> = self
+            .blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(index, block)| match block.kind {
+                BlockKind::Heading { level } => Some((index, level.max(1))),
+                _ => None,
+            })
+            .collect();
+
+        let first = headings
+            .first()
+            .map_or(self.blocks.len(), |(index, _)| *index);
+        let mut sections = Vec::new();
+        if first > 0 {
+            sections.push(self.section(None, FRONT_MATTER_LEVEL, 0, first, Vec::new()));
+        }
+
+        let mut next = 0;
+        sections.extend(self.nest(&headings, &mut next, FRONT_MATTER_LEVEL));
+        sections
+    }
+
+    /// The sections opened by `headings[*next..]` that sit below `parent_level`, consuming them.
+    ///
+    /// Recursion is bounded by the level values themselves: each call descends only into strictly
+    /// deeper headings, and `assign_heading_levels` caps the depth at six.
+    fn nest(&self, headings: &[(usize, u8)], next: &mut usize, parent_level: u8) -> Vec<Section> {
+        let mut sections = Vec::new();
+        while let Some(&(start, level)) = headings.get(*next) {
+            if level <= parent_level {
+                break;
+            }
+            *next += 1;
+            let children = self.nest(headings, next, level);
+            // The section runs to the next heading this one does not contain, or to the end.
+            let end = headings
+                .get(*next)
+                .map_or(self.blocks.len(), |(index, _)| *index);
+            let title = Some(self.blocks[start].text.clone());
+            sections.push(self.section(title, level, start, end, children));
+        }
+        sections
+    }
+
+    fn section(
+        &self,
+        title: Option<String>,
+        level: u8,
+        start: usize,
+        end: usize,
+        children: Vec<Section>,
+    ) -> Section {
+        let pages = self.blocks[start..end].iter().map(|block| block.page);
+        let first_page = pages.clone().min().unwrap_or(0);
+        let last_page = pages.max().unwrap_or(first_page);
+        Section {
+            title,
+            level,
+            start,
+            end,
+            first_page,
+            last_page,
+            children,
+        }
+    }
 }
 
 /// Assembles ordered per-page lines into a document.
@@ -1250,6 +1391,188 @@ mod tests {
             level("1.1 Background"),
             Some(BlockKind::Heading { level: 2 })
         );
+    }
+
+    /// A block of the given kind, on the given page. Enough for the section map, which reads
+    /// only kinds, texts and pages.
+    fn typed(kind: BlockKind, text: &str, page: usize) -> Block {
+        Block::new(kind, page, Rect::from_corners(0.0, 0.0, 100.0, 10.0)).with_text(text)
+    }
+
+    fn heading(text: &str, level: u8, page: usize) -> Block {
+        typed(BlockKind::Heading { level }, text, page)
+    }
+
+    fn paragraph(text: &str, page: usize) -> Block {
+        typed(BlockKind::Paragraph, text, page)
+    }
+
+    fn titles(sections: &[Section]) -> Vec<Option<&str>> {
+        sections.iter().map(|s| s.title.as_deref()).collect()
+    }
+
+    #[test]
+    fn sections_nest_by_heading_level() {
+        let doc = Document {
+            title: Some("A Paper".into()),
+            blocks: vec![
+                typed(BlockKind::Title, "A Paper", 0),
+                paragraph("We show things.", 0),
+                heading("1 Introduction", 1, 0),
+                paragraph("Networks are hard to train.", 0),
+                heading("1.1 Background", 2, 1),
+                paragraph("Earlier work.", 1),
+                heading("2 Method", 1, 1),
+                paragraph("What we did.", 2),
+            ],
+        };
+        let sections = doc.sections();
+
+        assert_eq!(
+            titles(&sections),
+            [None, Some("1 Introduction"), Some("2 Method")],
+            "front matter, then one node per top-level heading"
+        );
+
+        let introduction = &sections[1];
+        assert_eq!((introduction.start, introduction.end), (2, 6));
+        assert_eq!(titles(&introduction.children), [Some("1.1 Background")]);
+        // A subsection's range lies inside its parent's, and the parent's covers it.
+        let background = &introduction.children[0];
+        assert_eq!((background.start, background.end), (4, 6));
+        assert_eq!(background.level, 2);
+        // Pages span every block the section holds, the subsection's included.
+        assert_eq!((introduction.first_page, introduction.last_page), (0, 1));
+        assert_eq!((sections[2].first_page, sections[2].last_page), (1, 2));
+    }
+
+    /// The front matter is where the abstract lives, so it has to be reachable — but it is
+    /// reported without a title, because the paper printed no heading over it.
+    #[test]
+    fn front_matter_is_untitled_and_covers_what_precedes_the_first_heading() {
+        let doc = Document {
+            title: None,
+            blocks: vec![
+                typed(BlockKind::Title, "A Paper", 0),
+                paragraph("Abstract text.", 0),
+                heading("1 Introduction", 1, 0),
+                paragraph("Body.", 0),
+            ],
+        };
+        let sections = doc.sections();
+        assert_eq!(sections[0].title, None);
+        assert_eq!(sections[0].level, FRONT_MATTER_LEVEL);
+        assert_eq!((sections[0].start, sections[0].end), (0, 2));
+    }
+
+    #[test]
+    fn a_document_opening_on_a_heading_has_no_front_matter() {
+        let doc = Document {
+            title: None,
+            blocks: vec![heading("1 Introduction", 1, 0), paragraph("Body.", 0)],
+        };
+        let sections = doc.sections();
+        assert_eq!(titles(&sections), [Some("1 Introduction")]);
+        assert_eq!((sections[0].start, sections[0].end), (0, 2));
+    }
+
+    /// A paper with no headings found is all front matter. Reporting an empty tree would say
+    /// the document has no content, which is a different claim.
+    #[test]
+    fn a_document_without_headings_is_all_front_matter() {
+        let doc = Document {
+            title: None,
+            blocks: vec![paragraph("One.", 0), paragraph("Two.", 1)],
+        };
+        let sections = doc.sections();
+        assert_eq!(titles(&sections), [None]);
+        assert_eq!((sections[0].start, sections[0].end), (0, 2));
+        assert_eq!((sections[0].first_page, sections[0].last_page), (0, 1));
+    }
+
+    #[test]
+    fn an_empty_document_has_no_sections() {
+        assert!(Document::default().sections().is_empty());
+    }
+
+    /// Levels do not have to arrive in order. A subsection appearing before any section, and a
+    /// jump back out to level 1, both have to land somewhere sensible.
+    #[test]
+    fn a_deeper_heading_first_still_nests_under_what_follows_it() {
+        let doc = Document {
+            title: None,
+            blocks: vec![
+                heading("Acknowledgements", 3, 0),
+                paragraph("Thanks.", 0),
+                heading("1 Introduction", 1, 0),
+                paragraph("Body.", 0),
+                heading("1.1.1 Detail", 3, 0),
+                paragraph("More.", 0),
+                heading("2 Method", 1, 1),
+            ],
+        };
+        let sections = doc.sections();
+        assert_eq!(
+            titles(&sections),
+            [
+                Some("Acknowledgements"),
+                Some("1 Introduction"),
+                Some("2 Method")
+            ],
+            "a level-3 heading with nothing above it is a root of its own"
+        );
+        assert_eq!(titles(&sections[1].children), [Some("1.1.1 Detail")]);
+        assert_eq!((sections[1].start, sections[1].end), (2, 6));
+    }
+
+    /// The invariants a consumer indexes on: ordered, non-overlapping, inside the block list.
+    #[test]
+    fn section_ranges_partition_the_blocks() {
+        let doc = Document {
+            title: None,
+            blocks: vec![
+                typed(BlockKind::Title, "A Paper", 0),
+                heading("1 Introduction", 1, 0),
+                paragraph("Body.", 0),
+                heading("1.1 Background", 2, 0),
+                paragraph("More.", 0),
+                heading("2 Method", 1, 1),
+                paragraph("Last.", 1),
+            ],
+        };
+        let sections = doc.sections();
+
+        // Top-level ranges tile the document end to end.
+        let mut cursor = 0;
+        for section in &sections {
+            assert_eq!(section.start, cursor, "a gap or an overlap at {cursor}");
+            assert!(section.end > section.start);
+            cursor = section.end;
+        }
+        assert_eq!(cursor, doc.blocks.len());
+    }
+
+    /// The JSON contract other tools consume: `sections` beside the keys that were always there.
+    #[test]
+    fn the_section_map_serialises_beside_title_and_blocks() {
+        let doc = Document {
+            title: Some("A Paper".into()),
+            blocks: vec![
+                typed(BlockKind::Title, "A Paper", 0),
+                heading("1 Introduction", 1, 0),
+                paragraph("Body.", 0),
+            ],
+        };
+        let value: serde_json::Value = serde_json::from_str(&serde_json::to_string(&doc).unwrap())
+            .expect("the document should serialise");
+        assert!(value.get("title").is_some() && value.get("blocks").is_some());
+        let sections = value["sections"].as_array().expect("sections is a list");
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[1]["title"], "1 Introduction");
+        assert_eq!(sections[1]["start"], 1);
+        assert_eq!(sections[1]["end"], 3);
+        assert_eq!(sections[1]["level"], 1);
+        assert_eq!(sections[1]["first_page"], 0);
     }
 
     #[test]

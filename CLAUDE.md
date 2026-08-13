@@ -27,15 +27,15 @@ cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline
 ```
 
 Exits non-zero if any paper regresses by more than 0.005 in bigram recall, equation recall or
-equation fidelity, if it finds fewer tables, or if a paper the baseline scored is missing or no
-longer scorable. Refresh `baseline.json` deliberately, with `--json > baseline.json`, only when a
-change is an intended improvement.
+equation fidelity, if it finds fewer tables, references or sections, or if a paper the baseline
+scored is missing or no longer scorable. Refresh `baseline.json` deliberately, with
+`--json > baseline.json`, only when a change is an intended improvement.
 
 Current, over the fifteen scorable papers:
 
-| prose bigram | equation recall | equation fidelity | tables | references | corpus tests |
-| --- | --- | --- | --- | --- | --- |
-| 0.899 | 0.337 | 0.559 | 46/90 | 376/1174 | 44/44 |
+| prose bigram | equation recall | equation fidelity | tables | references | sections | corpus tests |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0.899 | 0.337 | 0.559 | 46/90 | 376/1174 | 206/264 | 47/47 |
 
 Maths and tables are the project's weak point, and the honest place to work next; the reference
 deficit is concentrated in two papers whose bibliographies arrive as run-together blocks
@@ -72,6 +72,13 @@ makes no sense, suspect the reference before the converter.
 over an IR and only knows the stage before it. `Document` is the contract; Markdown, Typst and
 text are renderings of it, which is why the model was never allowed to become "whatever Markdown
 can express".
+
+The **section map** (`Document::sections`, and the `sections` key in the JSON) is a *view* over
+the blocks, not a field of the document, and `Document`'s `Serialize` is written by hand to add
+it. Assembly is not the last pass that touches `blocks` — the pipeline lifts tables and equations
+back in, splits the bibliography and attaches figures, and `compress` rewrites text — so a tree
+of block indices recorded at assembly time would be stale by the time anyone read it, and a stale
+index points confidently at the wrong paragraph.
 
 Reading a PDF is confined to one module behind the `PageSource` trait, and the classification
 downstream passes depend on (`classify_path`, `clip_to_page`, `resolve_size`, `expand_ligature`)

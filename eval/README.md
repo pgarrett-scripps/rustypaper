@@ -14,28 +14,33 @@ a bare build leaves that stale.
 
 ```
 converter=extension  scorer=difflib
-paper             bigram  cover   eq  eq rec  eq fid   tables     refs    sec
----------------------------------------------------------------------------------
-bert.pdf           0.878  0.922    6   0.000   0.000      6/8    47/56   0.12
-biology.pdf        0.916  0.962   57   0.053   0.553      2/4      1/?   0.35
-gan.pdf            0.882  0.961   14   0.500   0.712      1/4    31/31   0.07
-imagenet.pdf       0.856  0.930    7   0.429   0.607     9/26   11/102   0.32
-medimaging.pdf     0.923  0.941   11   0.091   0.897     7/11   21/350   0.30
-metasurface.pdf    0.926  0.986   23   0.217   0.624      1/0    41/41   0.08
-numbertheory.pdf   0.878  0.987  103   0.728   0.824      0/0    21/21   0.12
-optics.pdf         0.857  0.932  215   0.209   0.726      0/0    27/27   0.15
-pinsage.pdf        0.929  0.987    2   0.000   0.000      2/6    31/31   0.15
-resnet.pdf         0.915  0.969    2   1.000   0.618     9/17    50/50   0.10
-sklearn.pdf        0.938  0.969    0   0.000   0.000      0/1     8/16   0.04
-statistics.pdf     0.912  0.952   18   0.444   0.623      0/2    27/27   0.12
-topological.pdf    0.882  0.903   21   0.619   0.793      3/2    6/368   0.31
-transformer.pdf    0.852  0.921   19   0.421   0.851      4/7    40/40   0.28
-unet.pdf           0.939  0.982    2   0.000   0.000      2/2    14/14   0.04
----------------------------------------------------------------------------------
+paper             bigram  cover   eq  eq rec  eq fid   tables     refs  sections    sec
+-------------------------------------------------------------------------------------------
+bert.pdf           0.878  0.922    6   0.000   0.000      6/8    47/56     16/29   0.06
+biology.pdf        0.916  0.962   57   0.053   0.553      2/4      1/?     27/30   0.18
+gan.pdf            0.882  0.961   14   0.500   0.712      1/4    31/31       9/9   0.04
+imagenet.pdf       0.856  0.930    7   0.429   0.607     9/26   11/102     27/34   0.17
+medimaging.pdf     0.923  0.941   11   0.091   0.897     7/11   21/350     17/33   0.15
+metasurface.pdf    0.926  0.986   23   0.217   0.624      1/0    41/41       5/8   0.04
+numbertheory.pdf   0.878  0.987  103   0.728   0.824      0/0    21/21       8/9   0.06
+optics.pdf         0.857  0.932  215   0.209   0.726      0/0    27/27      9/18   0.07
+pinsage.pdf        0.929  0.987    2   0.000   0.000      2/6    31/31     15/17   0.08
+resnet.pdf         0.915  0.969    2   1.000   0.618     9/17    50/50     13/14   0.06
+sklearn.pdf        0.938  0.969    0   0.000   0.000      0/1     8/16       6/6   0.02
+statistics.pdf     0.912  0.952   18   0.444   0.623      0/2    27/27     10/10   0.06
+topological.pdf    0.882  0.903   21   0.619   0.793      3/2    6/368     15/18   0.15
+transformer.pdf    0.852  0.921   19   0.421   0.851      4/7    40/40     22/22   0.14
+unet.pdf           0.939  0.982    2   0.000   0.000      2/2    14/14       7/7   0.02
+-------------------------------------------------------------------------------------------
 mean               0.899               0.337   0.559
+total                                                   46/90 376/1174   206/264
 
   skipped adam.pdf: arXiv source carries no LaTeX prose (converted to 5474 words, 226 blocks)
 ```
+
+`sections` is a found/wanted count like `tables` and `refs`; `sec` is seconds, as it always was.
+Every paper is converted **once** — `rustypaper.convert` returns the Markdown and the document
+model from a single pipeline run, where scoring both used to mean reading each PDF twice.
 
 The worst rows are publisher templates the corpus added late, which is the corpus doing its job:
 `imagenet.pdf` still parses 11 of 102 references, and `topological.pdf` and `medimaging.pdf`
@@ -100,6 +105,31 @@ show; an absolute number means little.
   A source that declares no entries anywhere — a paper that cited with BibTeX and shipped only
   its `.bib`, which is `biology.pdf` here — prints `?` for wanted rather than `0`, and stores
   `null` in the JSON. Nothing was measured, and a zero would read as "this paper cites nothing".
+- **sections** — the titles in the converter's section map, matched against the `\section` and
+  `\subsection` titles the source declares. Unlike tables and refs this *is* a match rather than
+  a count: a converter that finds the right number of headings and the wrong ones scores badly,
+  which is the point, since the map is what a consumer navigates by.
+
+  Both sides are reduced before comparing, because the differences between them are not the
+  converter's doing: case, LaTeX markup, punctuation, and the section number the PDF prints and
+  the source does not (`\section{Model Architecture}` against `3 Model Architecture`). A
+  lettered number has to carry its full stop to be stripped, or `A Survey of Methods` loses its
+  first word. A title then counts as found when some heading equals it, contains it, or is
+  contained by it — containment in either direction because a heading may fuse a running head
+  onto the title, or carry only one line of a title that broke across two — with a floor of
+  `MIN_SECTION_TITLE` characters on the shorter side, without which a one-word heading matches
+  half an outline.
+
+  Wanted titles are deduplicated, for the same reason the bibliography is taken from one file:
+  an archive that ships the paper twice does not have twice the sections. `\subsubsection` is
+  not counted; the map goes deeper, but the deepest level is where heading detection is least
+  reliable and the number would say more about the corpus than about the converter.
+
+  At **206/264** this is the first honest measurement of section quality. `bert.pdf` (16/29) and
+  `medimaging.pdf` (17/33) have every top-level section and lose the level below it, which is
+  set bold at body size; `optics.pdf` (9/18) loses its own `Introduction`, and one of the seven
+  headings it does emit is two columns zipped together. See the sections scorer's findings in
+  `docs/ARCHITECTURE.md`.
 
 ## Regression checking
 
@@ -111,11 +141,11 @@ cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline
 
 Exits non-zero, naming the paper and the metric, if any paper's bigram recall, equation recall
 or equation fidelity drops by more than 0.005 — smaller movements are noise — or if the number
-of tables or references it found drops at all, those being counts rather than scores: one entry
-fewer is one entry lost. A paper the baseline scored and this run does not, because it stopped
-converting or lost its ground truth, also fails: the gate reads the baseline's list of papers,
-not only this run's. A metric an older baseline does not record is skipped rather than failed —
-so a baseline from before the references column keeps passing. Refresh the baseline deliberately, with
+of tables, references or sections it found drops at all, those being counts rather than scores:
+one entry fewer is one entry lost. A paper the baseline scored and this run does not, because it
+stopped converting or lost its ground truth, also fails: the gate reads the baseline's list of
+papers, not only this run's. A metric an older baseline does not record is skipped rather than
+failed — so a baseline from before the references or sections columns keeps passing. Refresh the baseline deliberately, with
 `--json > baseline.json`, when a change is an intended improvement.
 
 A `--only` run does not check for missing papers, since it deliberately converts a subset.
