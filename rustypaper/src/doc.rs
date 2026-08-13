@@ -174,7 +174,24 @@ pub fn assemble(
     stats: Stats,
     vocab: &Vocabulary,
 ) -> Document {
+    assemble_placed(pages, page_heights, stats, vocab).0
+}
+
+/// Assembles ordered per-page lines into a document, reporting where each block began.
+///
+/// The second value gives, for each block, the index of its first line within its own page's
+/// line stream. That is how content lifted out before assembly — tables, display equations — is
+/// put back: `blocks` is in *reading* order, and on a two-column page a left-column paragraph at
+/// y=300 precedes a right-column equation at y=100, so no comparison of geometry alone can say
+/// where the lifted item belongs. Its place in the line stream can.
+pub fn assemble_placed(
+    pages: &[Vec<Line>],
+    page_heights: &[f32],
+    stats: Stats,
+    vocab: &Vocabulary,
+) -> (Document, Vec<usize>) {
     let mut blocks = Vec::new();
+    let mut starts = Vec::new();
 
     for (index, lines) in pages.iter().enumerate() {
         let column_width = lines
@@ -184,15 +201,16 @@ pub fn assemble(
             .max(1.0);
 
         let page_height = page_heights.get(index).copied().unwrap_or(792.0);
-        for group in group_lines(lines, stats) {
+        for (start, group) in group_lines(lines, stats) {
             if let Some(block) = build_block(&group, index, stats, column_width, vocab, page_height)
             {
                 blocks.push(block);
+                starts.push(start);
             }
         }
     }
 
-    coalesce_fragments(&mut blocks, stats);
+    coalesce_fragments(&mut blocks, &mut starts, stats);
     demote_lonely_list_items(&mut blocks);
     promote_title(&mut blocks, stats);
     assign_heading_levels(&mut blocks);
@@ -202,24 +220,26 @@ pub fn assemble(
         .find(|b| b.kind == BlockKind::Title)
         .map(|b| b.text.clone());
 
-    Document { title, blocks }
+    (Document { title, blocks }, starts)
 }
 
-/// Splits a page's ordered lines into block-sized groups.
-fn group_lines(lines: &[Line], stats: Stats) -> Vec<Vec<&Line>> {
-    let mut groups: Vec<Vec<&Line>> = Vec::new();
+/// Splits a page's ordered lines into block-sized groups, each with the index of its first line.
+fn group_lines(lines: &[Line], stats: Stats) -> Vec<(usize, Vec<&Line>)> {
+    let mut groups: Vec<(usize, Vec<&Line>)> = Vec::new();
     let mut current: Vec<&Line> = Vec::new();
+    let mut start = 0usize;
 
-    for line in lines {
+    for (index, line) in lines.iter().enumerate() {
         if let Some(previous) = current.last() {
             if starts_new_block(previous, line, stats) {
-                groups.push(std::mem::take(&mut current));
+                groups.push((start, std::mem::take(&mut current)));
+                start = index;
             }
         }
         current.push(line);
     }
     if !current.is_empty() {
-        groups.push(current);
+        groups.push((start, current));
     }
     groups
 }
@@ -502,10 +522,14 @@ fn numbered_heading(text: &str) -> bool {
 ///
 /// A fragment rejoins the block above when it is short, sits directly beneath it, and shares
 /// its horizontal extent. Prose is unaffected because prose blocks are not short.
-fn coalesce_fragments(blocks: &mut Vec<Block>, stats: Stats) {
+///
+/// `starts` — where each block began in its page's line stream — is kept in step, a merged
+/// fragment taking the start of the block that absorbed it.
+fn coalesce_fragments(blocks: &mut Vec<Block>, starts: &mut Vec<usize>, stats: Stats) {
     let mut merged: Vec<Block> = Vec::with_capacity(blocks.len());
+    let mut kept: Vec<usize> = Vec::with_capacity(starts.len());
 
-    for block in blocks.drain(..) {
+    for (block, start) in blocks.drain(..).zip(starts.drain(..)) {
         let joins = merged.last().is_some_and(|previous| {
             if !is_fragment(&block)
                 || previous.page != block.page
@@ -547,11 +571,15 @@ fn coalesce_fragments(blocks: &mut Vec<Block>, stats: Stats) {
                 previous.text.push_str(&block.text);
                 previous.bbox = previous.bbox.union(&block.bbox);
             }
-            false => merged.push(block),
+            false => {
+                merged.push(block);
+                kept.push(start);
+            }
         }
     }
 
     *blocks = merged;
+    *starts = kept;
 }
 
 fn is_fragment(block: &Block) -> bool {

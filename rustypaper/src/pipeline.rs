@@ -102,14 +102,16 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     // Everything that is not prose is lifted out before assembly, so that a table's cells and an
     // equation's symbols can never be mistaken for paragraphs. What is left on each page is
     // prose, with inline formulae folded into it as single words.
-    let (tables, mut prose) = lift_tables(&raw, ordered, stats);
-    let equations = lift_equations(&raw, &mut prose);
+    // `lines_at` follows the prose through both lifts: for each line still standing, where it
+    // sat in its page's ordered line stream. That index is what puts a lifted table or equation
+    // back in the right place — see [`place_lifted`].
+    let (tables, mut prose, mut lines_at) = lift_tables(&raw, ordered, stats);
+    let equations = lift_equations(&raw, &mut prose, &mut lines_at);
 
     let vocab = text::vocab::Vocabulary::build(&prose);
-    let mut document = doc::assemble(&prose, &heights, stats, &vocab);
+    let (mut document, starts) = doc::assemble_placed(&prose, &heights, stats, &vocab);
 
-    insert_tables(&mut document, tables);
-    insert_equations(&mut document, equations);
+    place_lifted(&mut document, &starts, &lines_at, tables, equations);
     attach_figures(&backend, &raw, &mut document, options)?;
     crop_uncertain_equations(&backend, &mut document, options)?;
     extract_bibliography(&mut document);
@@ -136,12 +138,17 @@ fn build_pages(raw: &DocRaw) -> Vec<Vec<text::lines::Line>> {
         .collect()
 }
 
-/// Lifts tables out of the line stream, returning them and the prose that remains.
+/// Lifts tables out of the line stream, returning them, the prose that remains, and where each
+/// remaining line sat in the stream.
 fn lift_tables(
     raw: &DocRaw,
     ordered: Vec<Vec<text::lines::Line>>,
     stats: layout::stats::Stats,
-) -> (Vec<PlacedTable>, Vec<Vec<text::lines::Line>>) {
+) -> (
+    Vec<PlacedTable>,
+    Vec<Vec<text::lines::Line>>,
+    Vec<Vec<usize>>,
+) {
     let per_page: Vec<PageTables> = raw
         .pages
         .par_iter()
@@ -155,8 +162,11 @@ fn lift_tables(
                 for &i in &table.consumed {
                     consumed[i] = true;
                 }
+                // The first line the table swallowed is where it belongs in reading order.
+                let at = table.consumed.iter().copied().min().unwrap_or(lines.len());
                 tables.push((
                     page.index,
+                    at,
                     table.bbox,
                     doc::TableData {
                         rows: table.rows.clone(),
@@ -165,32 +175,41 @@ fn lift_tables(
                 ));
             }
 
-            let prose = lines
-                .into_iter()
-                .enumerate()
-                .filter(|(i, _)| !consumed[*i])
-                .map(|(_, line)| line)
-                .collect();
-            (tables, prose)
+            let mut prose = Vec::with_capacity(lines.len());
+            let mut at = Vec::with_capacity(lines.len());
+            for (i, line) in lines.into_iter().enumerate() {
+                if !consumed[i] {
+                    prose.push(line);
+                    at.push(i);
+                }
+            }
+            (tables, prose, at)
         })
         .collect();
 
     let mut tables = Vec::new();
     let mut prose = Vec::with_capacity(per_page.len());
-    for (found, lines) in per_page {
+    let mut lines_at = Vec::with_capacity(per_page.len());
+    for (found, lines, at) in per_page {
         tables.extend(found);
         prose.push(lines);
+        lines_at.push(at);
     }
-    (tables, prose)
+    (tables, prose, lines_at)
 }
 
 /// Lifts display equations out of the prose, and folds inline formulae into the lines that
 /// carry them so that everything downstream sees `$x^2$` as one word.
-fn lift_equations(raw: &DocRaw, prose: &mut [Vec<text::lines::Line>]) -> Vec<PlacedEquation> {
+fn lift_equations(
+    raw: &DocRaw,
+    prose: &mut [Vec<text::lines::Line>],
+    lines_at: &mut [Vec<usize>],
+) -> Vec<PlacedEquation> {
     raw.pages
         .par_iter()
         .zip(prose.par_iter_mut())
-        .flat_map(|(page, lines)| {
+        .zip(lines_at.par_iter_mut())
+        .flat_map(|((page, lines), at)| {
             let extent = text_extent(lines);
             // Display maths is centred *in its column*, so on a two-column page the page-wide
             // text extent is the wrong yardstick: an equation centred in the left column sits
@@ -212,6 +231,7 @@ fn lift_equations(raw: &DocRaw, prose: &mut [Vec<text::lines::Line>]) -> Vec<Pla
                 is_display[i] = true;
                 found_here.push((
                     page.index,
+                    at.get(i).copied().unwrap_or(i),
                     lines[i].bbox,
                     doc::MathData {
                         latex,
@@ -227,21 +247,27 @@ fn lift_equations(raw: &DocRaw, prose: &mut [Vec<text::lines::Line>]) -> Vec<Pla
                 }
             }
 
+            // The lines and their places in the stream are dropped in step, so what remains
+            // still says where it came from.
             let mut keep = is_display.iter().map(|d| !d);
             lines.retain(|_| keep.next().unwrap_or(true));
+            let mut keep = is_display.iter().map(|d| !d);
+            at.retain(|_| keep.next().unwrap_or(true));
             found_here
         })
         .collect()
 }
 
-/// A table, with the page and place it was lifted from.
-type PlacedTable = (usize, ir::Rect, doc::TableData);
+/// A table, with the page, the line of that page's stream, and the place it was lifted from.
+type PlacedTable = (usize, usize, ir::Rect, doc::TableData);
 
-/// A display equation, with the page and place it was lifted from.
-type PlacedEquation = (usize, ir::Rect, doc::MathData);
+/// A display equation, with the page, the line of that page's stream, and the place it was
+/// lifted from.
+type PlacedEquation = (usize, usize, ir::Rect, doc::MathData);
 
-/// The tables lifted off one page, and the prose that remains on it.
-type PageTables = (Vec<PlacedTable>, Vec<text::lines::Line>);
+/// The tables lifted off one page, the prose that remains on it, and where in the page's line
+/// stream each remaining line sat.
+type PageTables = (Vec<PlacedTable>, Vec<text::lines::Line>, Vec<usize>);
 
 /// Turns the bibliography into structured entries and links the citations that point at them.
 fn extract_bibliography(document: &mut doc::Document) {
@@ -471,27 +497,65 @@ fn apply_inline_math(
     line.words = rebuilt;
 }
 
-/// Inserts a block at its position in reading order.
+/// Puts the lifted tables and equations back into the document.
 ///
-/// Tables, equations and uncaptioned figures are all lifted out of the line stream before
-/// assembly and have to be put back where they belong: before the first block that starts below
-/// them, or on a later page.
-fn insert_in_reading_order(document: &mut doc::Document, block: doc::Block) {
-    let at = document
-        .blocks
-        .iter()
-        .position(|b| b.page > block.page || (b.page == block.page && b.bbox.y0 > block.bbox.y1))
-        .unwrap_or(document.blocks.len());
-    document.blocks.insert(at, block);
-}
-
-/// Places display equations into the document.
-fn insert_equations(document: &mut doc::Document, equations: Vec<PlacedEquation>) {
-    for (page, bbox, math) in equations {
+/// Each one is placed by the line it was lifted from, not by where it sits on the page.
+/// `document.blocks` is in *reading* order, and reading order is not a function of y: in a
+/// two-column paper a left-column paragraph at y=300 comes before a right-column equation at
+/// y=100, so "before the first block that starts below this one" put a right-column equation
+/// into the middle of the left column, half a page from where it belonged. `starts` says which
+/// line of its page each block began at, and `lines_at` translates that back into the stream as
+/// it was before anything was lifted out of it — which is the same numbering the lifted items
+/// carry, so the two merge.
+fn place_lifted(
+    document: &mut doc::Document,
+    starts: &[usize],
+    lines_at: &[Vec<usize>],
+    tables: Vec<PlacedTable>,
+    equations: Vec<PlacedEquation>,
+) {
+    let mut lifted: Vec<((usize, usize), doc::Block)> =
+        Vec::with_capacity(tables.len() + equations.len());
+    for (page, line, bbox, data) in tables {
+        let mut block = doc::Block::new(doc::BlockKind::Table, page, bbox);
+        block.table = Some(data);
+        lifted.push(((page, line), block));
+    }
+    for (page, line, bbox, math) in equations {
         let mut block = doc::Block::new(doc::BlockKind::Equation, page, bbox);
         block.math = Some(math);
-        insert_in_reading_order(document, block);
+        lifted.push(((page, line), block));
     }
+    lifted.sort_by_key(|(key, _)| *key);
+
+    // Every block in the same numbering, so the two sequences can simply be merged. Both are
+    // sorted: blocks run page by page and, within a page, down the line stream. A block whose
+    // origin cannot be recovered takes no lifted item ahead of itself.
+    let keys: Vec<(usize, usize)> = document
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            let line = starts
+                .get(index)
+                .and_then(|&start| lines_at.get(block.page)?.get(start))
+                .copied()
+                .unwrap_or(usize::MAX);
+            (block.page, line)
+        })
+        .collect();
+
+    let mut out = Vec::with_capacity(document.blocks.len() + lifted.len());
+    let mut lifted = lifted.into_iter().peekable();
+    for (block, key) in document.blocks.drain(..).zip(keys) {
+        while lifted.peek().is_some_and(|(at, _)| *at <= key) {
+            out.push(lifted.next().expect("just peeked").1);
+        }
+        out.push(block);
+    }
+    out.extend(lifted.map(|(_, block)| block));
+
+    document.blocks = out;
 }
 
 /// Renders a picture of any equation the reconstruction was not confident about.
@@ -535,15 +599,6 @@ fn crop_uncertain_equations(
         document.blocks[index].asset = Some(format!("{folder}/{name}"));
     }
     Ok(())
-}
-
-/// Places reconstructed tables into the document.
-fn insert_tables(document: &mut doc::Document, tables: Vec<PlacedTable>) {
-    for (page, bbox, data) in tables {
-        let mut block = doc::Block::new(doc::BlockKind::Table, page, bbox);
-        block.table = Some(data);
-        insert_in_reading_order(document, block);
-    }
 }
 
 /// Binds detected figure regions to their captions, optionally rasterising them.
@@ -609,6 +664,10 @@ fn attach_figures(
 /// measurable bite out of real prose — a 0.03 fall in bigram recall on BERT. A running paragraph
 /// that lands inside a figure region is far more likely to be a detection error than a label.
 /// Captions and figures are exempt outright, since a caption often overlaps what it describes.
+/// So are tables and equations, and for a sharper reason: their content is in `block.table` and
+/// `block.math`, not in `block.text`, so the word count that protects real prose reads zero for
+/// them and the guard inverts — a numbered display equation beside an inset figure, cells and
+/// LaTeX and all, was silently deleted for being "short".
 fn drop_text_inside_figures(document: &mut doc::Document, regions: &[(usize, ir::Rect)]) {
     const MIN_CONTAINED: f32 = 0.8;
     const MAX_WORDS: usize = 12;
@@ -621,7 +680,13 @@ fn drop_text_inside_figures(document: &mut doc::Document, regions: &[(usize, ir:
     const MARGIN: f32 = 18.0;
 
     document.blocks.retain(|block| {
-        if matches!(block.kind, doc::BlockKind::Caption | doc::BlockKind::Figure) {
+        if matches!(
+            block.kind,
+            doc::BlockKind::Caption
+                | doc::BlockKind::Figure
+                | doc::BlockKind::Table
+                | doc::BlockKind::Equation
+        ) {
             return true;
         }
         if block.text.split_whitespace().count() > MAX_WORDS {
@@ -675,9 +740,202 @@ fn caption_for(document: &doc::Document, page: usize, region: &ir::Rect) -> Opti
         .map(|(i, _)| i)
 }
 
-/// Inserts an uncaptioned figure.
+/// Inserts an uncaptioned figure at its place in reading order.
+///
+/// A figure region is drawn, not written, so unlike a table or an equation it has no line of the
+/// stream to be placed by and geometry is all there is. Geometry still has to be read in the
+/// document's own terms: `blocks` is in reading order, so the figure goes *after* the last block
+/// that shares its column and sits above it, rather than *before* the first block that happens
+/// to start lower down the page — on a two-column page that first block is usually still in the
+/// left column, and a right-column figure would land half a page early.
 fn insert_figure(document: &mut doc::Document, page: usize, bbox: ir::Rect, asset: Option<String>) {
     let mut block = doc::Block::new(doc::BlockKind::Figure, page, bbox);
     block.asset = asset;
-    insert_in_reading_order(document, block);
+
+    let above = document
+        .blocks
+        .iter()
+        .rposition(|b| b.page == page && b.bbox.y1 <= bbox.y0 && b.bbox.x_overlap(&bbox) > 0.0);
+    let at = match above {
+        Some(index) => index + 1,
+        // Nothing above it in its column: it opens its page, or the page has no text at all.
+        None => document
+            .blocks
+            .iter()
+            .position(|b| b.page >= page)
+            .unwrap_or(document.blocks.len()),
+    };
+    document.blocks.insert(at, block);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> ir::Rect {
+        ir::Rect::from_corners(x0, y0, x1, y1)
+    }
+
+    fn paragraph(page: usize, bbox: ir::Rect, text: &str) -> doc::Block {
+        doc::Block::new(doc::BlockKind::Paragraph, page, bbox).with_text(text)
+    }
+
+    fn maths(latex: &str) -> doc::MathData {
+        doc::MathData {
+            latex: latex.to_owned(),
+            number: None,
+            confidence: 1.0,
+        }
+    }
+
+    fn cells() -> doc::TableData {
+        doc::TableData {
+            rows: vec![vec!["a".to_owned(), "b".to_owned()]],
+            header_rows: 1,
+        }
+    }
+
+    /// One two-column page. Reading order runs down the left column (lines 0–3) and then down
+    /// the right (lines 4–8), and line 4 — the top of the right column — was lifted out.
+    fn two_columns() -> (doc::Document, Vec<usize>, Vec<Vec<usize>>) {
+        let document = doc::Document {
+            title: None,
+            blocks: vec![
+                paragraph(0, rect(50.0, 100.0, 250.0, 200.0), "left top"),
+                paragraph(0, rect(50.0, 250.0, 250.0, 400.0), "left bottom"),
+                paragraph(0, rect(320.0, 130.0, 520.0, 200.0), "right top"),
+                paragraph(0, rect(320.0, 250.0, 520.0, 400.0), "right bottom"),
+            ],
+        };
+        // Blocks begin at prose lines 0, 2, 4 and 6; the prose that remains is every line but 4.
+        (
+            document,
+            vec![0, 2, 4, 6],
+            vec![vec![0, 1, 2, 3, 5, 6, 7, 8]],
+        )
+    }
+
+    /// The regression this placement exists for: an equation at the *top* of the right column
+    /// sits above the left column's second paragraph, so "before the first block that starts
+    /// below it" puts it in the middle of the left column, half a page early.
+    #[test]
+    fn equation_returns_to_its_own_column() {
+        let (mut document, starts, lines_at) = two_columns();
+        let equation = (0, 4, rect(330.0, 100.0, 500.0, 120.0), maths("x^2"));
+
+        place_lifted(
+            &mut document,
+            &starts,
+            &lines_at,
+            Vec::new(),
+            vec![equation],
+        );
+
+        let text: Vec<&str> = document.blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(
+            text,
+            ["left top", "left bottom", "", "right top", "right bottom"]
+        );
+        assert_eq!(document.blocks[2].kind, doc::BlockKind::Equation);
+    }
+
+    /// Two items lifted from the same page keep the order the page had them in, whatever their
+    /// geometry says.
+    #[test]
+    fn lifted_items_keep_their_order() {
+        let (mut document, starts, lines_at) = two_columns();
+        let equation = (0, 4, rect(330.0, 100.0, 500.0, 120.0), maths("x^2"));
+        let table = (0, 1, rect(50.0, 150.0, 250.0, 190.0), cells());
+
+        place_lifted(
+            &mut document,
+            &starts,
+            &lines_at,
+            vec![table],
+            vec![equation],
+        );
+
+        let kinds: Vec<doc::BlockKind> = document.blocks.iter().map(|b| b.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            [
+                doc::BlockKind::Paragraph,
+                doc::BlockKind::Table,
+                doc::BlockKind::Paragraph,
+                doc::BlockKind::Equation,
+                doc::BlockKind::Paragraph,
+                doc::BlockKind::Paragraph,
+            ]
+        );
+    }
+
+    /// A page whose every line was lifted has no block to be placed before, and the item still
+    /// belongs before the pages that follow it.
+    #[test]
+    fn lifted_item_from_an_empty_page_keeps_its_page() {
+        let mut document = doc::Document {
+            title: None,
+            blocks: vec![
+                paragraph(0, rect(50.0, 100.0, 250.0, 200.0), "page one"),
+                paragraph(2, rect(50.0, 100.0, 250.0, 200.0), "page three"),
+            ],
+        };
+        let equation = (1, 0, rect(50.0, 100.0, 250.0, 120.0), maths("y"));
+
+        place_lifted(
+            &mut document,
+            &[0, 0],
+            &[vec![0], Vec::new(), vec![0]],
+            Vec::new(),
+            vec![equation],
+        );
+
+        let pages: Vec<usize> = document.blocks.iter().map(|b| b.page).collect();
+        assert_eq!(pages, [0, 1, 2]);
+        assert_eq!(document.blocks[1].kind, doc::BlockKind::Equation);
+    }
+
+    /// An uncaptioned figure has no line to be placed by, so it follows the last block above it
+    /// *in its own column* — not the first block that starts lower down the page.
+    #[test]
+    fn uncaptioned_figure_lands_in_its_own_column() {
+        let (mut document, _, _) = two_columns();
+
+        insert_figure(&mut document, 0, rect(320.0, 210.0, 520.0, 240.0), None);
+
+        let text: Vec<&str> = document.blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(
+            text,
+            ["left top", "left bottom", "right top", "", "right bottom"]
+        );
+        assert_eq!(document.blocks[3].kind, doc::BlockKind::Figure);
+    }
+
+    /// A table or an equation carries its content in `table` and `math`, never in `text`, so the
+    /// word count that keeps real prose out of a figure region reads zero for them.
+    #[test]
+    fn figures_do_not_swallow_equations_and_tables() {
+        let region = rect(300.0, 100.0, 540.0, 400.0);
+        let mut equation = doc::Block::new(
+            doc::BlockKind::Equation,
+            0,
+            rect(320.0, 150.0, 520.0, 180.0),
+        );
+        equation.math = Some(maths("x^2"));
+        let mut table = doc::Block::new(doc::BlockKind::Table, 0, rect(320.0, 200.0, 520.0, 260.0));
+        table.table = Some(cells());
+        let mut document = doc::Document {
+            title: None,
+            blocks: vec![
+                equation,
+                table,
+                paragraph(0, rect(320.0, 300.0, 520.0, 320.0), "axis label"),
+            ],
+        };
+
+        drop_text_inside_figures(&mut document, &[(0, region)]);
+
+        let kinds: Vec<doc::BlockKind> = document.blocks.iter().map(|b| b.kind.clone()).collect();
+        assert_eq!(kinds, [doc::BlockKind::Equation, doc::BlockKind::Table]);
+    }
 }
