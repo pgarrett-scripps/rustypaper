@@ -68,7 +68,7 @@ are renderings of it.
 | | |
 |---|---|
 | speed | 2.5–8.7 ms/page, single process |
-| corpus | 10 papers: ML, pure maths, physics, biology, statistics |
+| corpus | 16 papers in 10 template families: ML, pure maths, physics, biology, medicine, statistics |
 | memory | 13–30 MB peak for a whole paper |
 | footprint | a 3.2 MB binary, no native library, no models |
 
@@ -127,14 +127,14 @@ rather than scored.
 cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval
 ```
 
-Current scores across the nine scorable papers:
+Current scores across the fifteen scorable papers:
 
 | metric | value | what it says |
 |---|---|---|
-| prose bigram recall | **0.891** | prose comes out right, in the right order |
-| equation recall | **0.370** | most display equations are *not* found |
-| equation fidelity | **0.547** | those that are found are roughly half right |
-| tables | 26 found / 44 in source | badly distributed: 8 of ResNet's 17, none of statistics' 2, two invented on papers with none |
+| prose bigram recall | **0.878** | prose comes out right, in the right order |
+| equation recall | **0.336** | most display equations are *not* found |
+| equation fidelity | **0.559** | those that are found are roughly half right |
+| tables | 54 found / 90 in source | badly distributed: 10 of ResNet's 17, 10 of ImageNet's 26, one invented on a paper with none |
 
 The maths numbers are the honest state of the differentiator, and they are the project's
 weakest point — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). See

@@ -167,6 +167,42 @@ that family, not the general shape of a paper.** Every one of these was invisibl
 original four, and the new papers score *higher* once fixed — the two-column ML templates were
 the harder cases all along.
 
+## Findings from widening it again, to publisher templates
+
+arXiv skews towards conference styles, and the corpus inherited the skew: ten papers, but only
+one of them typeset by a publisher rather than by a call for papers. Six more were added —
+IEEEtran with a drop capital (`metasurface.pdf`), acmart (`pinsage.pdf`), REVTeX
+(`topological.pdf`), Elsevier's elsarticle (`medimaging.pdf`), a Springer journal in svjour3
+(`imagenet.pdf`) and JMLR (`sklearn.pdf`) — and unlike the last widening, these are not four bugs
+with four fixes. They are four *shapes* of failure, none of them fixed yet, all of them now
+pinned in `tests/corpus.rs`:
+
+- **A gutter that one line crosses costs the page its columns.** The column profile needs the
+  band between the columns to be empty, so a single display equation whose subscript overhangs
+  the gutter suppresses it, and the whole page interleaves line by line. It happens on 2 of
+  `pinsage.pdf`'s 10 pages and takes that paper to **0.664** bigram recall — the worst in the
+  corpus, on a paper whose glyphs extract perfectly. The other eight pages are exact.
+- **A two-column bibliography interleaves even where the gutter *is* found.** `metasurface.pdf`
+  yields 0 references from 41, `imagenet.pdf` 0 from about 100: the entries arrive as one
+  paragraph of two columns zipped together (`...1990.[30] I. Yoo and...`), and `REFERENCES` lands
+  mid-sentence inside it rather than as a heading. This is the "References heading fuses into the
+  first entry" report from production, and it is not a heading bug — the whole page is zipped.
+- **A drop capital is placed where it sits.** `\IEEEPARstart` sets the first letter of the
+  introduction three lines deep in the margin, so reading order puts it three lines in:
+  `Conformal antennas...` becomes `onformal antennas are essential components in
+  appli-Ccations`. The letter is not lost, it is inserted into a word forty characters later,
+  which is worse than losing it — a search for the word fails either way, but nothing looks
+  wrong.
+- **A title set on several lines stays several blocks.** Publishers break long titles across two
+  or three centred lines; `doc.title` takes one of them. The IEEE paper's title is its middle
+  line, `Array of Rectangular`.
+
+Two things did *not* break, which is worth recording because both were expected to. REVTeX's
+Roman-numeral sections and acmart's capitalised ones are found (`II. TOPOLOGICAL BAND THEORY`,
+`3.1 Problem Setup`), and four of the six titles come out exactly right. Roman numerals are only
+missed where the heading is set at body size in the body face, as IEEEtran does from section II
+onwards — the numeral alone is not evidence, and nothing else distinguishes it.
+
 ## What the maths scorer found
 
 Scoring emitted LaTeX against the equations in each paper's own source — the measurement the
@@ -204,17 +240,24 @@ Release build, one document per process, no figure rasterisation, best of three:
 | numbertheory | 19 | 3.2 |
 | gan | 9 | 3.3 |
 | statistics | 14 | 3.6 |
+| sklearn | 6 | 3.7 |
+| imagenet | 43 | 3.7 |
 | bert | 16 | 3.8 |
+| medimaging | 38 | 3.9 |
 | adam | 15 | 4.0 |
 | resnet | 12 | 4.2 |
 | optics | 12 | 5.8 |
+| topological | 23 | 6.6 |
 | biology | 23 | 7.4 |
+| metasurface | 6 | 7.3 |
+| pinsage | 10 | 8.1 |
 | transformer | 15 | 8.7 |
 
 Peak memory is 13–30 MB per document. The budget was ≤100 ms/page end-to-end, so this runs at
-3–9% of it.
+3–9% of it. The longest papers in the corpus are among the *cheapest* per page: pages of survey
+prose cost less than pages of derivation.
 
-Converting all ten in one process, writing figures, takes 2.13 s and 64 MB.
+Converting all sixteen in one process, writing figures, takes 4.2 s and 86 MB.
 
 **Ingest dominates wall time.** Extracting the whole corpus takes 0.71 s against 0.76 s to
 convert it — 93% — because everything after ingest runs across pages under rayon and disappears

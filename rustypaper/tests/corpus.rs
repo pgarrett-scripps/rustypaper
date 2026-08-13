@@ -848,6 +848,414 @@ fn output_is_not_shattered_into_fragments() {
     }
 }
 
+// --------------------------------------------------------------------------------------------
+// Publisher journal templates.
+//
+// The six papers below were added because production consumers hit them and the conference
+// templates above never exercise them: IEEEtran (Roman-numeral sections, a drop capital opening
+// the first paragraph), acmart, REVTeX, Elsevier's elsarticle, a Springer journal class and
+// JMLR. Several of them are converted *badly* today. These tests assert what is true now, and
+// mark each known gap in a comment with the aspirational assertion beside it, commented out —
+// a test that pins a bug as an expectation fails on the commit that fixes it, which is exactly
+// backwards.
+// --------------------------------------------------------------------------------------------
+
+/// The text of every heading block, in document order.
+fn heading_texts(doc: &rustypaper::doc::Document) -> Vec<&str> {
+    doc.blocks
+        .iter()
+        .filter(|b| matches!(b.kind, rustypaper::doc::BlockKind::Heading { .. }))
+        .map(|b| b.text.as_str())
+        .collect()
+}
+
+fn has_heading(doc: &rustypaper::doc::Document, wanted: &str) -> bool {
+    heading_texts(doc).iter().any(|h| h.trim() == wanted)
+}
+
+const PUBLISHER_PAPERS: [&str; 6] = [
+    "metasurface.pdf", // IEEEtran, two column
+    "pinsage.pdf",     // acmart sigconf
+    "topological.pdf", // REVTeX, Rev. Mod. Phys.
+    "medimaging.pdf",  // elsarticle
+    "imagenet.pdf",    // svjour3, a Springer journal
+    "sklearn.pdf",     // JMLR
+];
+
+/// Every publisher template converts and yields the bones of a paper.
+///
+/// The sibling test above also demands a bibliography of every paper. Two of these six do not
+/// produce one — see `publisher_bibliographies_are_found_where_they_are_found` — so that
+/// requirement is made separately rather than weakened for everybody.
+#[test]
+fn every_publisher_template_converts_with_plausible_structure() {
+    for name in PUBLISHER_PAPERS {
+        let path = paper!(name);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+
+        assert!(!doc.blocks.is_empty(), "{name}: no blocks");
+        assert!(
+            doc.title.is_some(),
+            "{name}: no title at all — some line of it must be found"
+        );
+        assert!(
+            !heading_texts(&doc).is_empty(),
+            "{name}: no headings at all"
+        );
+
+        let words: usize = doc
+            .blocks
+            .iter()
+            .map(|b| b.text.split_whitespace().count())
+            .sum();
+        // sklearn is a six-page JMLR note; the rest are full papers.
+        assert!(words > 2_000, "{name}: only {words} words recovered");
+    }
+}
+
+/// Every emitter renders every publisher template without panicking.
+#[test]
+fn all_emitters_render_the_publisher_templates() {
+    for name in PUBLISHER_PAPERS {
+        let path = paper!(name);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+
+        let md = rustypaper::emit::markdown::render(&doc);
+        let typ = rustypaper::emit::typst::render(&doc);
+        let txt = rustypaper::emit::text::render(&doc);
+        serde_json::to_string(&doc).expect("the document model must serialise");
+
+        for (format, output) in [("markdown", &md), ("typst", &typ), ("text", &txt)] {
+            assert!(
+                output.len() > 5_000,
+                "{name}: {format} output is suspiciously short"
+            );
+        }
+        if doc.blocks.iter().any(|b| b.math.is_some()) {
+            assert!(typ.starts_with("#import"), "{name}: mitex import missing");
+        }
+        assert!(
+            !txt.contains("#table("),
+            "{name}: markup leaked into plain text"
+        );
+    }
+}
+
+/// Titles that publishers set over several lines.
+///
+/// A journal sets a long title as two or three centred lines, and each line arrives as its own
+/// block. Every line must survive into the output; that much is true today, and stays true if
+/// the lines are ever joined.
+///
+/// **Known gap.** They are *not* joined: `doc.title` holds one line and the others are left as
+/// top-level headings, so the IEEE paper's title is the middle line, `Array of Rectangular`, and
+/// the ACM paper's is missing its `Recommender Systems`.
+#[test]
+fn every_line_of_a_multi_line_title_survives() {
+    let path = paper!("metasurface.pdf");
+    let md = rustypaper::emit::markdown::render(&rustypaper::convert(&path).unwrap());
+    for line in [
+        "Design of Conformal",
+        "Array of Rectangular",
+        "Waveguide-fed Metasurfaces",
+    ] {
+        assert!(
+            md.contains(line),
+            "metasurface.pdf: title line {line:?} lost"
+        );
+    }
+    // assert_eq!(doc.title.as_deref(), Some("Design of Conformal Array of Rectangular
+    // Waveguide-fed Metasurfaces"));
+
+    let path = paper!("pinsage.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let md = rustypaper::emit::markdown::render(&doc);
+    assert!(md.contains("Graph Convolutional Neural Networks for Web-Scale"));
+    assert!(md.contains("Recommender Systems"));
+    // assert_eq!(doc.title.as_deref(), Some("Graph Convolutional Neural Networks for Web-Scale
+    // Recommender Systems"));
+}
+
+/// Titles that arrive on one line come out exactly right, in four more templates.
+#[test]
+fn single_line_titles_are_exact_in_publisher_templates() {
+    for (name, title) in [
+        ("topological.pdf", "Topological Insulators"),
+        (
+            "medimaging.pdf",
+            "A Survey on Deep Learning in Medical Image Analysis",
+        ),
+        (
+            "imagenet.pdf",
+            "ImageNet Large Scale Visual Recognition Challenge",
+        ),
+        ("sklearn.pdf", "Scikit-learn: Machine Learning in Python"),
+    ] {
+        let path = paper!(name);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        assert_eq!(doc.title.as_deref(), Some(title), "{name}");
+    }
+}
+
+/// IEEEtran numbers its sections with Roman numerals and sets them in capitals.
+///
+/// **Known gap.** Only the first of them is classified as a heading. `II. THEORY`,
+/// `III. DESIGN...` and `IV. CONCLUSION` are set at body size in the same face as the running
+/// text, so heading detection has nothing but the numeral to go on and misses them; the text
+/// still reaches the output, as an ordinary block. That is the honest state and it is what this
+/// asserts — a reader of the Markdown can find the section, an outline of it cannot.
+#[test]
+fn ieee_roman_numeral_headings_are_only_partly_found() {
+    let path = paper!("metasurface.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let md = rustypaper::emit::markdown::render(&doc);
+
+    assert!(
+        has_heading(&doc, "I. INTRODUCTION"),
+        "the one Roman heading that is found: {:?}",
+        heading_texts(&doc)
+    );
+    for section in ["II. THEORY", "IV. CONCLUSION"] {
+        assert!(md.contains(section), "{section} vanished entirely");
+        // assert!(has_heading(&doc, section));
+    }
+}
+
+/// A drop capital belongs to the word it opens.
+///
+/// IEEEtran's `\IEEEPARstart` sets the first letter of the introduction three lines deep in the
+/// margin of the paragraph. Geometrically it is not on the first line at all, so reading order
+/// places it where it sits — and the rest of the word is left headless.
+///
+/// **Known gap.** `Conformal antennas are essential...` comes out as `onformal antennas are
+/// essential components in appli-Ccations`: the capital is not lost, it is inserted into a word
+/// forty characters later. What is asserted here is the part that holds either way — the
+/// sentence itself survives — so this test does not have to be rewritten when the drop cap is
+/// reunited with its word.
+#[test]
+fn a_drop_capital_does_not_take_its_paragraph_with_it() {
+    let path = paper!("metasurface.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let md = rustypaper::emit::markdown::render(&doc);
+
+    assert!(
+        md.contains("onformal antennas are essential components"),
+        "the opening sentence of the introduction did not survive"
+    );
+    // assert!(md.contains("Conformal antennas are essential components"));
+    // assert!(!md.contains("appli-Ccations"));
+}
+
+/// acmart's numbered, capitalised sections are found, and they run in order.
+///
+/// **Known gap.** `REFERENCES` is emitted before `5 CONCLUSION`: the conclusion sits in the
+/// right-hand column of the page whose left-hand column has already started the bibliography,
+/// and the page's blocks are ordered column by column. The numbered sections themselves are in
+/// order, which is what the outline of the paper rests on.
+#[test]
+fn acm_sections_are_found_and_ordered() {
+    let path = paper!("pinsage.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+
+    for section in [
+        "ABSTRACT",
+        "1 INTRODUCTION",
+        "2 RELATED WORK",
+        "3 METHOD",
+        "3.1 Problem Setup",
+        "4 EXPERIMENTS",
+        "5 CONCLUSION",
+        "REFERENCES",
+    ] {
+        assert!(
+            has_heading(&doc, section),
+            "pinsage.pdf: no heading {section:?} among {:?}",
+            heading_texts(&doc)
+        );
+    }
+
+    let order: Vec<usize> = [
+        "1 INTRODUCTION",
+        "2 RELATED WORK",
+        "3 METHOD",
+        "4 EXPERIMENTS",
+    ]
+    .iter()
+    .map(|s| {
+        heading_texts(&doc)
+            .iter()
+            .position(|h| h.trim() == *s)
+            .unwrap()
+    })
+    .collect();
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "acmart sections came out in the order {order:?}"
+    );
+}
+
+/// REVTeX sets Roman-numeral sections in capitals, and lettered subsections under them.
+///
+/// **Known gap.** `I. INTRODUCTION` is not among them. The Colloquium opens with a two-column
+/// table of contents that the introduction starts underneath, and the two interleave line by
+/// line, so the introduction's own heading is swallowed into that run. Everything from section
+/// II onwards is clean.
+#[test]
+fn revtex_roman_numeral_headings_are_found() {
+    let path = paper!("topological.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+
+    for section in [
+        "II. TOPOLOGICAL BAND THEORY",
+        "III. QUANTUM SPIN HALL INSULATOR",
+        "IV. 3D TOPOLOGICAL INSULATORS",
+        "VI. CONCLUSION AND OUTLOOK",
+        "A. The insulating state",
+        "References",
+    ] {
+        assert!(
+            has_heading(&doc, section),
+            "topological.pdf: no heading {section:?} among {:?}",
+            heading_texts(&doc)
+        );
+    }
+    // assert!(has_heading(&doc, "I. INTRODUCTION"));
+}
+
+/// Elsevier, Springer and JMLR section headings.
+///
+/// **Known gaps**, all of the same shape — a heading that shares a line with the text that
+/// follows it, or that a column boundary has run into the paragraph above:
+///
+/// - `medimaging.pdf` (elsarticle) finds 2, 3 and 5 but not 1, 4 or 6.
+/// - `imagenet.pdf` (svjour3) finds 2, 3, 4, 5 and 7; `1 Introduction` is fused onto the end of
+///   an author line as `J. Deng*1 Introduction`.
+/// - `sklearn.pdf` (JMLR) finds all six of its sections, and additionally promotes the running
+///   head `Scikit-learn: Machine Learning in Python` to a heading twice — page furniture that
+///   should have been dropped.
+#[test]
+fn elsevier_springer_and_jmlr_sections_are_found() {
+    let cases: [(&str, &[&str]); 3] = [
+        (
+            "medimaging.pdf",
+            &[
+                "Abstract",
+                "2. Overview of deep learning methods",
+                "2.1. Learning algorithms",
+                "3. Deep Learning Uses in Medical Imaging",
+                "5. Discussion",
+                "References",
+            ],
+        ),
+        (
+            "imagenet.pdf",
+            &[
+                "2 Challenge tasks",
+                "3 Dataset construction at large scale",
+                "3.1 Image classification dataset construction",
+                "4 Evaluation at large scale",
+                "5 Methods",
+                "7 Conclusions",
+            ],
+        ),
+        (
+            "sklearn.pdf",
+            &[
+                "Abstract",
+                "1. Introduction",
+                "2. Project Vision",
+                "3. Underlying Technologies",
+                "4. Code Design",
+                "6. Conclusion",
+                "References",
+            ],
+        ),
+    ];
+
+    for (name, sections) in cases {
+        let path = paper!(name);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        for section in sections {
+            assert!(
+                has_heading(&doc, section),
+                "{name}: no heading {section:?} among {:?}",
+                heading_texts(&doc)
+            );
+        }
+    }
+}
+
+/// Where a publisher's bibliography is parsed at all, and where it is not.
+///
+/// **Known gap, and the largest one these six papers found.** Four of the six yield entries.
+/// The two that yield none are the two whose bibliography is set in a two-column block that the
+/// column pass does not separate: the IEEE paper's forty-one entries and the Springer paper's
+/// author-year list both arrive as one run-on paragraph with the columns interleaved
+/// (`...1990.[30] I. Yoo and...`), and `REFERENCES` appears mid-sentence inside it rather than
+/// as a heading. Nothing downstream can recover entries from that, so the count is zero rather
+/// than wrong — which is the right way round, but it is still zero.
+#[test]
+fn publisher_bibliographies_are_found_where_they_are_found() {
+    for name in [
+        "pinsage.pdf",
+        "topological.pdf",
+        "medimaging.pdf",
+        "sklearn.pdf",
+    ] {
+        let path = paper!(name);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        let refs: Vec<&rustypaper::refs::Reference> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| b.reference.as_ref())
+            .collect();
+        assert!(!refs.is_empty(), "{name}: no bibliography found");
+        assert!(
+            refs.iter()
+                .all(|r| r.year.is_none_or(|y| (1900..=2030).contains(&y))),
+            "{name}: an implausible year was parsed"
+        );
+    }
+
+    // for name in ["metasurface.pdf", "imagenet.pdf"] {
+    //     let path = paper!(name);
+    //     let doc = rustypaper::convert(&path).expect("conversion failed");
+    //     assert!(doc.blocks.iter().any(|b| b.reference.is_some()), "{name}");
+    // }
+}
+
+/// A gutter that one wide line crosses must not cost the page its columns.
+///
+/// **Known gap.** It does. `pinsage.pdf` is a clean two-column acmart paper on eight of its ten
+/// pages, and on the two where a display equation overhangs the gutter — the column profile
+/// needs the band to be empty — no gutter is found and the two columns interleave line by line
+/// (`...is smaller than that of thenode independently. Empirically, we do not...`). It costs
+/// that paper 0.664 bigram recall against a corpus mean of 0.878: the worst score in the corpus,
+/// on a paper whose text extracts perfectly.
+///
+/// What is asserted is the eight pages that do work, so that a fix to the other two is an
+/// improvement rather than a test rewrite.
+#[test]
+fn two_column_gutters_are_found_on_most_pages() {
+    let path = paper!("pinsage.pdf");
+    let doc = rustypaper::extract(&path).expect("extraction failed");
+
+    let with_gutter = doc
+        .pages
+        .iter()
+        .filter(|page| {
+            let lines = build_lines(page);
+            !rustypaper::layout::columns::page_gutters(page, &lines).is_empty()
+        })
+        .count();
+    assert!(
+        with_gutter >= 8,
+        "only {with_gutter} of {} pages of a two-column paper have a gutter",
+        doc.pages.len()
+    );
+    // assert_eq!(with_gutter, doc.pages.len());
+}
+
 /// A title set at body size, distinguished only by capitals and position, must still be found.
 #[test]
 fn titles_are_found_in_every_template() {
