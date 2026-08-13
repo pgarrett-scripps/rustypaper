@@ -33,12 +33,14 @@ change is an intended improvement.
 
 Current, over the fifteen scorable papers:
 
-| prose bigram | equation recall | equation fidelity | tables | corpus tests |
-| --- | --- | --- | --- | --- |
-| 0.880 | 0.336 | 0.559 | 46/90 | 44/44 |
+| prose bigram | equation recall | equation fidelity | tables | references | corpus tests |
+| --- | --- | --- | --- | --- | --- |
+| 0.899 | 0.337 | 0.559 | 46/90 | 376/1174 | 44/44 |
 
-Maths and tables are the project's weak point, and the honest place to work next. The corpus
-converts in 1.4 s and 66 MB of resident memory.
+Maths and tables are the project's weak point, and the honest place to work next; the reference
+deficit is concentrated in two papers whose bibliographies arrive as run-together blocks
+(topological 6/368, medimaging 21/350). The corpus converts in 1.4 s and 62 MB of resident
+memory.
 
 A reference can lie: a third of pinsage's arXiv source sat inside `\cut{...}`, a macro defined
 to discard its argument, so the paper scored 0.664 against prose its PDF never printed. `detex`
