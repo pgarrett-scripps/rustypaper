@@ -1333,6 +1333,73 @@ fn publisher_bibliographies_are_found() {
     }
 }
 
+/// A bibliography with no labels at all still comes back entry by entry.
+///
+/// Three of the corpus's author-year papers print no `[n]` and no counting `n.`, and each used to
+/// arrive as one blob per column: topological 6 blobs for 368 entries, medimaging 21 for 350,
+/// imagenet 11 for 102. The column text was all there — metasurface and pinsage prove the
+/// pipeline delivers it — so what was missing was a signal saying where one entry stops and the
+/// next starts. The author list at the head of each entry is that signal.
+///
+/// The counts asserted are well under what is recovered, because an entry the split is not sure
+/// of stays joined to its neighbour rather than being cut through the middle; the numbers are a
+/// floor, not a target.
+#[test]
+fn an_unlabelled_bibliography_is_split_into_entries() {
+    for (name, least) in [
+        ("topological.pdf", 120), // REVTeX: `Agergaard, S., C. Sondergaard, 2001, New J. Phys.`
+        ("medimaging.pdf", 300),  // elsarticle: `Abadi, M., Agarwal, A., 2016. Tensorflow: ...`
+        ("imagenet.pdf", 85),     // svjour3: `Ahonen, T., Hadid, A. (2006). Face description ...`
+    ] {
+        let path = paper!(name);
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        let refs: Vec<&rustypaper::refs::Reference> = doc
+            .blocks
+            .iter()
+            .filter_map(|b| b.reference.as_ref())
+            .collect();
+        assert!(
+            refs.len() >= least,
+            "{name}: {} entries, expected at least {least}",
+            refs.len()
+        );
+
+        // Entry-sized, not column-sized. The blobs these papers used to yield ran to two and
+        // three thousand characters apiece, and a count alone would not have noticed.
+        let mut lengths: Vec<usize> = refs.iter().map(|r| r.raw.chars().count()).collect();
+        lengths.sort_unstable();
+        let median = lengths[lengths.len() / 2];
+        assert!(
+            (40..500).contains(&median),
+            "{name}: the median entry is {median} characters"
+        );
+
+        // Each entry begins where an entry begins, not part-way through the one before it.
+        assert!(
+            refs.iter().all(|r| r.raw.starts_with(char::is_alphabetic)),
+            "{name}: an entry starts mid-sentence"
+        );
+        let capitals = refs
+            .iter()
+            .filter(|r| r.raw.starts_with(char::is_uppercase))
+            .count();
+        assert!(
+            capitals * 20 >= refs.len() * 19,
+            "{name}: only {capitals}/{} entries open with a name",
+            refs.len()
+        );
+
+        // The year is the field anything downstream resolves against, and a mis-cut entry
+        // carries its neighbour's.
+        let years = refs.iter().filter(|r| r.year.is_some()).count();
+        assert!(
+            years * 10 >= refs.len() * 9,
+            "{name}: only {years}/{} entries have a year",
+            refs.len()
+        );
+    }
+}
+
 /// A numbered two-column bibliography comes back entry by entry, not column by column.
 ///
 /// `metasurface.pdf` is the case that proves the columns are separated: its forty-one `[n]`
