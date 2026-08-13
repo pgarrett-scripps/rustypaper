@@ -246,9 +246,16 @@ fn find_year(text: &str) -> Option<u16> {
 }
 
 /// A DOI: `10.` followed by a registrant code, a slash and a suffix.
+///
+/// Every `10.` is tried, not just the first: an entry that carries a volume number reads
+/// `vol. 10. doi:10.1145/3292500`, and giving up on the first candidate loses the DOI.
 fn find_doi(text: &str) -> Option<String> {
-    let start = text.find("10.")?;
-    let rest = &text[start..];
+    text.match_indices("10.")
+        .find_map(|(start, _)| doi_at(&text[start..]))
+}
+
+/// The DOI beginning at the start of `rest`, if there is one.
+fn doi_at(rest: &str) -> Option<String> {
     let slash = rest.find('/')?;
     if slash < 5 || !rest[3..slash].chars().all(|c| c.is_ascii_digit()) {
         return None;
@@ -450,6 +457,13 @@ mod tests {
         let parsed = parse("[1] A. B. A title. Journal, 2016. doi:10.1145/3292500.3330701");
         assert_eq!(parsed.doi.as_deref(), Some("10.1145/3292500.3330701"));
         assert_eq!(parse("[1] A. B. Version 10.2 of the tool.").doi, None);
+    }
+
+    /// An earlier `10.` that is not a DOI must not hide the one that is.
+    #[test]
+    fn a_doi_after_a_volume_number_is_still_found() {
+        let parsed = parse("[1] A. B. A title. Journal, vol. 10. doi:10.1145/3292500.3330701");
+        assert_eq!(parsed.doi.as_deref(), Some("10.1145/3292500.3330701"));
     }
 
     #[test]

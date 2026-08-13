@@ -120,11 +120,9 @@ fn render_table(out: &mut String, data: &crate::doc::TableData) {
     }
     out.push('\n');
 
-    for row in data
-        .rows
-        .iter()
-        .skip(data.header_rows.max(1).min(data.rows.len()))
-    {
+    // Exactly the rows `flatten_header` consumed are skipped. Skipping a row it did not take —
+    // which `max(1)` used to do on a header-less table — loses that row from the output entirely.
+    for row in data.rows.iter().skip(data.header_rows.min(data.rows.len())) {
         let mut cells: Vec<String> = row.iter().map(|c| cell(c)).collect();
         cells.resize(columns, String::new());
         write_row(out, &cells);
@@ -372,8 +370,12 @@ mod tests {
             title: None,
             blocks: vec![b],
         };
-        // GFM needs a header row even when the table has none.
-        assert!(render(&doc).starts_with("|  |  |\n| --- | --- |\n"));
+        // GFM needs a header row even when the table has none — and every row of a table with no
+        // header is data, so none of them may be swallowed by the empty header.
+        assert_eq!(
+            render(&doc),
+            "|  |  |\n| --- | --- |\n| a | b |\n| c | d |\n"
+        );
     }
 
     #[test]
