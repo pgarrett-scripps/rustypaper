@@ -175,24 +175,59 @@ IEEEtran with a drop capital (`metasurface.pdf`), acmart (`pinsage.pdf`), REVTeX
 (`topological.pdf`), Elsevier's elsarticle (`medimaging.pdf`), a Springer journal in svjour3
 (`imagenet.pdf`) and JMLR (`sklearn.pdf`) — and unlike the last widening, these are not four bugs
 with four fixes. They are four *shapes* of failure, all of them pinned in `tests/corpus.rs`. The
-two that were about columns are fixed and are written up in the next section; the two that
-remain are:
+two that were about columns are fixed and are written up in the next section; of the other two,
+the drop capital is fixed and written up below, and the one that remains is:
 
-- **A drop capital is placed where it sits.** `\IEEEPARstart` sets the first letter of the
-  introduction three lines deep in the margin, so reading order puts it three lines in:
-  `Conformal antennas...` becomes `onformal antennas are essential components in
-  appli-Ccations`. The letter is not lost, it is inserted into a word forty characters later,
-  which is worse than losing it — a search for the word fails either way, but nothing looks
-  wrong.
 - **A title set on several lines stays several blocks.** Publishers break long titles across two
   or three centred lines; `doc.title` takes one of them. The IEEE paper's title is its middle
   line, `Array of Rectangular`.
 
-Two things did *not* break, which is worth recording because both were expected to. REVTeX's
-Roman-numeral sections and acmart's capitalised ones are found (`II. TOPOLOGICAL BAND THEORY`,
-`3.1 Problem Setup`), and four of the six titles come out exactly right. Roman numerals are only
-missed where the heading is set at body size in the body face, as IEEEtran does from section II
-onwards — the numeral alone is not evidence, and nothing else distinguishes it.
+One thing did *not* break, which is worth recording because it was expected to: four of the six
+titles come out exactly right.
+
+### A drop capital is placed where it sits
+
+`\IEEEPARstart` sets the first letter of the introduction two lines deep in the margin, so
+reading order put it two lines in: `Conformal antennas...` came out as `onformal antennas are
+essential components in appli-Ccations`. The letter was not lost, it was inserted into a word
+forty characters later, which is worse than losing it — a search for the word fails either way,
+but nothing looks wrong.
+
+Size alone cannot find it, because a figure label, an equation number and a section ornament are
+outsized too. What is specific to a drop capital is the *paragraph set around it*: one outsized
+letter at the column's left edge, with the lines it rises through indented to just past its right
+edge. `text::lines::reunite_drop_capitals` looks for that shape and moves the letter to the first
+of those lines before word segmentation, so it joins the word rather than becoming one. Across
+the sixteen papers it fires exactly twice, on the two IEEEtran ones.
+
+### Roman numerals have to be read as numbering
+
+REVTeX's and acmart's sections were found all along, but by their size and their capitals rather
+than by their numbering — and IEEEtran sets sections at body size in the body face, where the
+numeral is the only evidence there is. `I.` happened to work, being the appendix label
+`doc::numbered_heading` already knew; `II.` onwards were nothing to it, and `II. THEORY` at the
+foot of a column was classified as a *footnote*. Reading `I`, `V` and `X` as a numeral —
+canonically written, and carrying its full stop — finds all four IEEE sections. `C`, `D`, `L` and
+`M` are deliberately not read: they buy a range no paper needs, and would turn `MD.` and `DC.`
+into section labels.
+
+### A neighbouring column can be taken for part of a line
+
+Two failures on `medimaging.pdf`, which sets an 8pt bibliography beside the 10pt end of an
+appendix. Both are a question about the smaller thing answered with the larger one's number:
+
+- **Baseline tolerance was read off the arriving glyph.** A 10pt line 2.5pt below an 8pt one is
+  inside a 10pt glyph's share of the tolerance and outside an 8pt one's, so it joined the 8pt
+  line's cluster. Judged at the *smaller* of the two sizes, the two stay apart.
+- **Any smaller cluster overlapping a line's ink was a script of it.** Once a cluster spanned
+  both columns, the next bibliography line overlapped it and was within the size ratio a script
+  is allowed, so it was absorbed — and sorting the result by x zipped two columns together a
+  character at a time: `AnaEvnig, YM.,e Kd oBgiaonl`. A script is a *short run near its host's
+  baseline*, and either property alone is ordinary in real maths, so both are now required.
+
+Neither is only about that paper. With them, `topological.pdf` finds the `I. INTRODUCTION` that
+its two-column table of contents used to swallow, `imagenet.pdf` stops fusing `1 Introduction`
+onto the end of an author line, and `pinsage.pdf` finds all 31 of its references rather than 22.
 
 ## What the gutter was being measured against
 

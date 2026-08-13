@@ -28,6 +28,14 @@ const SCRIPT_MAX_SIZE_RATIO: f32 = 0.85;
 /// height, which is what separates a superscript from the line above it.
 const SCRIPT_MIN_OVERLAP: f32 = 0.25;
 
+/// A script's baseline is displaced from its host's by at most this fraction of the host's size.
+/// TeX raises a superscript by about 0.45 em and drops a subscript by about 0.25 em.
+const SCRIPT_MAX_BASELINE_SHIFT: f32 = 0.6;
+
+/// A run of this many glyphs is a phrase rather than a script, and is only absorbed if it sits
+/// on the host's own baseline.
+const SCRIPT_MAX_DISPLACED_GLYPHS: usize = 20;
+
 /// Fallback inter-glyph gap, as a fraction of font size, that implies a word break. Only used
 /// when a line does not have enough gaps to infer its own threshold.
 const WORD_GAP_RATIO: f32 = 0.19;
@@ -43,6 +51,26 @@ const GAP_CLASS_SEPARATION: f32 = 2.5;
 
 /// Beyond this many degrees off horizontal, a glyph is not part of running text.
 const MAX_TEXT_ANGLE_DEGREES: f32 = 5.0;
+
+/// A drop capital is set at least this many times the size of the text that flows around it.
+/// Two lines deep is the shallowest any template sets one, and that is already 1.9 or so.
+const DROP_CAP_MIN_SIZE_RATIO: f32 = 1.8;
+
+/// ...and at most this many. Beyond it the glyph belongs to display type — a title, a section
+/// ornament — rather than to a paragraph.
+const DROP_CAP_MAX_SIZE_RATIO: f32 = 6.0;
+
+/// The first line of the paragraph starts within this many body sizes of the capital's right
+/// edge. It has to be set *into* the paragraph, not merely somewhere to its left, which is what
+/// keeps a figure label or an equation number in another part of the page from claiming a line.
+const DROP_CAP_INDENT_SLACK: f32 = 2.0;
+
+/// A line takes a drop capital only if it is set at the same size, within this many points.
+const DROP_CAP_SIZE_SLACK: f32 = 0.5;
+
+/// Text set around a drop capital may tuck under its right edge by this fraction of the body
+/// size, and no more. A line that starts level with the capital is not indented around it.
+const DROP_CAP_OVERHANG: f32 = 0.25;
 
 /// Where a glyph sits relative to its line's baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +166,8 @@ pub fn build_lines(page: &PageRaw) -> Vec<Line> {
         segment_words(page, line);
     }
 
+    reunite_drop_capitals(page, &mut lines);
+
     lines.sort_by(|a, b| {
         a.baseline
             .total_cmp(&b.baseline)
@@ -184,22 +214,34 @@ pub fn rotated_glyphs(page: &PageRaw) -> Vec<usize> {
 
 /// Groups glyphs whose baselines agree, assigning each to the nearest open cluster rather than
 /// chaining, so a long run of slightly drifting baselines cannot merge two lines.
+///
+/// How far apart two baselines may be is judged at the *smaller* of the two sizes involved.
+/// Reading it off the incoming glyph alone lets a large one reach further than the line it is
+/// joining is tall: on a page of `medimaging.pdf` where a 10pt appendix column runs beside an 8pt
+/// bibliography, a 10pt line 2.5pt below an 8pt one was inside the 10pt tolerance and outside the
+/// 8pt one, and joined it. The merged cluster then spanned both columns, which let
+/// [`absorb_scripts`] take the *next* bibliography line as a script of it, and three lines of two
+/// different columns came out zipped together a character at a time
+/// (`AnaEvnig, YM.,e Kd oBgiaonl`).
 fn cluster_by_baseline(page: &PageRaw, order: &[usize]) -> Vec<Vec<usize>> {
     let mut clusters: Vec<Vec<usize>> = Vec::new();
-    let mut baselines: Vec<f32> = Vec::new();
+    // Each open cluster's baseline and the size of the glyph that opened it.
+    let mut open: Vec<(f32, f32)> = Vec::new();
 
     for &index in order {
         let glyph = &page.glyphs[index];
-        let tolerance = (glyph.size * BASELINE_TOLERANCE).max(0.5);
 
         // The sort means only the most recent clusters can still be in range.
-        let candidate = baselines
+        let candidate = open
             .iter()
             .enumerate()
             .rev()
             .take(8)
-            .filter(|(_, &b)| (b - glyph.origin.y).abs() <= tolerance)
-            .min_by(|(_, a), (_, b)| {
+            .filter(|(_, &(baseline, size))| {
+                let tolerance = (size.min(glyph.size) * BASELINE_TOLERANCE).max(0.5);
+                (baseline - glyph.origin.y).abs() <= tolerance
+            })
+            .min_by(|(_, (a, _)), (_, (b, _))| {
                 (*a - glyph.origin.y)
                     .abs()
                     .total_cmp(&(*b - glyph.origin.y).abs())
@@ -210,7 +252,7 @@ fn cluster_by_baseline(page: &PageRaw, order: &[usize]) -> Vec<Vec<usize>> {
             Some(i) => clusters[i].push(index),
             None => {
                 clusters.push(vec![index]);
-                baselines.push(glyph.origin.y);
+                open.push((glyph.origin.y, glyph.size));
             }
         }
     }
@@ -303,6 +345,7 @@ fn find_host(lines: &[Line], absorbed: &[bool], candidate: usize) -> Option<usiz
                 // Must sit against the host's text, not merely share a band of the page: a
                 // superscript is within roughly a quad of the host on one side or inside it.
                 && host.bbox.x_overlap(&small.bbox) > -host.size * 1.5
+                && !is_another_line(small, host)
         })
         .min_by(|(_, a), (_, b)| {
             let da = (a.baseline - small.baseline).abs();
@@ -310,6 +353,126 @@ fn find_host(lines: &[Line], absorbed: &[bool], candidate: usize) -> Option<usiz
             da.total_cmp(&db)
         })
         .map(|(i, _)| i)
+}
+
+/// Moves an initial capital set into the margin back to the word it opens.
+///
+/// `\IEEEPARstart` and `\lettrine` set the first letter of a paragraph two or three lines deep in
+/// the margin, so its baseline is the *last* of the lines it spans and reading order places it
+/// there: `Conformal antennas...` comes out as `onformal antennas are essential components in
+/// appli-Ccations`. That is worse than losing the letter, because nothing about it looks wrong.
+///
+/// The capital is recognised by the shape the typesetter made, not by its size alone: it is the
+/// leftmost glyph of its line, several times the size of every other glyph on it, and the lines
+/// it rises through are indented to just past its right edge because the paragraph was set to
+/// flow around it. Display type fails the last test — nothing is indented around a title — which
+/// is what keeps section ornaments, figure labels and equation numbers out.
+fn reunite_drop_capitals(page: &PageRaw, lines: &mut [Line]) {
+    let moves: Vec<(usize, usize)> = (0..lines.len())
+        .filter_map(|index| drop_capital_target(page, lines, index).map(|target| (index, target)))
+        .collect();
+
+    for (from, to) in moves {
+        // A line can only give up its capital once, and a line indented around one is not itself
+        // opened by one, so the plan cannot have gone stale — but it costs nothing to check.
+        if from == to || lines[from].glyphs.len() < 2 {
+            continue;
+        }
+        let capital = lines[from].glyphs.remove(0);
+        lines[to].glyphs.insert(
+            0,
+            Placed {
+                script: Script::Normal,
+                // No break before it: the capital and the word it opens are one word.
+                break_before: false,
+                ..capital
+            },
+        );
+        for line in [from, to] {
+            recompute(page, &mut lines[line]);
+            segment_words(page, &mut lines[line]);
+        }
+    }
+}
+
+/// The line whose first word an oversized initial belongs to, if the line at `index` opens with
+/// one at all.
+fn drop_capital_target(page: &PageRaw, lines: &[Line], index: usize) -> Option<usize> {
+    let line = &lines[index];
+    let (first, rest) = line.glyphs.split_first()?;
+    if rest.is_empty() {
+        return None;
+    }
+
+    let capital = &page.glyphs[first.index];
+    let crate::ir::GlyphText::Char(letter) = capital.text else {
+        return None;
+    };
+    if !letter.is_alphabetic() || !letter.is_uppercase() {
+        return None;
+    }
+
+    // Measured against the line's own dominant size, which is the body size: the capital is one
+    // glyph among a line of them and cannot be the dominant size itself.
+    let body = line.size;
+    if body <= 0.0
+        || capital.size < body * DROP_CAP_MIN_SIZE_RATIO
+        || capital.size > body * DROP_CAP_MAX_SIZE_RATIO
+    {
+        return None;
+    }
+
+    // One outsized glyph is a drop capital; two are a line of display type.
+    if rest
+        .iter()
+        .any(|p| page.glyphs[p.index].size > body * DROP_CAP_MIN_SIZE_RATIO)
+    {
+        return None;
+    }
+
+    // The rest of this line is set past the capital rather than running into it.
+    let wrapped = rest
+        .iter()
+        .map(|p| page.glyphs[p.index].bbox.x0)
+        .fold(f32::MAX, f32::min);
+    if wrapped < capital.bbox.x1 - body * DROP_CAP_OVERHANG {
+        return None;
+    }
+
+    // The paragraph's first line is the topmost line the capital rises through that is indented
+    // around it: above this one, starting above the capital's own ascent, set at the same size,
+    // and beginning just past the capital's right edge.
+    lines
+        .iter()
+        .enumerate()
+        .filter(|&(other, candidate)| {
+            other != index
+                && !candidate.is_empty()
+                && (candidate.size - body).abs() <= DROP_CAP_SIZE_SLACK
+                && candidate.baseline < line.baseline
+                && candidate.baseline > capital.bbox.y0
+                && candidate.bbox.x0 >= capital.bbox.x1 - body * DROP_CAP_OVERHANG
+                && candidate.bbox.x0 <= capital.bbox.x1 + body * DROP_CAP_INDENT_SLACK
+        })
+        .min_by(|(_, a), (_, b)| a.baseline.total_cmp(&b.baseline))
+        .map(|(other, _)| other)
+}
+
+/// Whether a small cluster is a line of the page in its own right rather than a script.
+///
+/// Ink boxes are the only thing separating the two, and they are not enough on their own: a page
+/// setting an 8pt bibliography beside a 10pt column has lines of one column that overlap lines of
+/// the other, and the smaller one is inside the size ratio a script is allowed. `medimaging.pdf`
+/// absorbed a whole bibliography line into a line of the appendix that way, and — because the
+/// host already spanned both columns — sorting the result by x zipped two columns together a
+/// character at a time (`AnaEvnig, YM.,e Kd oBgiaonl`).
+///
+/// What distinguishes them is that a script is a *short run near its host's baseline*. Either
+/// property alone is common enough in real maths — a summation's limits are far off the baseline,
+/// a long subscript is a mouthful of glyphs — so both are required before the cluster is refused.
+fn is_another_line(small: &Line, host: &Line) -> bool {
+    let displaced = (small.baseline - host.baseline).abs() > host.size * SCRIPT_MAX_BASELINE_SHIFT;
+    displaced && small.glyphs.len() >= SCRIPT_MAX_DISPLACED_GLYPHS
 }
 
 fn bounds(page: &PageRaw, glyphs: &[usize]) -> Rect {
@@ -698,6 +861,60 @@ mod tests {
         assert_eq!(lines[0].glyphs[1].script, Script::Subscript);
     }
 
+    /// A page that sets an 8pt bibliography beside a 10pt column, as `medimaging.pdf` does.
+    ///
+    /// The two lines are 2.5pt apart, which is inside a 10pt glyph's share of the baseline
+    /// tolerance and outside an 8pt one's. Reading the tolerance off the arriving glyph alone
+    /// merged them into a cluster spanning both columns.
+    #[test]
+    fn a_line_of_a_neighbouring_column_stays_its_own_line() {
+        let mut glyphs = run("entry in the bibliography", 320.0, 130.5, 8.0);
+        glyphs.extend(run("a line of the column beside it", 64.5, 133.0, 10.0));
+        let page = page_of(glyphs);
+
+        let lines = build_lines(&page);
+        assert_eq!(
+            texts(&lines),
+            [
+                "entry in the bibliography",
+                "a line of the column beside it"
+            ],
+            "two columns at two sizes were read as one line"
+        );
+    }
+
+    /// What separates a script from a line of the page: a script is a short run near its host's
+    /// baseline, and needs to be both.
+    #[test]
+    fn a_displaced_run_of_text_is_not_a_script() {
+        let placed = |count: usize| {
+            (0..count)
+                .map(|index| Placed {
+                    index,
+                    script: Script::Normal,
+                    break_before: false,
+                })
+                .collect::<Vec<_>>()
+        };
+        let line = |baseline: f32, size: f32, glyphs: Vec<Placed>| Line {
+            bbox: Rect::from_corners(0.0, baseline - size, 100.0, baseline),
+            baseline,
+            size,
+            bold: false,
+            italic: false,
+            glyphs,
+            words: Vec::new(),
+        };
+        let host = line(100.0, 10.0, placed(40));
+
+        // A whole bibliography line, most of an em off the host's baseline.
+        assert!(is_another_line(&line(93.0, 8.0, placed(56)), &host));
+        // A superscript is as far off the baseline as TeX puts one, and is three glyphs.
+        assert!(!is_another_line(&line(95.5, 7.0, placed(3)), &host));
+        // A mouthful of a subscript is long, but it sits where a subscript sits.
+        assert!(!is_another_line(&line(102.0, 7.0, placed(30)), &host));
+    }
+
     #[test]
     fn a_small_line_far_below_is_not_a_script() {
         // A footnote in 7pt, well clear of the body line: its own line.
@@ -744,6 +961,72 @@ mod tests {
         assert_eq!(split[0].text(), "left");
         assert_eq!(split[1].text(), "right");
         assert!(split[0].bbox.x1 < split[1].bbox.x0);
+    }
+
+    /// Lays out `\IEEEPARstart`: an initial two lines deep in the margin, the two lines it rises
+    /// through indented past it, and the paragraph then running to the full measure.
+    fn drop_capital_paragraph(initial: char) -> Vec<Glyph> {
+        // The initial's baseline is the *second* line's, which is why reading order puts it there.
+        let mut glyphs = vec![glyph(initial, 49.0, 112.0, 20.0)];
+        glyphs.extend(run("onformal antennas are", 71.0, 100.0, 10.0));
+        glyphs.extend(run("essential where a surface", 71.0, 112.0, 10.0));
+        glyphs.extend(run("curves away.", 49.0, 124.0, 10.0));
+        glyphs
+    }
+
+    fn texts(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(Line::text).collect()
+    }
+
+    #[test]
+    fn a_drop_capital_opens_the_word_it_belongs_to() {
+        let page = page_of(drop_capital_paragraph('C'));
+        let lines = build_lines(&page);
+
+        assert_eq!(lines.len(), 3, "the capital must not stand as its own line");
+        assert_eq!(
+            texts(&lines),
+            [
+                "Conformal antennas are",
+                "essential where a surface",
+                "curves away."
+            ]
+        );
+        assert_eq!(
+            lines[0].size, 10.0,
+            "the capital must not become the line's size"
+        );
+        assert_eq!(lines[0].baseline, 100.0, "nor drag its baseline");
+    }
+
+    /// The capital is recognised by the paragraph set around it. Without the indent it is
+    /// display type — a section ornament, a figure label — and stays where it was found.
+    #[test]
+    fn an_initial_with_nothing_set_around_it_is_left_alone() {
+        let mut glyphs = vec![glyph('C', 49.0, 112.0, 20.0)];
+        // Both lines at the full measure: nothing is wrapped around the capital.
+        glyphs.extend(run("onformal antennas are", 49.0, 100.0, 10.0));
+        glyphs.extend(run("essential where a surface", 49.0, 112.0, 10.0));
+        let page = page_of(glyphs);
+
+        let lines = build_lines(&page);
+        assert!(
+            !texts(&lines).iter().any(|t| t.starts_with("Conformal")),
+            "an unwrapped initial was moved: {:?}",
+            texts(&lines)
+        );
+    }
+
+    /// A digit is an equation number or a figure label, never the first letter of a word.
+    #[test]
+    fn an_oversized_digit_is_not_a_drop_capital() {
+        let page = page_of(drop_capital_paragraph('2'));
+        let lines = build_lines(&page);
+        assert_eq!(
+            texts(&lines)[0],
+            "onformal antennas are",
+            "a digit was treated as a drop capital"
+        );
     }
 
     #[test]

@@ -28,6 +28,10 @@ const HEADING_MAX_WORDS: usize = 14;
 /// Longest plausible component of a section number, in characters.
 const MAX_NUMBERING_COMPONENT: usize = 3;
 
+/// Highest section a Roman numeral label is believed to reach. `XXXIX` is already absurd for a
+/// paper; the point of the ceiling is that beyond it the letters are an abbreviation.
+const MAX_ROMAN_SECTION: u32 = 39;
+
 /// Deepest plausible section numbering, as in `A.3.2.1`.
 const MAX_NUMBERING_DEPTH: usize = 4;
 
@@ -483,13 +487,14 @@ fn numbered_heading(text: &str) -> bool {
         return false;
     }
 
-    // A lettered component is a single capital — appendices run `A`, `B`, `C`. Allowing longer
-    // runs of capitals made every word of a title set in caps look like a label, so
+    // A lettered component is a single capital — appendices run `A`, `B`, `C` — or a Roman
+    // numeral, which is how IEEEtran and REVTeX number their sections. Allowing any longer run
+    // of capitals made every word of a title set in caps look like a label, so
     // `ON DIOPHANTINE SETS...` parsed as section `ON`.
     let plausible = components.iter().all(|part| {
         !part.is_empty()
             && ((part.len() <= MAX_NUMBERING_COMPONENT && part.chars().all(|c| c.is_ascii_digit()))
-                || (part.len() == 1 && part.chars().all(|c| c.is_ascii_uppercase())))
+                || is_alphabetic_label(part))
     });
     if !plausible {
         return false;
@@ -497,9 +502,7 @@ fn numbered_heading(text: &str) -> bool {
 
     // A lettered label must carry its full stop. Appendices are written `A.` or `A.1`, never a
     // bare `A` — and a bare one would make every title beginning `A ...` a numbered heading.
-    let lettered = components
-        .iter()
-        .any(|p| p.chars().all(|c| c.is_ascii_uppercase()));
+    let lettered = components.iter().any(|p| is_alphabetic_label(p));
     if lettered && !head.contains('.') {
         return false;
     }
@@ -510,6 +513,64 @@ fn numbered_heading(text: &str) -> bool {
         .chars()
         .next()
         .is_some_and(|c| c.is_alphabetic())
+}
+
+/// A section label written in letters: an appendix's single capital, or a Roman numeral.
+fn is_alphabetic_label(part: &str) -> bool {
+    (part.len() == 1 && part.chars().all(|c| c.is_ascii_uppercase())) || is_roman_numeral(part)
+}
+
+/// Whether `part` is a Roman numeral as a typesetter would write it.
+///
+/// Only `I`, `V` and `X` are read, and only up to [`MAX_ROMAN_SECTION`]. Admitting `C`, `D`, `L`
+/// and `M` as well would make abbreviations and initials — `MD`, `DC`, `CL` — into section
+/// labels, and no paper needs the range they buy.
+///
+/// The round trip through [`to_roman`] is what rejects `IIII`, `VV` and `IXI`: a section number
+/// is written canonically, and accepting every arrangement of the letters widens the net for
+/// nothing.
+fn is_roman_numeral(part: &str) -> bool {
+    if part.len() < 2 {
+        return false;
+    }
+    roman_value(part).is_some_and(|value| value <= MAX_ROMAN_SECTION && to_roman(value) == part)
+}
+
+/// Value of a Roman numeral written with `I`, `V` and `X`, applying the subtractive rule.
+fn roman_value(text: &str) -> Option<u32> {
+    let digits: Option<Vec<i64>> = text
+        .chars()
+        .map(|c| match c {
+            'I' => Some(1),
+            'V' => Some(5),
+            'X' => Some(10),
+            _ => None,
+        })
+        .collect();
+    let digits = digits?;
+
+    let mut total: i64 = 0;
+    for (i, &digit) in digits.iter().enumerate() {
+        match digits[i + 1..].iter().copied().max() {
+            // A digit smaller than one that follows it is subtracted: `IX` is nine.
+            Some(next) if next > digit => total -= digit,
+            _ => total += digit,
+        }
+    }
+    (total > 0).then_some(total as u32)
+}
+
+/// The canonical Roman numeral for a value within [`MAX_ROMAN_SECTION`].
+fn to_roman(mut value: u32) -> String {
+    const PLACES: [(u32, &str); 5] = [(10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I")];
+    let mut out = String::new();
+    for (amount, numeral) in PLACES {
+        while value >= amount {
+            out.push_str(numeral);
+            value -= amount;
+        }
+    }
+    out
 }
 
 /// Merges stranded fragments back into the block above them.
@@ -945,6 +1006,42 @@ mod tests {
         assert!(numbered_heading("A.1 Proofs"));
         assert!(numbered_heading("B. Further results"));
         assert!(!numbered_heading("However the result holds"));
+    }
+
+    /// IEEEtran and REVTeX number their sections with Roman numerals, and set them at body size
+    /// in the body face, so the numeral is the only evidence there is.
+    #[test]
+    fn roman_numeral_sections_are_numbering() {
+        assert!(numbered_heading("II. THEORY"));
+        assert!(numbered_heading("III. DESIGN OF A CONFORMAL ANTENNA"));
+        assert!(numbered_heading("IV. Conclusion"));
+        assert!(numbered_heading("IX. Further work"));
+        assert!(numbered_heading("XII. Appendix"));
+        assert_eq!(numbering_depth("II. THEORY"), Some(1));
+    }
+
+    /// A Roman numeral is a label only where a typesetter would have written one.
+    #[test]
+    fn only_canonical_roman_numerals_label_a_section() {
+        // Not canonical: no typesetter numbers a section `IIII`.
+        assert!(!numbered_heading("IIII. Something"));
+        assert!(!numbered_heading("VV. Something"));
+        assert!(!numbered_heading("IXI. Something"));
+        // `C`, `D`, `L` and `M` are not read, so abbreviations and initials stay out.
+        assert!(!numbered_heading("MD. Anderson and others"));
+        assert!(!numbered_heading("DC. Motor design"));
+        // A numeral without its full stop is a word: `VI` opens nothing on its own.
+        assert!(!numbered_heading("VI Introduction is not a label"));
+        // Beyond any plausible section count, the letters are an abbreviation.
+        assert!(!numbered_heading("XXXXX. Something"));
+    }
+
+    #[test]
+    fn roman_numerals_round_trip() {
+        for (value, numeral) in [(2, "II"), (4, "IV"), (9, "IX"), (14, "XIV"), (39, "XXXIX")] {
+            assert_eq!(to_roman(value), numeral);
+            assert_eq!(roman_value(numeral), Some(value));
+        }
     }
 
     /// Capitalised words are not section labels, however short.

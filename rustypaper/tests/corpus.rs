@@ -999,39 +999,40 @@ fn single_line_titles_are_exact_in_publisher_templates() {
 
 /// IEEEtran numbers its sections with Roman numerals and sets them in capitals.
 ///
-/// **Known gap.** Only the first of them is classified as a heading. `II. THEORY`,
-/// `III. DESIGN...` and `IV. CONCLUSION` are set at body size in the same face as the running
-/// text, so heading detection has nothing but the numeral to go on and misses them; the text
-/// still reaches the output, as an ordinary block. That is the honest state and it is what this
-/// asserts — a reader of the Markdown can find the section, an outline of it cannot.
+/// They are set at body size in the body face, so the numeral is the only evidence there is, and
+/// only `I.` used to be read — a single capital carrying its full stop is the appendix label the
+/// numbering rule already knew. `II.` onwards were nothing to it, and `II. THEORY` sitting at the
+/// foot of a column was classified as a *footnote*. `doc::numbered_heading` now reads a Roman
+/// numeral written the way a typesetter writes one.
 #[test]
-fn ieee_roman_numeral_headings_are_only_partly_found() {
+fn ieee_roman_numeral_headings_are_found() {
     let path = paper!("metasurface.pdf");
     let doc = rustypaper::convert(&path).expect("conversion failed");
-    let md = rustypaper::emit::markdown::render(&doc);
 
-    assert!(
-        has_heading(&doc, "I. INTRODUCTION"),
-        "the one Roman heading that is found: {:?}",
-        heading_texts(&doc)
-    );
-    for section in ["II. THEORY", "IV. CONCLUSION"] {
-        assert!(md.contains(section), "{section} vanished entirely");
-        // assert!(has_heading(&doc, section));
+    for section in [
+        "I. INTRODUCTION",
+        "II. THEORY",
+        "III. DESIGN OF CYLINDRICAL CONFORMAL METASURFACE ANTENNA",
+        "IV. CONCLUSION",
+    ] {
+        assert!(
+            has_heading(&doc, section),
+            "metasurface.pdf: no heading {section:?} among {:?}",
+            heading_texts(&doc)
+        );
     }
 }
 
 /// A drop capital belongs to the word it opens.
 ///
-/// IEEEtran's `\IEEEPARstart` sets the first letter of the introduction three lines deep in the
+/// IEEEtran's `\IEEEPARstart` sets the first letter of the introduction two lines deep in the
 /// margin of the paragraph. Geometrically it is not on the first line at all, so reading order
-/// places it where it sits — and the rest of the word is left headless.
+/// used to place it where it sits: `Conformal antennas are essential...` came out as `onformal
+/// antennas are essential components in appli-Ccations`, the capital inserted into a word forty
+/// characters later. That was worse than losing it, because nothing about it looked wrong.
 ///
-/// **Known gap.** `Conformal antennas are essential...` comes out as `onformal antennas are
-/// essential components in appli-Ccations`: the capital is not lost, it is inserted into a word
-/// forty characters later. What is asserted here is the part that holds either way — the
-/// sentence itself survives — so this test does not have to be rewritten when the drop cap is
-/// reunited with its word.
+/// `text::lines` now recognises the shape the typesetter made — one outsized initial at the left
+/// edge, with the lines it rises through indented past it — and puts the letter back.
 #[test]
 fn a_drop_capital_does_not_take_its_paragraph_with_it() {
     let path = paper!("metasurface.pdf");
@@ -1039,11 +1040,21 @@ fn a_drop_capital_does_not_take_its_paragraph_with_it() {
     let md = rustypaper::emit::markdown::render(&doc);
 
     assert!(
-        md.contains("onformal antennas are essential components"),
-        "the opening sentence of the introduction did not survive"
+        md.contains("Conformal antennas are essential components"),
+        "the drop capital did not rejoin the word it opens"
     );
-    // assert!(md.contains("Conformal antennas are essential components"));
-    // assert!(!md.contains("appli-Ccations"));
+    assert!(
+        !md.contains("appli-Ccations"),
+        "the capital is still lodged in a word forty characters later"
+    );
+
+    // The same shape in another IEEEtran paper: `ELECTROMAGNETIC (EM) metasurfaces...`.
+    let path = paper!("optics.pdf");
+    let md = rustypaper::emit::markdown::render(&rustypaper::convert(&path).unwrap());
+    assert!(
+        md.contains("ELECTROMAGNETIC (EM) metasurfaces have"),
+        "optics.pdf lost the initial of its opening word"
+    );
 }
 
 /// acmart's numbered, capitalised sections are found, and they run in order.
@@ -1096,16 +1107,17 @@ fn acm_sections_are_found_and_ordered() {
 
 /// REVTeX sets Roman-numeral sections in capitals, and lettered subsections under them.
 ///
-/// **Known gap.** `I. INTRODUCTION` is not among them. The Colloquium opens with a two-column
-/// table of contents that the introduction starts underneath, and the two interleave line by
-/// line, so the introduction's own heading is swallowed into that run. Everything from section
-/// II onwards is clean.
+/// `I. INTRODUCTION` used to be missing: the Colloquium opens with a two-column table of contents
+/// that the introduction starts underneath, set two points smaller, and a line of one ran into a
+/// line of the other. Judging a baseline's reach at the smaller of the two sizes involved keeps
+/// them apart, and the heading comes out on its own.
 #[test]
 fn revtex_roman_numeral_headings_are_found() {
     let path = paper!("topological.pdf");
     let doc = rustypaper::convert(&path).expect("conversion failed");
 
     for section in [
+        "I. INTRODUCTION",
         "II. TOPOLOGICAL BAND THEORY",
         "III. QUANTUM SPIN HALL INSULATOR",
         "IV. 3D TOPOLOGICAL INSULATORS",
@@ -1119,20 +1131,19 @@ fn revtex_roman_numeral_headings_are_found() {
             heading_texts(&doc)
         );
     }
-    // assert!(has_heading(&doc, "I. INTRODUCTION"));
 }
 
 /// Elsevier, Springer and JMLR section headings.
 ///
-/// **Known gaps**, all of the same shape — a heading that shares a line with the text that
-/// follows it, or that a column boundary has run into the paragraph above:
+/// The two gaps recorded here were the same one: a heading that a column boundary had run into
+/// the paragraph above it, because a line of the neighbouring column at another size was taken
+/// into the same baseline cluster. `medimaging.pdf` missed `1. Introduction` and
+/// `4. Anatomical application areas`; `imagenet.pdf` had `1 Introduction` fused onto the end of
+/// an author line as `J. Deng*1 Introduction`. Both are clean now.
 ///
-/// - `medimaging.pdf` (elsarticle) finds 2, 3 and 5 but not 1, 4 or 6.
-/// - `imagenet.pdf` (svjour3) finds 2, 3, 4, 5 and 7; `1 Introduction` is fused onto the end of
-///   an author line as `J. Deng*1 Introduction`.
-/// - `sklearn.pdf` (JMLR) finds all six of its sections, and additionally promotes the running
-///   head `Scikit-learn: Machine Learning in Python` to a heading twice — page furniture that
-///   should have been dropped.
+/// **Known gap.** `sklearn.pdf` (JMLR) finds all six of its sections, and additionally promotes
+/// the running head `Scikit-learn: Machine Learning in Python` to a heading twice — page
+/// furniture that should have been dropped before assembly ever saw it.
 #[test]
 fn elsevier_springer_and_jmlr_sections_are_found() {
     let cases: [(&str, &[&str]); 3] = [
@@ -1140,9 +1151,11 @@ fn elsevier_springer_and_jmlr_sections_are_found() {
             "medimaging.pdf",
             &[
                 "Abstract",
+                "1. Introduction",
                 "2. Overview of deep learning methods",
                 "2.1. Learning algorithms",
                 "3. Deep Learning Uses in Medical Imaging",
+                "4. Anatomical application areas",
                 "5. Discussion",
                 "References",
             ],
@@ -1150,6 +1163,7 @@ fn elsevier_springer_and_jmlr_sections_are_found() {
         (
             "imagenet.pdf",
             &[
+                "1 Introduction",
                 "2 Challenge tasks",
                 "3 Dataset construction at large scale",
                 "3.1 Image classification dataset construction",
