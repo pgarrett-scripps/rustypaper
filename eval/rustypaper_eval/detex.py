@@ -32,6 +32,12 @@ DROPPED_WITH_ARGUMENT = (
 )
 
 _COMMENT = re.compile(r"(?<!\\)%.*?$", re.MULTILINE)
+# A macro defined with an empty body discards its argument, so the reference must discard it
+# too: pinsage wraps a third of its prose in `\cut{...}`, none of which the PDF prints, and
+# scoring against it made the best-converted paper in the corpus read as the worst.
+_DISCARD_DEF = re.compile(
+    r"\\(?:re)?newcommand\*?\s*\{?\\([a-zA-Z@]+)\}?\s*\[[0-9]\]\s*\{\s*\}"
+)
 _DROPPED_ENV = re.compile(
     r"\\begin\{(" + "|".join(re.escape(e) for e in DROPPED_ENVIRONMENTS) + r")\}"
     r".*?\\end\{\1\}",
@@ -48,9 +54,47 @@ _ESCAPED = re.compile(r"\\([%&_#${}])")
 _ACCENT = re.compile(r'\\[\'"`^~=.]\{?([a-zA-Z])\}?')
 
 
+def _drop_balanced(text: str, name: str) -> str:
+    """Remove every ``\\name{...}`` with its full brace-balanced argument."""
+    needle = "\\" + name
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        j = text.find(needle, i)
+        if j < 0:
+            out.append(text[i:])
+            break
+        k = j + len(needle)
+        if k < n and (text[k].isalpha() or text[k] == "@"):
+            # A longer macro name that merely starts with this one.
+            out.append(text[i:k])
+            i = k
+            continue
+        out.append(text[i:j])
+        while k < n and text[k].isspace():
+            k += 1
+        if k < n and text[k] == "{":
+            depth = 0
+            while k < n:
+                if text[k] == "{":
+                    depth += 1
+                elif text[k] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        k += 1
+                        break
+                k += 1
+        out.append(" ")
+        i = k
+    return "".join(out)
+
+
 def strip(source: str) -> str:
     """Reduce LaTeX source to prose words."""
     text = source
+
+    # Discard-macro definitions live in the preamble, so read them before it goes.
+    discards = set(_DISCARD_DEF.findall(_COMMENT.sub("", text)))
 
     # Preamble carries no prose; keep only the body when there is one.
     body = re.search(r"\\begin\{document\}(.*?)\\end\{document\}", text, re.DOTALL)
@@ -58,6 +102,8 @@ def strip(source: str) -> str:
         text = body.group(1)
 
     text = _COMMENT.sub("", text)
+    for name in discards:
+        text = _drop_balanced(text, name)
     # Repeat: environments nest, and one pass only removes the outermost match.
     for _ in range(4):
         reduced = _DROPPED_ENV.sub(" ", text)

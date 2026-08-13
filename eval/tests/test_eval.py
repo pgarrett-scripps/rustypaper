@@ -40,6 +40,29 @@ class TestDetex(unittest.TestCase):
     def test_accents_reduce_to_their_letter(self):
         self.assertIn("Muller", detex.strip(r"\begin{document}M\"{u}ller\end{document}"))
 
+    def test_a_discard_macro_discards_its_argument(self):
+        source = r"""
+        \documentclass{article}
+        \newcommand{\cut}[1]{}
+        \begin{document}
+        Kept prose. \cut{Dropped words with {nested \emph{braces}} inside.} More kept.
+        A \cutting edge remains, since that is a different macro.
+        \end{document}
+        """
+        text = detex.strip(source)
+        self.assertIn("Kept prose", text)
+        self.assertIn("More kept", text)
+        self.assertIn("edge remains", text)
+        for absent in ["Dropped", "nested", "braces", "inside"]:
+            self.assertNotIn(absent, text, f"{absent!r} survived")
+
+    def test_a_macro_with_a_body_is_not_a_discard(self):
+        source = (
+            r"\newcommand{\keepit}[1]{#1}"
+            r"\begin{document}\keepit{Visible words.}\end{document}"
+        )
+        self.assertIn("Visible words", detex.strip(source))
+
     def test_main_source_is_the_one_with_a_document(self):
         files = {
             "macros.tex": r"\newcommand{\x}{y}",

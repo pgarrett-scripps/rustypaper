@@ -40,9 +40,10 @@ Current, over the fifteen scorable papers:
 Maths and tables are the project's weak point, and the honest place to work next. The corpus
 converts in 1.4 s and 66 MB of resident memory.
 
-`pinsage.pdf` scores 0.670 and is *not* the worst-converted paper in the corpus: a third of its
-arXiv source sits inside `\cut{...}`, which discards it, so the reference holds prose the PDF
-never printed. Against what the PDF prints it scores 0.920. Fix `detex` before reading that row.
+A reference can lie: a third of pinsage's arXiv source sat inside `\cut{...}`, a macro defined
+to discard its argument, so the paper scored 0.664 against prose its PDF never printed. `detex`
+now drops the argument of any empty-bodied macro the preamble defines. When a paper's score
+makes no sense, suspect the reference before the converter.
 
 ## Rules that have earned their place
 
