@@ -551,9 +551,9 @@ dependencies = [
 
 [[package]]
 name = "rustium-pdf"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d83a8fe91ad1fdf2aecf5201f32614462fea77586689338fec260d484d25928"
+checksum = "d6d84ef6203a57c8dd3762adbbe3c74e0f18f73feb58273166338aa79a9dd051"
 dependencies = [
  "aes",
  "cbc",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "rustypaper"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "rustypaper-py"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "pyo3",
  "rustypaper",

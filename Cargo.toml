@@ -3,21 +3,21 @@ resolver = "2"
 members = ["rustypaper", "rustypaper-py"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/pgarrett-scripps/rustypaper"
 
 [workspace.dependencies]
-rustypaper = { path = "rustypaper", version = "0.1.0" }
+rustypaper = { path = "rustypaper", version = "0.2.0" }
 # The pure-Rust PDF backend, from the registry. Deliberately not a path dependency: a path
 # only resolves where the sibling checkout happens to exist, which is this machine and not a
 # CI runner, and `cargo fmt --all` walks into it whether it is there or not. To develop the
 # two together, add a temporary override rather than committing one:
 #     [patch.crates-io]
 #     rustium-pdf = { path = "../rustium-pdf" }
-rustium = { package = "rustium-pdf", version = "0.1.0" }
+rustium = { package = "rustium-pdf", version = "0.1.1" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

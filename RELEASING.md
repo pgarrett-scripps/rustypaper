@@ -3,13 +3,14 @@
 One project, one version, one tag. Pushing `vX.Y.Z` publishes the crate to
 crates.io and the wheels to PyPI, both named `rustypaper`.
 
-Published so far: `rustypaper` 0.1.0 and 0.1.1 on crates.io, 0.1.1 on PyPI as
-five platform wheels and an sdist. `rustium-pdf` 0.1.0 on crates.io.
+Published so far: `rustypaper` 0.1.0, 0.1.1 and 0.2.0 on crates.io, 0.1.1 and
+0.2.0 on PyPI as five platform wheels and an sdist. `rustium-pdf` 0.1.0 and
+0.1.1 on crates.io.
 
 ## Order matters
 
 `rustium-pdf` goes first. rustypaper resolves it from the registry as
-`version = "0.1.0"`, so `cargo publish` fails outright if that version is not
+`version = "0.1.1"`, so `cargo publish` fails outright if that version is not
 on the index yet. Nothing here resolves it by path — a `[patch.crates-io]`
 override during development must not be committed, or the publish will carry
 a dependency the registry cannot see.
