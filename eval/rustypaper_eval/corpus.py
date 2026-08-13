@@ -34,6 +34,15 @@ PAPERS: dict[str, str] = {
     # Older submissions, built by older toolchains.
     "1505.04597v1": "unet.pdf",
     "1406.2661v1": "gan.pdf",
+    # Publisher journal templates, which decorate a page in ways no conference style does:
+    # Roman-numeral section numbers, drop capitals, and two-column measures set by a publisher
+    # rather than by a call for papers.
+    "2109.09450v1": "metasurface.pdf",
+    "1806.01973v1": "pinsage.pdf",
+    "1002.3895v2": "topological.pdf",
+    "1702.05747v2": "medimaging.pdf",
+    "1409.0575v3": "imagenet.pdf",
+    "1201.0490v4": "sklearn.pdf",
 }
 
 

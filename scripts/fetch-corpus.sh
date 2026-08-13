@@ -30,6 +30,17 @@ PAPERS=(
   # Older submissions, built by older toolchains.
   "1505.04597v1|unet.pdf|Springer LNCS class, single column"
   "1406.2661v1|gan.pdf|2014 NeurIPS template, algorithm blocks"
+
+  # Publisher templates. arXiv preprints skew towards conference styles; the papers a reader
+  # actually hands a converter are as often typeset in a journal class, and each of these has a
+  # heading convention, a column geometry or a first-paragraph decoration that the conference
+  # templates above never exercise.
+  "2109.09450v1|metasurface.pdf|IEEEtran: two column, Roman-numeral headings, \IEEEPARstart drop cap"
+  "1806.01973v1|pinsage.pdf|acmart sigconf: two column, ACM heading style, wide result tables"
+  "1002.3895v2|topological.pdf|REVTeX (Rev. Mod. Phys.): two column, dense inline maths, long bibliography"
+  "1702.05747v2|medimaging.pdf|elsarticle: two column Elsevier, medical prose, many long tables"
+  "1409.0575v3|imagenet.pdf|svjour3: two column Springer journal, mixed-width floats"
+  "1201.0490v4|sklearn.pdf|JMLR (jmlr2e): single column, wide measure, running heads"
 )
 
 for entry in "${PAPERS[@]}"; do

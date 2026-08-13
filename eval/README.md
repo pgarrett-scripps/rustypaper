@@ -17,19 +17,29 @@ converter=extension  scorer=difflib
 paper             bigram  cover   eq  eq rec  eq fid   tables    sec
 ------------------------------------------------------------------------
 bert.pdf           0.874  0.920    6   0.000   0.000      6/8   0.12
-biology.pdf        0.915  0.963   57   0.035   0.570      3/4   0.34
+biology.pdf        0.915  0.963   57   0.053   0.553      8/4   0.35
 gan.pdf            0.882  0.961   14   0.500   0.712      1/4   0.07
-numbertheory.pdf   0.878  0.987  103   0.728   0.824      1/0   0.12
-optics.pdf         0.855  0.934  215   0.205   0.729      1/0   0.14
-resnet.pdf         0.909  0.968    2   1.000   0.618     8/17   0.10
-statistics.pdf     0.912  0.952   18   0.444   0.623      0/2   0.11
+imagenet.pdf       0.828  0.911    7   0.429   0.607    10/26   0.33
+medimaging.pdf     0.911  0.940   11   0.091   0.897     7/11   0.31
+metasurface.pdf    0.928  0.987   23   0.217   0.624      1/0   0.08
+numbertheory.pdf   0.878  0.987  103   0.728   0.824      0/0   0.13
+optics.pdf         0.855  0.934  215   0.205   0.729      0/0   0.15
+pinsage.pdf        0.664  0.839    2   0.000   0.000      2/6   0.15
+resnet.pdf         0.909  0.968    2   1.000   0.618    10/17   0.11
+sklearn.pdf        0.938  0.969    0   0.000   0.000      0/1   0.04
+statistics.pdf     0.912  0.952   18   0.444   0.623      1/2   0.12
+topological.pdf    0.881  0.902   21   0.619   0.789      2/2   0.30
 transformer.pdf    0.852  0.921   19   0.421   0.851      4/7   0.28
 unet.pdf           0.939  0.982    2   0.000   0.000      2/2   0.04
 ------------------------------------------------------------------------
-mean               0.891               0.370   0.547
+mean               0.878               0.336   0.559
 
-  skipped adam.pdf: arXiv source carries no LaTeX prose (converted to 5388 words, 230 blocks)
+  skipped adam.pdf: arXiv source carries no LaTeX prose (converted to 5539 words, 219 blocks)
 ```
+
+The two worst rows are the two most recently added, which is the corpus doing its job: `pinsage.pdf`
+loses two of ten pages to columns that interleave where a display equation overhangs the gutter,
+and `imagenet.pdf` loses its bibliography pages the same way.
 
 ## Where the ground truth comes from
 
@@ -39,8 +49,8 @@ the PDF was rendered *from* is available without hand annotation.
 **This is not every paper.** arXiv requires source only when a submission was prepared in TeX; a
 PDF produced by Word, or by a tool the author did not submit source for, is accepted as a PDF.
 Some authors also route a finished PDF through the TeX path by wrapping it in a one-line
-`\includepdf` document, which yields an archive with no prose in it. `adam.pdf` — one of the ten
-papers in this corpus, and the only one without usable source — is exactly that case.
+`\includepdf` document, which yields an archive with no prose in it. `adam.pdf` — one of the
+sixteen papers in this corpus, and the only one without usable source — is exactly that case.
 
 So the harness treats ground truth as *available for some papers*, not all: anything with fewer
 than `MIN_REFERENCE_WORDS` of reference prose is reported as skipped rather than scored. Growing
@@ -71,8 +81,8 @@ show; an absolute number means little.
   source has, and the means are taken over the papers that have any.
 - **tables** — table blocks emitted against `\begin{tabular}` environments in the source. A count,
   not a match: it says nothing about whether the right cells ended up in the right places, only
-  whether roughly the right number of tables was found. Two papers score `1/0`, which is
-  over-detection, and one scores `8/17`.
+  whether roughly the right number of tables was found. `metasurface.pdf` scores `1/0` and
+  `biology.pdf` `8/4`, both of which are over-detection; `imagenet.pdf` scores `10/26`.
 
 ## Regression checking
 

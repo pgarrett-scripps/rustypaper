@@ -7,7 +7,7 @@ Notes for AI coding agents. Human-facing docs are `README.md` (what it does), `d
 ## Build and test
 
 ```sh
-scripts/fetch-corpus.sh    # 10 arXiv PDFs, not committed; corpus tests skip without it
+scripts/fetch-corpus.sh    # 16 arXiv PDFs, not committed; corpus tests skip without it
 scripts/build.sh           # cargo build --release AND install the Python extension
 cargo test --release
 python3 -m unittest discover -s eval/tests
@@ -45,9 +45,11 @@ converts in 2.1 s and 64 MB of resident memory.
 - **Edit code with the Edit tool, never a scripted string replace.** `cargo fmt` reflows code,
   and an exact-match replace then fails *silently*. This cost three separate debugging sessions.
 - **Never commit with failing tests.** It happened twice; both had to be unpicked.
-- **The corpus is the specification.** Ten papers across six template families. A converter tuned
-  on one family passes its own tests and fails on everything else — see the findings section of
-  `docs/ARCHITECTURE.md` for four real bugs that only appeared when the corpus widened.
+- **The corpus is the specification.** Sixteen papers across ten template families, six of them
+  publisher journal classes (IEEEtran, acmart, REVTeX, elsarticle, svjour3, JMLR). A converter
+  tuned on one family passes its own tests and fails on everything else — see the two findings
+  sections of `docs/ARCHITECTURE.md` for the bugs that only appeared when the corpus widened, and
+  for the four still open that the publisher templates found.
 - **Prefer an absent field to a wrong one.** Reference parsing omits authors it cannot parse;
   maths falls back to a rendered crop rather than emitting confident-looking wrong LaTeX.
 - **Check which extension Python actually imported**, with `rustypaper._rustypaper.__file__`. The
