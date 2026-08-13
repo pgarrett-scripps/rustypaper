@@ -82,9 +82,15 @@ show; an absolute number means little.
 cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
 ```
 
-Exits non-zero if any paper's bigram recall drops by more than 0.005; smaller movements are
-noise. Only bigram recall is checked. Refresh the baseline deliberately, with
+Exits non-zero, naming the paper and the metric, if any paper's bigram recall, equation recall
+or equation fidelity drops by more than 0.005 — smaller movements are noise — or if the number
+of tables it found drops at all, that being a count rather than a score. A paper the baseline
+scored and this run does not, because it stopped converting or lost its ground truth, also
+fails: the gate reads the baseline's list of papers, not only this run's. A metric an older
+baseline does not record is skipped rather than failed. Refresh the baseline deliberately, with
 `--json > baseline.json`, when a change is an intended improvement.
+
+A `--only` run does not check for missing papers, since it deliberately converts a subset.
 
 `baseline.json` is pinned against what a plain `scripts/build.sh` produces, which is what CI
 runs.

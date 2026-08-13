@@ -26,8 +26,10 @@ Quality is a number here, and every change to a pass should be justified by it:
 cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
 ```
 
-Exits non-zero if any paper regresses by more than 0.005. Refresh `baseline.json` deliberately,
-with `--json > baseline.json`, only when a change is an intended improvement.
+Exits non-zero if any paper regresses by more than 0.005 in bigram recall, equation recall or
+equation fidelity, if it finds fewer tables, or if a paper the baseline scored is missing or no
+longer scorable. Refresh `baseline.json` deliberately, with `--json > baseline.json`, only when a
+change is an intended improvement.
 
 Current, over the nine scorable papers:
 

@@ -23,7 +23,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--baseline",
         type=Path,
-        help="a previous --json report; fail if any paper regresses against it",
+        help="a previous --json report; fail if any paper regresses against it in bigram "
+        "recall, equation recall or equation fidelity (by more than 0.005), loses tables, "
+        "or stops being scored at all",
     )
     args = parser.parse_args(argv)
 
@@ -88,7 +90,11 @@ def main(argv: list[str] | None = None) -> int:
         _print_table(report)
 
     if args.baseline:
-        return _check_regressions(report, json.loads(args.baseline.read_text()))
+        return _check_regressions(
+            report,
+            json.loads(args.baseline.read_text()),
+            check_missing=args.only is None,
+        )
     return 0
 
 
@@ -125,26 +131,71 @@ def _print_table(report: dict) -> None:
               f"{sum(row['blocks'].values())} blocks)")
 
 
-def _check_regressions(report: dict, baseline: dict, tolerance: float = 0.005) -> int:
-    """Compare against a stored report. Small movements are noise, not regressions."""
+# The per-paper scores the baseline gate holds, and how they print. Movements smaller than the
+# tolerance are noise. A metric the baseline does not carry is skipped rather than treated as
+# zero, so an older baseline still checks whatever it does record.
+GATED_SCORES = (
+    ("bigram_recall", "bigram"),
+    ("equation_recall", "eq recall"),
+    ("equation_fidelity", "eq fid"),
+)
+
+
+def _check_regressions(
+    report: dict, baseline: dict, tolerance: float = 0.005, check_missing: bool = True
+) -> int:
+    """Compare against a stored report. Small movements are noise, not regressions.
+
+    Fails on three kinds of loss: a scored paper's bigram recall, equation recall or equation
+    fidelity dropping by more than `tolerance`; the number of tables it found dropping at all;
+    and a paper the baseline scored no longer being scored — it stopped converting, or lost its
+    ground truth. That last one was the hole: iterating the new report alone means a paper that
+    vanished is a paper nobody checks, and a crash reads as a clean run. `check_missing` is off
+    for a `--only` run, which never claims to cover the rest of the corpus.
+    """
     failed = False
-    for name, row in sorted(report["papers"].items()):
-        before = baseline.get("papers", {}).get(name)
+    scored = report.get("papers", {})
+    unscorable = report.get("unscorable", {})
+    was_scored = baseline.get("papers", {})
+
+    if check_missing:
+        for name in sorted(was_scored):
+            if name in scored:
+                continue
+            if name in unscorable:
+                reason = unscorable[name].get("reason", "no reason given")
+                print(f"  REGRESS {name}: was scored, now unscorable ({reason})")
+            else:
+                print(f"  REGRESS {name}: in the baseline, absent from this run")
+            failed = True
+
+    for name, row in sorted(scored.items()):
+        before = was_scored.get(name)
         if before is None:
             print(f"  new     {name}")
             continue
-        delta = row["bigram_recall"] - before["bigram_recall"]
-        if delta < -tolerance:
-            print(
-                f"  REGRESS {name}: "
-                f"{before['bigram_recall']:.3f} -> {row['bigram_recall']:.3f}"
-            )
-            failed = True
-        elif delta > tolerance:
-            print(
-                f"  improve {name}: "
-                f"{before['bigram_recall']:.3f} -> {row['bigram_recall']:.3f}"
-            )
+        for field, label in GATED_SCORES:
+            if field not in before or field not in row:
+                continue
+            delta = row[field] - before[field]
+            if delta < -tolerance:
+                print(f"  REGRESS {name} {label}: {before[field]:.3f} -> {row[field]:.3f}")
+                failed = True
+            elif delta > tolerance:
+                print(f"  improve {name} {label}: {before[field]:.3f} -> {row[field]:.3f}")
+        if "tables_found" in before and "tables_found" in row:
+            # A count, not a match, so only a fall is evidence of anything.
+            if row["tables_found"] < before["tables_found"]:
+                print(
+                    f"  REGRESS {name} tables: "
+                    f"{before['tables_found']} -> {row['tables_found']}"
+                )
+                failed = True
+            elif row["tables_found"] > before["tables_found"]:
+                print(
+                    f"  improve {name} tables: "
+                    f"{before['tables_found']} -> {row['tables_found']}"
+                )
     return 1 if failed else 0
 
 

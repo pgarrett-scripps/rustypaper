@@ -21,7 +21,20 @@ except ImportError:  # pragma: no cover
 REPO = Path(__file__).resolve().parents[2]
 CLI = REPO / "target" / "release" / "rustypaper"
 BUILT_EXTENSION = REPO / "target" / "release" / "lib_rustypaper.so"
-INSTALLED_EXTENSION = REPO / "python" / "_rustypaper.so"
+
+
+def loaded_extension() -> Path | None:
+    """The file Python actually loaded the extension from, or None if it did not.
+
+    Ask the module rather than guessing a path. A hardcoded location is wrong the moment
+    build.sh moves or renames what it installs — which is exactly what happened: this file
+    named `python/_rustypaper.so` while build.sh writes `python/rustypaper/_rustypaper.abi3.so`,
+    so the staleness check below never once ran. The imported module is the only source of
+    truth for which binary is being measured.
+    """
+    extension = getattr(_module, "_rustypaper", None)
+    path = getattr(extension, "__file__", None)
+    return Path(path) if path else None
 
 
 def _warn_if_stale() -> None:
@@ -33,11 +46,12 @@ def _warn_if_stale() -> None:
     """
     import sys
 
-    if not (BUILT_EXTENSION.exists() and INSTALLED_EXTENSION.exists()):
+    installed = loaded_extension()
+    if installed is None or not (BUILT_EXTENSION.exists() and installed.exists()):
         return
-    if BUILT_EXTENSION.stat().st_mtime > INSTALLED_EXTENSION.stat().st_mtime + 1:
+    if BUILT_EXTENSION.stat().st_mtime > installed.stat().st_mtime + 1:
         print(
-            f"warning: {INSTALLED_EXTENSION.name} is older than the last cargo build; "
+            f"warning: {installed} is older than the last cargo build; "
             "scores describe stale code. Run scripts/build.sh.",
             file=sys.stderr,
         )
