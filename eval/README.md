@@ -14,18 +14,18 @@ a bare build leaves that stale.
 
 ```
 converter=extension  scorer=difflib
-paper             bigram  cover   eq  eq rec  eq fid   tables    sec
-------------------------------------------------------------------------
-bert.pdf           0.874  0.920    6   0.000   0.000      6/8   0.12
-biology.pdf        0.915  0.963   57   0.035   0.570      3/4   0.34
-gan.pdf            0.882  0.961   14   0.500   0.712      1/4   0.07
-numbertheory.pdf   0.878  0.987  103   0.728   0.824      1/0   0.12
-optics.pdf         0.855  0.934  215   0.205   0.729      1/0   0.14
-resnet.pdf         0.909  0.968    2   1.000   0.618     8/17   0.10
-statistics.pdf     0.912  0.952   18   0.444   0.623      0/2   0.11
-transformer.pdf    0.852  0.921   19   0.421   0.851      4/7   0.28
-unet.pdf           0.939  0.982    2   0.000   0.000      2/2   0.04
-------------------------------------------------------------------------
+paper             bigram  cover   eq  eq rec  eq fid   tables     refs    sec
+---------------------------------------------------------------------------------
+bert.pdf           0.874  0.920    6   0.000   0.000      6/8    15/56   0.12
+biology.pdf        0.915  0.963   57   0.035   0.570      3/4      1/?   0.34
+gan.pdf            0.882  0.961   14   0.500   0.712      1/4    31/31   0.07
+numbertheory.pdf   0.878  0.987  103   0.728   0.824      1/0    21/21   0.12
+optics.pdf         0.855  0.934  215   0.205   0.729      1/0    15/27   0.14
+resnet.pdf         0.909  0.968    2   1.000   0.618     8/17    50/50   0.10
+statistics.pdf     0.912  0.952   18   0.444   0.623      0/2    27/27   0.11
+transformer.pdf    0.852  0.921   19   0.421   0.851      4/7    40/40   0.29
+unet.pdf           0.939  0.982    2   0.000   0.000      2/2    14/14   0.04
+---------------------------------------------------------------------------------
 mean               0.891               0.370   0.547
 
   skipped adam.pdf: arXiv source carries no LaTeX prose (converted to 5388 words, 230 blocks)
@@ -73,6 +73,23 @@ show; an absolute number means little.
   not a match: it says nothing about whether the right cells ended up in the right places, only
   whether roughly the right number of tables was found. Two papers score `1/0`, which is
   over-detection, and one scores `8/17`.
+- **refs** — reference blocks emitted against the `\bibitem` entries the source declares. A count,
+  like tables, and for the same reason: it says how much of the bibliography was recognised as a
+  bibliography, not whether each entry's fields were parsed correctly. Downstream consumers audit
+  citations, so a bibliography that never becomes typed blocks is a whole feature missing rather
+  than a cosmetic loss — `bert.pdf` at `15/56` is one, and the two-column bibliography pages are
+  where it goes wrong.
+
+  Wanted is counted from **one** file of the source tree, never the sum of all of them: entries
+  are counted per file and the largest list wins. arXiv archives carry the same `.bbl` twice
+  under two names often enough that summing would double every count, and a stub
+  `thebibliography` left in the main `.tex` beside a generated `.bbl` would inflate others.
+  Both the plain `\bibitem{key}` and natbib's `\bibitem[label]{key}` count; commented-out
+  entries do not.
+
+  A source that declares no entries anywhere — a paper that cited with BibTeX and shipped only
+  its `.bib`, which is `biology.pdf` here — prints `?` for wanted rather than `0`, and stores
+  `null` in the JSON. Nothing was measured, and a zero would read as "this paper cites nothing".
 
 ## Regression checking
 
@@ -82,8 +99,11 @@ show; an absolute number means little.
 cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
 ```
 
-Exits non-zero if any paper's bigram recall drops by more than 0.005; smaller movements are
-noise. Only bigram recall is checked. Refresh the baseline deliberately, with
+Exits non-zero if any paper's bigram recall drops by more than 0.005 — smaller movements are
+noise — or if any paper's *references found* drops at all. References are a count rather than a
+score, so there is no tolerance to apply: one entry fewer is one entry lost. A baseline recorded
+before the references column existed says nothing about them, and is skipped rather than read as
+zero, so old baselines keep passing. Refresh the baseline deliberately, with
 `--json > baseline.json`, when a change is an intended improvement.
 
 `baseline.json` is pinned against what a plain `scripts/build.sh` produces, which is what CI
