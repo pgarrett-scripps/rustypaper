@@ -1,4 +1,4 @@
-"""Scoring mathematics and tables against the LaTeX source.
+"""Scoring mathematics, tables and the bibliography against the LaTeX source.
 
 Prose is scored by comparing word streams, which works because both sides are prose. Formulae
 need their own treatment: the reference is LaTeX the author wrote, and the output is LaTeX
@@ -35,6 +35,12 @@ _ENV_BODY = re.compile(
 )
 _BRACKET_MATH = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
 _TABULAR = re.compile(r"\\begin\{tabular\*?\}", re.DOTALL)
+
+#: One bibliography entry, in either the plain `\bibitem{key}` form or natbib's
+#: `\bibitem[Printed label]{key}`. The label may itself contain brackets, so the optional
+#: argument is matched one nesting level deep rather than up to the first `]`.
+_BIBITEM = re.compile(r"\\bibitem\s*(?:\[(?:[^\[\]]|\[[^\[\]]*\])*\])?\s*\{")
+_TEX_COMMENT = re.compile(r"(?<!\\)%.*?$", re.MULTILINE)
 
 #: Commands that affect only appearance, and their arguments where they carry none.
 _COSMETIC = re.compile(
@@ -81,6 +87,16 @@ def reference_equations(source: str) -> list[str]:
 def reference_tables(source: str) -> int:
     """How many tabular environments the source contains."""
     return len(_TABULAR.findall(source))
+
+
+def reference_bibitems(source: str) -> int:
+    """How many bibliography entries a LaTeX source declares.
+
+    ``\\bibitem`` is the one form the two routes agree on: a hand-written ``thebibliography``
+    and a BibTeX-generated ``.bbl`` both emit exactly one per entry. Comments are stripped
+    first, because an entry an author commented out is not in the printed bibliography.
+    """
+    return len(_BIBITEM.findall(_TEX_COMMENT.sub("", source)))
 
 
 @dataclass(frozen=True)

@@ -70,6 +70,11 @@ def main(argv: list[str] | None = None) -> int:
         tables_found = sum(1 for b in document["blocks"] if b.get("table"))
         tables_wanted = formula.reference_tables(paper.source)
 
+        # A paper whose source declares no entries anywhere gets no number rather than a zero:
+        # nothing was measured, and `0` would read as "this paper cites nothing".
+        refs_wanted = formula.reference_bibitems(paper.bibliography) or None
+        refs_found = kinds.get("reference", 0)
+
         result = score.compare(paper.reference, markdown)
         row.update(
             bigram_recall=round(score.bigram_recall(paper.reference, markdown), 4),
@@ -81,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
             equation_fidelity=round(maths.fidelity, 4),
             tables=tables_wanted,
             tables_found=tables_found,
+            references=refs_wanted,
+            references_found=refs_found,
         )
         report["papers"][paper.pdf.name] = row
 
@@ -102,21 +109,24 @@ def _print_table(report: dict) -> None:
     print(f"converter={report['backend']}  scorer={report['scorer']}")
     print(
         f"{'paper':<16} {'bigram':>7} {'cover':>6} "
-        f"{'eq':>4} {'eq rec':>7} {'eq fid':>7} {'tables':>8} {'sec':>6}"
+        f"{'eq':>4} {'eq rec':>7} {'eq fid':>7} {'tables':>8} {'refs':>8} {'sec':>6}"
     )
-    print("-" * 72)
+    print("-" * 81)
     for name, row in sorted(report["papers"].items()):
         tables = f"{row['tables_found']}/{row['tables']}"
+        # A paper whose source declares no bibliography is reported as unknown, not as zero.
+        wanted = row.get("references")
+        refs = f"{row.get('references_found', 0)}/{wanted if wanted is not None else '?'}"
         print(
             f"{name:<16} {row['bigram_recall']:>7.3f} {row['coverage']:>6.3f} "
             f"{row['equations']:>4} {row['equation_recall']:>7.3f} "
-            f"{row['equation_fidelity']:>7.3f} {tables:>8} {row['seconds']:>6.2f}"
+            f"{row['equation_fidelity']:>7.3f} {tables:>8} {refs:>8} {row['seconds']:>6.2f}"
         )
 
     rows = list(report["papers"].values())
     if rows:
         with_maths = [r for r in rows if r["equations"]]
-        print("-" * 72)
+        print("-" * 81)
         print(f"{'mean':<16} {sum(r['bigram_recall'] for r in rows) / len(rows):>7.3f}", end="")
         if with_maths:
             recall = sum(r["equation_recall"] for r in with_maths) / len(with_maths)
@@ -147,8 +157,8 @@ def _check_regressions(
     """Compare against a stored report. Small movements are noise, not regressions.
 
     Fails on three kinds of loss: a scored paper's bigram recall, equation recall or equation
-    fidelity dropping by more than `tolerance`; the number of tables it found dropping at all;
-    and a paper the baseline scored no longer being scored — it stopped converting, or lost its
+    fidelity dropping by more than `tolerance`; the number of tables or references it found
+    dropping at all; and a paper the baseline scored no longer being scored — it stopped converting, or lost its
     ground truth. That last one was the hole: iterating the new report alone means a paper that
     vanished is a paper nobody checks, and a crash reads as a clean run. `check_missing` is off
     for a `--only` run, which never claims to cover the rest of the corpus.
@@ -196,6 +206,16 @@ def _check_regressions(
                     f"  improve {name} tables: "
                     f"{before['tables_found']} -> {row['tables_found']}"
                 )
+        # References are a count like tables, so any decrease is a real one; no tolerance
+        # applies. A baseline recorded before this column existed simply says nothing about
+        # them, and must not be read as zero — older baselines have to keep passing.
+        found_before = before.get("references_found")
+        found_now = row.get("references_found", 0)
+        if found_before is not None and found_now < found_before:
+            print(f"  REGRESS {name} refs: {found_before} -> {found_now}")
+            failed = True
+        elif found_before is not None and found_now > found_before:
+            print(f"  improve {name} refs: {found_before} -> {found_now}")
     return 1 if failed else 0
 
 

@@ -14,7 +14,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import detex
+from . import detex, formula
 
 USER_AGENT = "rustypaper-eval/0.1 (https://github.com/pgarrett-scripps/rustypaper)"
 
@@ -63,6 +63,9 @@ class Paper:
     source: str = ""
     """The raw LaTeX, for scoring formulae and tables against."""
 
+    bibliography: str = ""
+    """The source file the paper's reference list was typeset from, if it has one."""
+
     @property
     def scorable(self) -> bool:
         """Whether this paper has enough reference prose to score against."""
@@ -88,25 +91,70 @@ def fetch_source(arxiv_id: str, cache: Path) -> Path:
     return target
 
 
-def read_raw_source(archive: Path) -> str:
-    """The concatenated LaTeX of an e-print archive, unreduced."""
+def _single_file_source(raw: bytes) -> str:
+    """An archive that is not a tar: arXiv serves a bare gzipped `.tex` for one-file sources."""
+    import gzip
+
+    try:
+        return gzip.decompress(raw).decode("utf-8", errors="replace")
+    except OSError:
+        return raw.decode("utf-8", errors="replace")
+
+
+def _unpack(archive: Path, suffixes: tuple[str, ...]) -> dict[str, str] | None:
+    """Members of an e-print tar with one of `suffixes`, or None if it is not a tar at all."""
     raw = archive.read_bytes()
     try:
         with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as tar:
-            parts = []
+            files = {}
             for member in tar.getmembers():
-                if member.isfile() and member.name.endswith(".tex"):
-                    handle = tar.extractfile(member)
-                    if handle is not None:
-                        parts.append(handle.read().decode("utf-8", errors="replace"))
-            return "\n".join(parts)
+                if not member.isfile() or not member.name.endswith(suffixes):
+                    continue
+                handle = tar.extractfile(member)
+                if handle is not None:
+                    files[member.name] = handle.read().decode("utf-8", errors="replace")
+            return files
     except tarfile.TarError:
-        import gzip
+        return None
 
-        try:
-            return gzip.decompress(raw).decode("utf-8", errors="replace")
-        except OSError:
-            return raw.decode("utf-8", errors="replace")
+
+def read_raw_source(archive: Path) -> str:
+    """The concatenated LaTeX of an e-print archive, unreduced."""
+    files = _unpack(archive, (".tex",))
+    if files is None:
+        return _single_file_source(archive.read_bytes())
+    return "\n".join(files.values())
+
+
+def select_bibliography(files: dict[str, str]) -> str:
+    """The one file of a source tree that holds the paper's reference list.
+
+    The maximum over files, never the sum. An arXiv archive routinely ships the same `.bbl`
+    twice under different names — a submission and a camera-ready copy of it — and a paper that
+    keeps a two-entry stub `thebibliography` in its main `.tex` beside a generated `.bbl` would
+    otherwise have both counted. The largest single list is the one that was printed.
+
+    Returns `""` when nothing in the tree declares an entry, which is a real case: a paper that
+    cited with BibTeX and shipped only its `.bib` leaves no entry list behind at all.
+    """
+    best, entries = "", 0
+    for _, content in sorted(files.items()):
+        found = formula.reference_bibitems(content)
+        if found > entries:
+            best, entries = content, found
+    return best
+
+
+def read_bibliography(archive: Path) -> str:
+    """The bibliography-bearing file of an e-print archive, empty when it has none.
+
+    Both routes have to be looked at: hand-written entry lists live in the `.tex`, and BibTeX
+    ones in the `.bbl` that arXiv requires alongside it.
+    """
+    files = _unpack(archive, (".tex", ".bbl"))
+    if files is None:
+        files = {"source.tex": _single_file_source(archive.read_bytes())}
+    return select_bibliography(files)
 
 
 def read_source(archive: Path) -> str:
@@ -114,26 +162,9 @@ def read_source(archive: Path) -> str:
 
     arXiv serves either a gzipped tar of the source tree or a single gzipped `.tex` file.
     """
-    raw = archive.read_bytes()
-
-    try:
-        with tarfile.open(fileobj=io.BytesIO(raw), mode="r:*") as tar:
-            files = {}
-            for member in tar.getmembers():
-                if not member.isfile() or not member.name.endswith(".tex"):
-                    continue
-                handle = tar.extractfile(member)
-                if handle is None:
-                    continue
-                files[member.name] = handle.read().decode("utf-8", errors="replace")
-    except tarfile.TarError:
-        import gzip
-
-        try:
-            text = gzip.decompress(raw).decode("utf-8", errors="replace")
-        except OSError:
-            text = raw.decode("utf-8", errors="replace")
-        return detex.strip(text)
+    files = _unpack(archive, (".tex",))
+    if files is None:
+        return detex.strip(_single_file_source(archive.read_bytes()))
 
     main = detex.find_main_source(files)
     if main is None:
@@ -157,6 +188,7 @@ def load(corpus_dir: Path, cache_dir: Path, only: str | None = None) -> list[Pap
                 pdf=pdf,
                 reference=read_source(archive),
                 source=read_raw_source(archive),
+                bibliography=read_bibliography(archive),
             )
         )
     return papers

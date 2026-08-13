@@ -9,7 +9,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from rustypaper_eval import detex, formula, score  # noqa: E402
+from rustypaper_eval import corpus, detex, formula, score  # noqa: E402
+from rustypaper_eval.__main__ import _check_regressions  # noqa: E402
 
 
 class TestDetex(unittest.TestCase):
@@ -142,3 +143,79 @@ class TestFormula(unittest.TestCase):
     def test_counts_tabular_environments(self):
         source = r"\begin{tabular}{cc} a & b \end{tabular} \begin{tabular*}{c} x \end{tabular*}"
         self.assertEqual(formula.reference_tables(source), 2)
+
+
+class TestBibliography(unittest.TestCase):
+    """The source side of the references metric: how many entries the paper actually has."""
+
+    def test_counts_plain_bibitems(self):
+        source = r"""
+        \begin{thebibliography}{9}
+        \bibitem{he2016} K. He et al. Deep residual learning. CVPR, 2016.
+        \bibitem{lecun1998} Y. LeCun et al. Gradient-based learning. IEEE, 1998.
+        \end{thebibliography}
+        """
+        self.assertEqual(formula.reference_bibitems(source), 2)
+
+    def test_counts_natbib_labelled_bibitems(self):
+        # What a BibTeX `.bbl` looks like: the printed label comes first, and may itself be
+        # braced or carry brackets of its own.
+        source = r"""
+        \begin{thebibliography}{27}
+        \bibitem[He et~al.(2016)He, Zhang]{he2016} Deep residual learning.
+        \bibitem[{Kingma and Ba(2015)}]{kingma2015} Adam.
+        \bibitem [Smith(1999)] {smith99} A spaced one.
+        \end{thebibliography}
+        """
+        self.assertEqual(formula.reference_bibitems(source), 3)
+
+    def test_commented_out_entries_do_not_count(self):
+        source = "\\bibitem{kept} Real.\n% \\bibitem{dropped} Cut before submission.\n"
+        self.assertEqual(formula.reference_bibitems(source), 1)
+
+    def test_a_source_without_a_bibliography_counts_none(self):
+        # Not an error: a paper that cited with BibTeX and shipped only its `.bib` leaves no
+        # entry list, and the harness reports that as absent rather than as zero references.
+        self.assertEqual(formula.reference_bibitems(r"\bibliography{refs}"), 0)
+
+    def test_bibliography_file_is_the_largest_list_not_the_sum(self):
+        # The main `.tex` keeps a two-entry stub beside the generated `.bbl`; summing would
+        # claim 5 entries for a paper that prints 3.
+        files = {
+            "main.tex": r"\bibitem{a} A. \bibitem{b} B.",
+            "main.bbl": r"\bibitem{x} X. \bibitem{y} Y. \bibitem{z} Z.",
+        }
+        self.assertEqual(formula.reference_bibitems(corpus.select_bibliography(files)), 3)
+
+    def test_a_duplicated_bbl_is_counted_once(self):
+        # arXiv archives routinely carry the same bibliography twice under two names.
+        entries = r"\bibitem{a} A. \bibitem{b} B."
+        files = {"main.bbl": entries, "camera-ready.bbl": entries}
+        self.assertEqual(formula.reference_bibitems(corpus.select_bibliography(files)), 2)
+
+    def test_no_bibliography_anywhere_selects_nothing(self):
+        files = {"main.tex": r"\bibliography{refs}\bibliographystyle{plain}"}
+        self.assertEqual(corpus.select_bibliography(files), "")
+
+
+class TestRegressionGate(unittest.TestCase):
+    """The gate has to fail on real losses and stay quiet about what a baseline never recorded."""
+
+    def _report(self, **row) -> dict:
+        return {"papers": {"paper.pdf": {"bigram_recall": 0.9, **row}}}
+
+    def test_fewer_references_found_is_a_regression(self):
+        report = self._report(references_found=10, references=41)
+        baseline = self._report(references_found=15, references=41)
+        self.assertEqual(_check_regressions(report, baseline), 1)
+
+    def test_more_references_found_passes(self):
+        report = self._report(references_found=41, references=41)
+        baseline = self._report(references_found=0, references=41)
+        self.assertEqual(_check_regressions(report, baseline), 0)
+
+    def test_a_baseline_without_the_field_is_not_read_as_zero(self):
+        # Baselines predate this column. An old one says nothing about references, which must
+        # not be mistaken for "it used to find none".
+        report = self._report(references_found=0, references=41)
+        self.assertEqual(_check_regressions(report, self._report()), 0)

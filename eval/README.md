@@ -14,24 +14,24 @@ a bare build leaves that stale.
 
 ```
 converter=extension  scorer=difflib
-paper             bigram  cover   eq  eq rec  eq fid   tables    sec
-------------------------------------------------------------------------
-bert.pdf           0.877  0.920    6   0.000   0.000      6/8   0.12
-biology.pdf        0.917  0.962   57   0.053   0.553      2/4   0.35
-gan.pdf            0.882  0.961   14   0.500   0.712      1/4   0.07
-imagenet.pdf       0.828  0.911    7   0.429   0.607     9/26   0.31
-medimaging.pdf     0.911  0.940   11   0.091   0.897     7/11   0.30
-metasurface.pdf    0.922  0.987   23   0.217   0.624      1/0   0.08
-numbertheory.pdf   0.878  0.987  103   0.728   0.824      0/0   0.12
-optics.pdf         0.855  0.934  215   0.205   0.729      0/0   0.14
-pinsage.pdf        0.664  0.839    2   0.000   0.000      2/6   0.15
-resnet.pdf         0.909  0.968    2   1.000   0.618     9/17   0.11
-sklearn.pdf        0.938  0.969    0   0.000   0.000      0/1   0.04
-statistics.pdf     0.912  0.952   18   0.444   0.623      0/2   0.12
-topological.pdf    0.881  0.902   21   0.619   0.789      3/2   0.31
-transformer.pdf    0.852  0.921   19   0.421   0.851      4/7   0.29
-unet.pdf           0.939  0.982    2   0.000   0.000      2/2   0.04
-------------------------------------------------------------------------
+paper             bigram  cover   eq  eq rec  eq fid   tables     refs    sec
+---------------------------------------------------------------------------------
+bert.pdf           0.877  0.920    6   0.000   0.000      6/8    15/56   0.12
+biology.pdf        0.917  0.962   57   0.053   0.553      2/4      1/?   0.34
+gan.pdf            0.882  0.961   14   0.500   0.712      1/4    31/31   0.07
+imagenet.pdf       0.828  0.911    7   0.429   0.607     9/26    0/102   0.31
+medimaging.pdf     0.911  0.940   11   0.091   0.897     7/11   30/350   0.30
+metasurface.pdf    0.922  0.987   23   0.217   0.624      1/0     0/41   0.08
+numbertheory.pdf   0.878  0.987  103   0.728   0.824      0/0    21/21   0.12
+optics.pdf         0.855  0.934  215   0.205   0.729      0/0    15/27   0.14
+pinsage.pdf        0.664  0.839    2   0.000   0.000      2/6    10/31   0.15
+resnet.pdf         0.909  0.968    2   1.000   0.618     9/17    50/50   0.10
+sklearn.pdf        0.938  0.969    0   0.000   0.000      0/1     8/16   0.04
+statistics.pdf     0.912  0.952   18   0.444   0.623      0/2    27/27   0.12
+topological.pdf    0.881  0.902   21   0.619   0.789      3/2    6/368   0.31
+transformer.pdf    0.852  0.921   19   0.421   0.851      4/7    40/40   0.28
+unet.pdf           0.939  0.982    2   0.000   0.000      2/2    14/14   0.06
+---------------------------------------------------------------------------------
 mean               0.878               0.336   0.559
 
   skipped adam.pdf: arXiv source carries no LaTeX prose (converted to 5474 words, 226 blocks)
@@ -81,8 +81,25 @@ show; an absolute number means little.
   source has, and the means are taken over the papers that have any.
 - **tables** — table blocks emitted against `\begin{tabular}` environments in the source. A count,
   not a match: it says nothing about whether the right cells ended up in the right places, only
-  whether roughly the right number of tables was found. `metasurface.pdf` scores `1/0` and
-  `biology.pdf` `8/4`, both of which are over-detection; `imagenet.pdf` scores `10/26`.
+  whether roughly the right number of tables was found. `metasurface.pdf` scores `1/0`, which
+  is over-detection; `imagenet.pdf` scores `9/26`.
+- **refs** — reference blocks emitted against the `\bibitem` entries the source declares. A count,
+  like tables, and for the same reason: it says how much of the bibliography was recognised as a
+  bibliography, not whether each entry's fields were parsed correctly. Downstream consumers audit
+  citations, so a bibliography that never becomes typed blocks is a whole feature missing rather
+  than a cosmetic loss — `bert.pdf` at `15/56` is one, and the two-column bibliography pages are
+  where it goes wrong.
+
+  Wanted is counted from **one** file of the source tree, never the sum of all of them: entries
+  are counted per file and the largest list wins. arXiv archives carry the same `.bbl` twice
+  under two names often enough that summing would double every count, and a stub
+  `thebibliography` left in the main `.tex` beside a generated `.bbl` would inflate others.
+  Both the plain `\bibitem{key}` and natbib's `\bibitem[label]{key}` count; commented-out
+  entries do not.
+
+  A source that declares no entries anywhere — a paper that cited with BibTeX and shipped only
+  its `.bib`, which is `biology.pdf` here — prints `?` for wanted rather than `0`, and stores
+  `null` in the JSON. Nothing was measured, and a zero would read as "this paper cites nothing".
 
 ## Regression checking
 
@@ -94,10 +111,11 @@ cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline
 
 Exits non-zero, naming the paper and the metric, if any paper's bigram recall, equation recall
 or equation fidelity drops by more than 0.005 — smaller movements are noise — or if the number
-of tables it found drops at all, that being a count rather than a score. A paper the baseline
-scored and this run does not, because it stopped converting or lost its ground truth, also
-fails: the gate reads the baseline's list of papers, not only this run's. A metric an older
-baseline does not record is skipped rather than failed. Refresh the baseline deliberately, with
+of tables or references it found drops at all, those being counts rather than scores: one entry
+fewer is one entry lost. A paper the baseline scored and this run does not, because it stopped
+converting or lost its ground truth, also fails: the gate reads the baseline's list of papers,
+not only this run's. A metric an older baseline does not record is skipped rather than failed —
+so a baseline from before the references column keeps passing. Refresh the baseline deliberately, with
 `--json > baseline.json`, when a change is an intended improvement.
 
 A `--only` run does not check for missing papers, since it deliberately converts a subset.
