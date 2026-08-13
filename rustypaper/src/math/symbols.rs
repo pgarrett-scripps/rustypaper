@@ -39,7 +39,24 @@ pub fn latex(c: char) -> Option<&'static str> {
         'ψ' => r"\psi",
         'ω' => r"\omega",
 
-        // Greek, upper case.
+        // Greek, upper case. Half of them have no command, because they are set in the Latin
+        // letter they look like: TeX has no `\Alpha`, and an author writes `A`.
+        'Α' => "A",
+        'Β' => "B",
+        'Ε' => "E",
+        'Ζ' => "Z",
+        'Η' => "H",
+        'Ι' => "I",
+        'Κ' => "K",
+        'Μ' => "M",
+        'Ν' => "N",
+        'Ο' => "O",
+        'Ρ' => "P",
+        'Τ' => "T",
+        'Χ' => "X",
+        'ο' => "o",
+        'ϰ' => r"\varkappa",
+        'ϴ' => r"\Theta",
         'Γ' => r"\Gamma",
         'Δ' | '∆' => r"\Delta",
         'Θ' => r"\Theta",
@@ -159,9 +176,64 @@ pub fn latex(c: char) -> Option<&'static str> {
         '{' => r"\{",
         '}' => r"\}",
 
-        _ => return None,
+        _ => return unstyled_latex(c),
     })
 }
+
+/// The LaTeX for a styled character from the Mathematical Alphanumeric Symbols block.
+fn unstyled_latex(c: char) -> Option<&'static str> {
+    let base = unstyle(c)?;
+    if base.is_ascii_alphanumeric() {
+        return Some(ascii_str(base));
+    }
+    // Greek, `∇` and `∂` arrive styled too, and are named above under their plain codepoint.
+    latex(base)
+}
+
+/// A one-character `&'static str` for an ASCII alphanumeric, by slicing a static alphabet.
+fn ascii_str(c: char) -> &'static str {
+    const ALPHABET: &str = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    let at = ALPHABET.find(c).expect("ASCII alphanumeric");
+    &ALPHABET[at..=at]
+}
+
+/// The unstyled character behind a Mathematical Alphanumeric Symbol.
+///
+/// A TeX-set paper hands us `α` and `x`, because Computer Modern's maths italic encodes them at
+/// their ordinary codepoints and the style lives in the font. A paper set in an OpenType maths
+/// font hands us `𝛼` and `𝑥` — U+1D6FC and U+1D465 — where the style lives in the *character*.
+/// The two say the same thing, and only the first was previously writable as LaTeX: the biology
+/// paper's fifty-two detected equations came out as `𝑏𝐴-(𝛼_1+𝜇_1)𝐸` and matched nothing.
+///
+/// Style is discarded rather than translated. `\mathit{x}` and `x` are the same formula, and the
+/// styles that do carry meaning — blackboard bold and script — are named above for the letters
+/// papers actually use them for, which is checked before this is reached.
+pub fn unstyle(c: char) -> Option<char> {
+    let code = c as u32;
+    match code {
+        // Latin: fourteen alphabets of A-Z then a-z, each 52 long and aligned to the first.
+        // Reserved slots inside them (italic `h`, script `B`, …) are encoded in the Letterlike
+        // Symbols block instead and never arrive here.
+        0x1D400..=0x1D6A3 => {
+            let at = (code - 0x1D400) % 52;
+            char::from_u32(if at < 26 {
+                'A' as u32 + at
+            } else {
+                'a' as u32 + at - 26
+            })
+        }
+        0x1D6A4 => Some('i'), // dotless i
+        0x1D6A5 => Some('j'),
+        // Greek: five alphabets of 58, each capitals, `∇`, smalls, `∂`, then six variants.
+        0x1D6A8..=0x1D7C9 => GREEK.chars().nth(((code - 0x1D6A8) % 58) as usize),
+        // Digits: five sets of ten.
+        0x1D7CE..=0x1D7FF => char::from_u32('0' as u32 + (code - 0x1D7CE) % 10),
+        _ => None,
+    }
+}
+
+/// One styled Greek alphabet, in the order the Unicode block repeats it.
+const GREEK: &str = "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡϴΣΤΥΦΧΨΩ∇αβγδεζηθικλμνξοπρςστυφχψω∂ϵϑϰϕϱϖ";
 
 /// Whether a character belongs to mathematics wherever it appears.
 ///
@@ -187,7 +259,7 @@ pub fn is_math_symbol(c: char) -> bool {
 /// and appears nowhere but in formulae.
 pub fn is_math_font(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
-    const MARKERS: [&str; 14] = [
+    const MARKERS: [&str; 20] = [
         "CMMI",  // Computer Modern math italic
         "CMSY",  // Computer Modern math symbols
         "CMEX",  // Computer Modern math extensions (big operators, grown delimiters)
@@ -202,6 +274,17 @@ pub fn is_math_font(name: &str) -> bool {
         "LMMATH", // Latin Modern Math
         "MATHJAX",
         "MATHITALIC",
+        // The TX/PX families and their newtx/newpx successors, which Times- and Palatino-set
+        // papers use for their formulae. Whole papers were invisible without these: medimaging
+        // sets every equation in `rtxmi` and `txsy`, and one display equation in eleven was
+        // found. Only the maths members are named — `rtxr` is that family's *text* roman, and
+        // admitting it would seed on ordinary prose.
+        "TXMI", // tx/newtx math italic, as `rtxmi`
+        "TXSY", // tx/newtx symbols, as `txsy`, `txsyb`, `ntxsyralt`
+        "TXEX", // tx/newtx extensions
+        "PXMI", // px/newpx math italic
+        "PXSY",
+        "PXEX",
     ];
     MARKERS.iter().any(|m| upper.contains(m))
         // TeX Gyre's maths fonts, and anything self-describing.
@@ -255,6 +338,52 @@ mod tests {
         for name in ["NimbusRomNo9L-Regu", "CMR10", "Times-Roman", "Helvetica"] {
             assert!(!is_math_font(name), "{name} is not a maths font");
         }
+    }
+
+    /// The TX and newtx families, which every Times-set paper puts its formulae in. Their text
+    /// members are named alike and must stay out: `rtxr` is a roman, not a maths font.
+    #[test]
+    fn recognises_the_tx_maths_fonts() {
+        for name in ["rtxmi", "txsy", "txsyb", "ntxsyralt", "txex", "npxmi"] {
+            assert!(is_math_font(name), "{name} should be a maths font");
+        }
+        for name in ["rtxr", "rtxb", "LinLibertineT", "ptmr8t"] {
+            assert!(!is_math_font(name), "{name} is not a maths font");
+        }
+    }
+
+    /// A paper set in an OpenType maths font hands over `𝛼` and `𝑥`, where the style lives in
+    /// the character rather than the font. They are the same formula and must be written alike.
+    #[test]
+    fn styled_alphabets_are_named_unstyled() {
+        assert_eq!(latex('\u{1D6FC}'), Some(r"\alpha")); // italic alpha
+        assert_eq!(latex('\u{1D465}'), Some("x")); // italic x
+        assert_eq!(latex('\u{1D400}'), Some("A")); // bold A
+        assert_eq!(latex('\u{1D7D9}'), Some("1")); // double-struck one
+        assert_eq!(latex('\u{1D6C1}'), Some(r"\nabla"));
+        assert_eq!(latex('\u{1D6DB}'), Some(r"\partial"));
+    }
+
+    /// A style that carries meaning is named before it is discarded.
+    #[test]
+    fn blackboard_bold_keeps_its_command() {
+        assert_eq!(latex('𝔼'), Some(r"\mathbb{E}"));
+    }
+
+    #[test]
+    fn the_styled_greek_alphabet_is_the_length_the_block_repeats_at() {
+        assert_eq!(GREEK.chars().count(), 58);
+        assert_eq!(unstyle('\u{1D6A8}'), Some('Α')); // bold capital alpha
+        assert_eq!(unstyle('\u{1D7C9}'), Some('ϖ')); // last of the last Greek block
+        assert_eq!(unstyle('x'), None);
+    }
+
+    /// TeX has no `\Alpha`: a capital that looks Latin is written as the Latin letter.
+    #[test]
+    fn look_alike_greek_capitals_become_latin() {
+        assert_eq!(latex('Α'), Some("A"));
+        assert_eq!(latex('Ρ'), Some("P"));
+        assert_eq!(latex('Ω'), Some(r"\Omega"));
     }
 
     #[test]

@@ -316,9 +316,58 @@ and none of the ways detection goes wrong: an equation that was never recognised
 confidence to be low. **A score that is always high is worse than no score**, because it
 silently disables the safety mechanism built on it.
 
-The fix has to start with detection: `math::display` requires a line to be centred in its column
-or to carry an equation number, and templates that indent display maths without centring it are
-invisible to it.
+### Four ways a display equation hid, and what each was worth
+
+Detection was the weaker half, and dumping the source equations each paper *missed* — rather than
+counting the ones it found — sorted the misses into four kinds. Recall over the corpus went from
+0.336 to **0.565** and fidelity from 0.559 to **0.677** as they were answered, with no paper's
+prose bigram falling.
+
+- **The maths font was not recognised.** `is_math_font` knew Computer Modern, AMS, Latin Modern
+  and STIX; a Times-set paper puts its formulae in newtx, whose members are `rtxmi`, `txsy` and
+  `txex`. Without them a medical-imaging survey seeded on almost nothing and found *one* display
+  equation in the whole paper: 0.091 recall to 0.909. Only the maths members are named — `rtxr`
+  is that family's text roman, and admitting it would seed on prose.
+- **The letters were styled Unicode.** An OpenType maths font hands over `𝛼` and `𝑥` — U+1D6FC
+  and U+1D465 — where a TeX-set paper hands over `α` and `x`, because the style lives in the
+  character rather than in the font. The biology paper's fifty-two detected equations were coming
+  out as `𝑏𝐴-(𝛼_1+𝜇_1)𝐸` and matching nothing: 0.053 recall to 0.632. Everything in the
+  Mathematical Alphanumeric Symbols block is now written unstyled, except the styles that carry
+  meaning, which are named first.
+- **The equation number was in the same word as the formula.** The number sits across a gap so
+  wide that the reader often leaves no space mark in it, so `w(x) = ... exp(...)` and its `(2)`
+  arrive as one word and a rule phrased over *words* never sees the number. Read off the glyphs,
+  with less of a gap required of a number set against the column's right edge, it is found.
+- **One equation is several lines.** TeX gives a summation's sign, its limits, a fraction's
+  numerator and denominator and a grown parenthesis each their own baseline, and line assembly
+  hands them over separately. Reconstruction is two-dimensional and wants them together: given
+  the stack it recovers the summation, given the middle line it emits the body and drops the
+  operator. `math::stack` collects them — but only material `build` can *place*: a large
+  operator's limits, a fraction's parts, a grown delimiter or a script. Merging on adjacency
+  alone fuses two equations set one above the other, and since a region is sorted left to right
+  the result is the two interleaved a character at a time
+  (`PEP_(E_pos,2i+1)^(pos,2i)==scoins(...)`).
+
+Two reconstruction thresholds fell out of the same dumps. A script had to be displaced 0.18 em to
+be a script, and Computer Modern drops a 7pt subscript 1.4pt under a 10pt baseline — so
+`\varepsilon_0`, `E_{av}` and `k_y` were coming out as `\epsilon 0`, `Eav` and `ky` throughout the
+optics paper. And which side of a fraction bar a glyph is on is a question about where it *sits*,
+so it is answered with the baseline: a grown `√` in a denominator is drawn up past the bar, and by
+the middle of its box it read as numerator material.
+
+BERT is still 0.000, and honestly so: its six "equations" are `\tt` token sequences —
+`Input = [CLS] the man went to [MASK] store [SEP]` — set inside `equation` environments. They
+carry no mathematics for detection to seed on, and lifting a verbatim block out of the prose as a
+formula would be a wrong field where an absent one is called for.
+
+**The gate has an arithmetic quarrel with recall.** Fidelity is the mean over *matched*
+equations, so finding equations that were previously missed lowers it whenever the new ones score
+below the old mean, and the baseline gate reads that as a regression. Three papers trip it, and
+in all three not one previously matched equation got worse: gan 7 matches to 9 (the new two at
+0.51), optics 45 to 76 (the new 31 at 0.617), medimaging 1 to 10 (the new nine at 0.762, against
+a single previous match at 0.897). Medimaging's ceiling is 0.838 — its source writes `\bfw` where
+the converter can only write `w` — so no reconstruction work can hold that paper's old figure
+while finding ten times the equations. Refreshing the baseline is the only way to record it.
 
 ## Measurements
 

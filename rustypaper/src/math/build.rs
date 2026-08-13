@@ -23,7 +23,13 @@ use crate::ir::{Glyph, PageRaw, PathKind, Rect};
 const SCRIPT_MAX_SIZE_RATIO: f32 = 0.92;
 
 /// A script's baseline must be displaced by at least this fraction of the base's size.
-const SCRIPT_MIN_OFFSET: f32 = 0.18;
+///
+/// Measured, not chosen: Computer Modern sets a 7pt subscript 1.4pt below a 10pt baseline, so
+/// 0.18 em rejected `\varepsilon_0`, `E_{av}` and `k_y` throughout the optics paper and emitted
+/// them as `\epsilon 0`, `Eav` and `ky`. Nothing is admitted on displacement alone — a script
+/// must also be set smaller than its base — so the floor only has to be under the smallest real
+/// drop.
+const SCRIPT_MIN_OFFSET: f32 = 0.12;
 
 /// Glyphs further apart than this fraction of the font size have a space between them.
 const SPACE_RATIO: f32 = 0.28;
@@ -155,25 +161,32 @@ fn split_fraction(items: &[Item], rules: &[Rect], confidence: &mut f32) -> Optio
     let bar = rules
         .iter()
         .filter(|rule| {
-            let above = items.iter().any(|i| i.bbox.y1 <= rule.y0 + 1.0);
-            let below = items.iter().any(|i| i.bbox.y0 >= rule.y1 - 1.0);
+            let above = items.iter().any(|i| i.baseline <= rule.y0 + 1.0);
+            let below = items.iter().any(|i| i.baseline >= rule.y1 - 1.0);
             above && below && rule.width() >= size * MIN_FRACTION_WIDTH_RATIO
         })
         .max_by(|a, b| a.width().total_cmp(&b.width()))?;
 
+    // Which side of the bar a glyph is on is a question about where it *sits*, so it is answered
+    // with the baseline. A grown `√` in a denominator is drawn from its own baseline up past the
+    // bar, and by the middle of its box it reads as numerator material: `QK^T/\sqrt{d_k}` came
+    // out as `\frac{Q\sqrt{K}T}{d_k}`.
     let (num, den): (Vec<Item>, Vec<Item>) = items
         .iter()
-        .filter(|i| i.bbox.x_overlap(bar) > -size)
-        .partition(|i| i.bbox.center_y() < bar.center_y());
+        .filter(|i| i.bbox.x_overlap(bar) > 0.0)
+        .partition(|i| i.baseline < bar.center_y());
 
     if num.is_empty() || den.is_empty() {
         return None;
     }
 
-    // Material to the left or right of the bar is not part of the fraction.
+    // Material to the left or right of the bar is not part of the fraction. TeX draws the bar
+    // wider than what it divides, so the test is *overlap*, not nearness: a fraction inside a
+    // line — `softmax(QK^T/\sqrt{d_k})V` — has the rest of the line within an em of the bar on
+    // both sides, and an em of slack pulled `x` out of `softmax` into the numerator.
     let outside: Vec<Item> = items
         .iter()
-        .filter(|i| i.bbox.x_overlap(bar) <= -size)
+        .filter(|i| i.bbox.x_overlap(bar) <= 0.0)
         .copied()
         .collect();
 
@@ -555,6 +568,75 @@ mod tests {
                 den: Box::new(Node::Symbol("b".into())),
             }
         );
+    }
+
+    /// Computer Modern drops a 7pt subscript 1.4pt under a 10pt baseline, and a threshold of
+    /// 0.18 em rejected every one of them: `\varepsilon_0` came out as `\epsilon 0`.
+    #[test]
+    fn a_shallow_subscript_is_still_a_subscript() {
+        let page = page_of(
+            vec![
+                glyph('ε', 100.0, 200.0, 10.0),
+                glyph('0', 105.0, 201.4, 7.0),
+            ],
+            Vec::new(),
+        );
+        match build_all(&page).root {
+            Node::Scripted { sub: Some(sub), .. } => assert_eq!(*sub, Node::Symbol("0".into())),
+            other => panic!("expected a subscript, got {other:?}"),
+        }
+    }
+
+    /// A glyph the same size as its neighbour is never a script, however it is placed.
+    #[test]
+    fn a_full_size_neighbour_is_not_a_script() {
+        let page = page_of(
+            vec![
+                glyph('a', 100.0, 200.0, 10.0),
+                glyph('b', 105.0, 201.4, 10.0),
+            ],
+            Vec::new(),
+        );
+        assert!(!matches!(build_all(&page).root, Node::Scripted { .. }));
+    }
+
+    /// A radical in a denominator is drawn from its own baseline up past the fraction bar, so the
+    /// middle of its box sits on the numerator's side of it. Where a glyph *sits* is its baseline.
+    #[test]
+    fn a_grown_denominator_stays_below_the_bar() {
+        let mut root = glyph('√', 102.0, 212.0, 10.0);
+        // Tall: its box reaches above the bar at 203.
+        root.bbox = Rect::from_corners(102.0, 198.0, 112.0, 212.0);
+        let page = page_of(
+            vec![glyph('a', 101.0, 199.0, 10.0), root],
+            vec![rule(99.0, 203.0, 113.0)],
+        );
+        match build_all(&page).root {
+            Node::Fraction { num, den } => {
+                assert_eq!(*num, Node::Symbol("a".into()));
+                assert!(
+                    matches!(*den, Node::Symbol(ref s) if s.contains(r"\sqrt")),
+                    "the radical belongs to the denominator, got {den:?}"
+                );
+            }
+            other => panic!("expected a fraction, got {other:?}"),
+        }
+    }
+
+    /// The bar is drawn wider than what it divides, so nearness is not membership: a fraction
+    /// inside a line has the rest of the line within an em of the bar at both ends.
+    #[test]
+    fn material_beside_a_fraction_stays_outside_it() {
+        let page = page_of(
+            vec![
+                glyph('x', 88.0, 203.0, 10.0),
+                glyph('a', 101.0, 194.0, 10.0),
+                glyph('b', 101.0, 210.0, 10.0),
+            ],
+            vec![rule(99.0, 197.0, 111.0)],
+        );
+        let rendered = super::super::latex::render(&build_all(&page).root);
+        assert_eq!(rendered, r"x\frac{a}{b}");
     }
 
     /// A minus sign is also a horizontal rule in some fonts. Width is what tells them apart.
