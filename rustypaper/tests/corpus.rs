@@ -1141,9 +1141,11 @@ fn revtex_roman_numeral_headings_are_found() {
 /// `4. Anatomical application areas`; `imagenet.pdf` had `1 Introduction` fused onto the end of
 /// an author line as `J. Deng*1 Introduction`. Both are clean now.
 ///
-/// **Known gap.** `sklearn.pdf` (JMLR) finds all six of its sections, and additionally promotes
-/// the running head `Scikit-learn: Machine Learning in Python` to a heading twice — page
-/// furniture that should have been dropped before assembly ever saw it.
+/// `sklearn.pdf` (JMLR) used to find all six of its sections and additionally promote the running
+/// head `Scikit-learn: Machine Learning in Python` to a heading twice. JMLR sets a recto/verso
+/// pair of heads, so each reaches only every other page and the title's reaches only two of six —
+/// under any half-the-document quorum. `layout::furniture` now counts a signature within its page
+/// parity as well as across the document; the assertion below is that both heads are gone.
 #[test]
 fn elsevier_springer_and_jmlr_sections_are_found() {
     let cases: [(&str, &[&str]); 3] = [
@@ -1194,6 +1196,64 @@ fn elsevier_springer_and_jmlr_sections_are_found() {
                 has_heading(&doc, section),
                 "{name}: no heading {section:?} among {:?}",
                 heading_texts(&doc)
+            );
+        }
+    }
+
+    // The running head is the paper's own title, so it cannot be recognised by its words; what
+    // disqualifies it is where it sits and how often it recurs there.
+    let doc = rustypaper::convert(&paper!("sklearn.pdf")).expect("conversion failed");
+    let headings = heading_texts(&doc);
+    assert!(
+        !headings.contains(&"Scikit-learn: Machine Learning in Python"),
+        "sklearn.pdf: the running head is still a heading, among {headings:?}"
+    );
+    assert_eq!(
+        doc.title.as_deref(),
+        Some("Scikit-learn: Machine Learning in Python"),
+        "the title itself must survive being the text of the running head"
+    );
+}
+
+/// A recto/verso running head is furniture on every page it appears on, not prose.
+///
+/// Both papers that set one are journal templates, and in both the pair splits between the page
+/// parities: JMLR puts the title on recto and the authors on verso, Springer's `svjour3` the same.
+/// Neither head can therefore reach half the pages, which is what the whole-document quorum used
+/// to require of it.
+#[test]
+fn alternating_running_heads_do_not_reach_the_body() {
+    let cases: [(&str, [&str; 2]); 2] = [
+        (
+            "sklearn.pdf",
+            [
+                "Scikit-learn: Machine Learning in Python",
+                "Pedregosa, Varoquaux, Gramfort et al.",
+            ],
+        ),
+        (
+            "imagenet.pdf",
+            [
+                "ImageNet Large Scale Visual Recognition Challenge",
+                "Olga Russakovsky* et al.",
+            ],
+        ),
+    ];
+
+    for (name, heads) in cases {
+        let doc = rustypaper::convert(&paper!(name)).expect("conversion failed");
+        for head in heads {
+            // Page one is where this text belongs: it is the paper's own title, and its own
+            // author line. Every *later* block that is nothing but the head is a running head.
+            let repeats: Vec<usize> = doc
+                .blocks
+                .iter()
+                .filter(|b| b.page > 0 && b.text.trim() == head)
+                .map(|b| b.page + 1)
+                .collect();
+            assert!(
+                repeats.is_empty(),
+                "{name}: {head:?} survives as a block of its own on pages {repeats:?}"
             );
         }
     }
