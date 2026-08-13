@@ -19,6 +19,17 @@ const MIN_RULE_OVERLAP: f32 = 0.6;
 /// Rules further apart than this vertically are not the same table.
 const MAX_RULE_SPACING: f32 = 320.0;
 
+/// A group needs one rule at least this wide, in body font sizes, to be a table's rules.
+///
+/// `\frac` draws its bar as a filled rectangle, so every fraction in the document arrives here
+/// looking exactly like a `\toprule`. What separates them is span: a table rule crosses the
+/// columns of a tabular, while a fraction bar only covers a numerator. Across the corpus the
+/// narrowest real table measures 17.6 em and the widest stack of fraction bars 8.4 em, so the
+/// floor sits between them with room on both sides. It is the *widest* rule in the group that
+/// has to clear it, since a `\cmidrule` under a single column is legitimately short — it just
+/// never appears without a full-width rule above it.
+const MIN_TABLE_RULE_WIDTH: f32 = 12.0;
+
 /// A gap between columns, as a fraction of the body font size.
 const MIN_COLUMN_GAP: f32 = 0.55;
 
@@ -63,7 +74,7 @@ pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32) -> Vec<Table> {
     let mut tables = Vec::new();
     let mut used: Vec<bool> = vec![false; lines.len()];
 
-    for group in group_rules(&rules) {
+    for group in group_rules(&rules, body_size) {
         if let Some(table) = build(&group, lines, body_size, &mut used) {
             tables.push(table);
         }
@@ -73,28 +84,51 @@ pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32) -> Vec<Table> {
 }
 
 /// Clusters rules that plausibly belong to the same table.
-fn group_rules(rules: &[Rect]) -> Vec<Vec<Rect>> {
+///
+/// Rules arrive in y order and are chained by vertical adjacency, but every open chain stays a
+/// candidate rather than only the most recent one. Considering only the last chain — the obvious
+/// single pass — loses both tables whenever two sit side by side in different columns, which is
+/// the common case in the two-column papers this corpus is mostly made of. Their rules
+/// interleave in y (A-top, B-top, A-mid, B-mid, …), so every consecutive pair fails `aligned`,
+/// every chain ends up a singleton, and the `len() >= 2` filter below then discards the lot.
+///
+/// Where several chains could take a rule, the best-overlapping one does, and the most recent of
+/// those wins a tie. With a single table on the page there is only ever one chain, so this is
+/// exactly the old behaviour.
+fn group_rules(rules: &[Rect], body_size: f32) -> Vec<Vec<Rect>> {
     let mut groups: Vec<Vec<Rect>> = Vec::new();
 
     for &rule in rules {
-        match groups.last_mut() {
-            Some(group)
-                if aligned(group.last().unwrap(), &rule)
-                    && rule.y0 - group.last().unwrap().y1 <= MAX_RULE_SPACING =>
-            {
-                group.push(rule);
-            }
-            _ => groups.push(vec![rule]),
+        let candidate = groups
+            .iter_mut()
+            .filter(|group| {
+                let last = group.last().unwrap();
+                rule.y0 - last.y1 <= MAX_RULE_SPACING && aligned(last, &rule)
+            })
+            .max_by(|a, b| {
+                overlap_fraction(a.last().unwrap(), &rule)
+                    .total_cmp(&overlap_fraction(b.last().unwrap(), &rule))
+            });
+
+        match candidate {
+            Some(group) => group.push(rule),
+            None => groups.push(vec![rule]),
         }
     }
 
-    groups.retain(|g| g.len() >= 2);
+    let min_width = body_size * MIN_TABLE_RULE_WIDTH;
+    groups.retain(|g| g.len() >= 2 && g.iter().any(|r| r.width() >= min_width));
     groups
 }
 
-fn aligned(a: &Rect, b: &Rect) -> bool {
+/// How much of the shorter rule the two share horizontally.
+fn overlap_fraction(a: &Rect, b: &Rect) -> f32 {
     let shorter = a.width().min(b.width()).max(1.0);
-    a.x_overlap(b) / shorter >= MIN_RULE_OVERLAP
+    a.x_overlap(b) / shorter
+}
+
+fn aligned(a: &Rect, b: &Rect) -> bool {
+    overlap_fraction(a, b) >= MIN_RULE_OVERLAP
 }
 
 /// Builds a table from a group of rules and the lines they enclose.
@@ -423,6 +457,83 @@ mod tests {
         let page = page_with(vec![rule(100.0, 72.0, 400.0)]);
         let lines = vec![row(120.0, &[("a", 76.0, 90.0), ("b", 200.0, 214.0)])];
         assert!(detect(&page, &lines, 10.0).is_empty());
+    }
+
+    /// One table's rules are one group, which is what they were before chains went plural.
+    #[test]
+    fn a_single_stack_of_rules_is_one_group() {
+        let rules = [
+            Rect::from_corners(72.0, 100.0, 400.0, 100.6),
+            Rect::from_corners(72.0, 120.0, 400.0, 120.6),
+            Rect::from_corners(72.0, 170.0, 400.0, 170.6),
+        ];
+        let groups = group_rules(&rules, 10.0);
+        assert_eq!(groups.len(), 1, "expected one group, got {groups:?}");
+        assert_eq!(groups[0].len(), 3);
+    }
+
+    /// A rule that overlaps nothing joins nothing, however close in y it lands.
+    #[test]
+    fn a_rule_with_no_overlap_never_joins_a_group() {
+        // The middle rule sits between the other two in y but shares no x with either. The
+        // outer two must still find each other.
+        let rules = [
+            Rect::from_corners(50.0, 100.0, 280.0, 100.6),
+            Rect::from_corners(320.0, 110.0, 540.0, 110.6),
+            Rect::from_corners(50.0, 120.0, 280.0, 120.6),
+        ];
+        let groups = group_rules(&rules, 10.0);
+        assert_eq!(groups.len(), 1, "expected one group, got {groups:?}");
+        assert_eq!(groups[0].len(), 2);
+        assert!(
+            groups[0].iter().all(|r| r.x1 <= 280.0),
+            "the unrelated rule was pulled in: {:?}",
+            groups[0]
+        );
+    }
+
+    /// Two tables side by side interleave in y. Chaining only from the most recent rule made
+    /// every group a singleton and dropped both tables.
+    #[test]
+    fn side_by_side_tables_both_survive() {
+        let page = page_with(vec![
+            rule(100.0, 60.0, 280.0),
+            rule(102.0, 320.0, 540.0),
+            rule(120.0, 60.0, 280.0),
+            rule(122.0, 320.0, 540.0),
+            rule(170.0, 60.0, 280.0),
+            rule(172.0, 320.0, 540.0),
+        ]);
+        let lines = vec![
+            row(115.0, &[("Model", 64.0, 100.0), ("Top-1", 200.0, 236.0)]),
+            row(117.0, &[("Layers", 324.0, 366.0), ("Error", 460.0, 492.0)]),
+            row(140.0, &[("A", 64.0, 78.0), ("21.4", 200.0, 226.0)]),
+            row(142.0, &[("18", 324.0, 344.0), ("3.5", 460.0, 480.0)]),
+            row(160.0, &[("B", 64.0, 78.0), ("20.1", 200.0, 226.0)]),
+            row(162.0, &[("34", 324.0, 344.0), ("2.8", 460.0, 480.0)]),
+        ];
+
+        let tables = detect(&page, &lines, 10.0);
+        assert_eq!(tables.len(), 2, "expected two tables, got {tables:?}");
+        assert_eq!(tables[0].rows[0], ["Model", "Top-1"]);
+        assert_eq!(tables[1].rows[0], ["Layers", "Error"]);
+        assert_eq!(tables[0].rows[2], ["B", "20.1"]);
+        assert_eq!(tables[1].rows[2], ["34", "2.8"]);
+    }
+
+    /// `\frac` draws its bar as a filled rectangle, so a column of display fractions offers a
+    /// stack of aligned "rules" with text between them — a table in every respect but width.
+    #[test]
+    fn a_stack_of_fraction_bars_is_not_a_table() {
+        // Two numbered display equations, one above the other. The bars align, the denominators
+        // sit between them, and the equation numbers off to the right read as a second column.
+        let page = page_with(vec![rule(100.0, 150.0, 230.0), rule(140.0, 152.0, 232.0)]);
+        let lines = vec![
+            row(112.0, &[("x", 152.0, 160.0), ("(3)", 210.0, 228.0)]),
+            row(136.0, &[("y", 154.0, 162.0), ("(4)", 212.0, 230.0)]),
+        ];
+        let tables = detect(&page, &lines, 10.0);
+        assert!(tables.is_empty(), "fractions became a table: {tables:?}");
     }
 
     /// Rules with no horizontal relationship belong to different tables, or to none.
