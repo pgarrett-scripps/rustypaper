@@ -78,6 +78,9 @@ impl Table {
 /// `figures` are the page's drawn regions, as [`crate::figure::regions`] reports them. A rule
 /// inside one is not a table's — see [`inside_a_figure`] — and a figure between two rules means
 /// they bound different things — see [`separated_by_a_figure`].
+///
+/// `lines` are read twice: for the cells, and for the captions that say where one table ends and
+/// the next begins — see [`captioned_between`].
 pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32, figures: &[Rect]) -> Vec<Table> {
     let mut rules: Vec<Rect> = page
         .paths
@@ -88,16 +91,70 @@ pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32, figures: &[Rect]) 
         .collect();
     rules.sort_by(|a, b| a.y0.total_cmp(&b.y0));
 
+    let captions = caption_lines(lines);
+
     let mut tables = Vec::new();
     let mut used: Vec<bool> = vec![false; lines.len()];
 
-    for group in group_rules(&rules, body_size, figures) {
+    for group in group_rules(&rules, body_size, figures, &captions) {
         if let Some(table) = build(&group, lines, body_size, &mut used) {
             tables.push(table);
         }
     }
 
     tables
+}
+
+/// Where each of the page's table captions sits.
+///
+/// A caption is the one thing on a page that says, in words, *this table ends here and the next
+/// one begins*. See [`captioned_between`] for what is done with them.
+fn caption_lines(lines: &[Line]) -> Vec<Caption> {
+    lines
+        .iter()
+        .filter(|line| opens_a_caption(line))
+        .map(|line| Caption {
+            baseline: line.baseline,
+            centre_x: line.bbox.center_x(),
+        })
+        .collect()
+}
+
+/// A caption's position: its baseline, and the middle of its measure.
+#[derive(Debug, Clone, Copy)]
+struct Caption {
+    baseline: f32,
+    centre_x: f32,
+}
+
+/// Whether a line begins `Table 9.`, `TABLE II`, `Tab. 3:` — a table's number, not its mention.
+///
+/// The label has to be the line's *first* word and be followed by a number. Papers refer to their
+/// own tables constantly (`… improves the mAP by over 2 points (Table 9).`), and a mention that
+/// happens to land between two rules must not part them; `Table` at the head of a line, with a
+/// numeral after it, is a caption or the opening of a sentence about one, and either way the
+/// rules on the two sides of it are not one tabular's.
+fn opens_a_caption(line: &Line) -> bool {
+    let mut words = line.words.iter().map(|w| w.text.as_str());
+    let Some(label) = words.next() else {
+        return false;
+    };
+    let label = label.trim_end_matches(['.', ':']);
+    if !(label.eq_ignore_ascii_case("table") || label.eq_ignore_ascii_case("tab")) {
+        return false;
+    }
+    words.next().is_some_and(is_a_table_number)
+}
+
+/// Whether a word is a table's number: `9`, `9.`, `II`, `IV:`.
+///
+/// Arabic and Roman both, because the corpus sets it both ways — `Table 9.` in the LaTeX article
+/// classes, `TABLE II` under REVTeX and IEEEtran.
+fn is_a_table_number(word: &str) -> bool {
+    let word = word.trim_end_matches(['.', ':', ')']);
+    let arabic = |w: &str| w.chars().all(|c| c.is_ascii_digit());
+    let roman = |w: &str| w.chars().all(|c| matches!(c, 'I' | 'V' | 'X' | 'L'));
+    !word.is_empty() && (arabic(word) || roman(word))
 }
 
 /// Whether a rule lies wholly within one of the page's drawn figure regions.
@@ -135,6 +192,38 @@ fn separated_by_a_figure(above: &Rect, below: &Rect, figures: &[Rect]) -> bool {
         .any(|region| region.y0 >= above.y1 && region.y1 <= below.y0)
 }
 
+/// Whether a table caption sits in the gap between two rules.
+///
+/// Geometry alone cannot part two tables stacked in the same measure. ResNet's page 11 sets four
+/// of them one under the next, and their x-extents are *nested* — 139.8–455.4 inside 51.7–543.5
+/// around 324.6–529.3 — so every pair scores a perfect [`overlap_fraction`] and clears
+/// [`MIN_RULE_WIDTH_RATIO`] as comfortably as a `\cmidrule` does. Spacing cannot part them
+/// either: the widest gap between two of these tables is 56 pt, and a real `\midrule` to
+/// `\bottomrule` run legitimately reaches [`MAX_RULE_SPACING`]. All seventeen rules chained into
+/// one 622 pt "table" of 69 rows that swallowed both columns of the page's body text and lost
+/// three tables.
+///
+/// What is unambiguous is the caption. `Table 9.` between two rules says in words that the one
+/// above closes a tabular and the one below opens another, and no arrangement of rules says it.
+/// The test is deliberately narrow — see [`opens_a_caption`], which wants the label at the head
+/// of the line and a number after it — because a caption that is missed only leaves today's
+/// merge, while a mention mistaken for one splits a table that was right.
+///
+/// The caption must also lie horizontally within the pair, or a caption in the *other* column
+/// would part a table in this one. Their union is the span to test against rather than their
+/// intersection: a full-measure caption under a table that occupies one column is centred on the
+/// page, outside the narrower rule but inside the pair.
+fn captioned_between(above: &Rect, below: &Rect, captions: &[Caption]) -> bool {
+    let left = above.x0.min(below.x0);
+    let right = above.x1.max(below.x1);
+    captions.iter().any(|caption| {
+        caption.baseline > above.y1
+            && caption.baseline < below.y0
+            && caption.centre_x >= left
+            && caption.centre_x <= right
+    })
+}
+
 /// Clusters rules that plausibly belong to the same table.
 ///
 /// Rules arrive in y order and are chained by vertical adjacency, but every open chain stays a
@@ -147,7 +236,12 @@ fn separated_by_a_figure(above: &Rect, below: &Rect, figures: &[Rect]) -> bool {
 /// Where several chains could take a rule, the best-overlapping one does, and the most recent of
 /// those wins a tie. With a single table on the page there is only ever one chain, so this is
 /// exactly the old behaviour.
-fn group_rules(rules: &[Rect], body_size: f32, figures: &[Rect]) -> Vec<Vec<Rect>> {
+fn group_rules(
+    rules: &[Rect],
+    body_size: f32,
+    figures: &[Rect],
+    captions: &[Caption],
+) -> Vec<Vec<Rect>> {
     let mut groups: Vec<Vec<Rect>> = Vec::new();
 
     for &rule in rules {
@@ -158,6 +252,7 @@ fn group_rules(rules: &[Rect], body_size: f32, figures: &[Rect]) -> Vec<Vec<Rect
                 rule.y0 - last.y1 <= MAX_RULE_SPACING
                     && aligned(last, &rule)
                     && !separated_by_a_figure(last, &rule, figures)
+                    && !captioned_between(last, &rule, captions)
             })
             .max_by(|a, b| {
                 overlap_fraction(a.last().unwrap(), &rule)
@@ -526,7 +621,7 @@ mod tests {
             Rect::from_corners(72.0, 120.0, 400.0, 120.6),
             Rect::from_corners(72.0, 170.0, 400.0, 170.6),
         ];
-        let groups = group_rules(&rules, 10.0, &[]);
+        let groups = group_rules(&rules, 10.0, &[], &[]);
         assert_eq!(groups.len(), 1, "expected one group, got {groups:?}");
         assert_eq!(groups[0].len(), 3);
     }
@@ -541,7 +636,7 @@ mod tests {
             Rect::from_corners(320.0, 110.0, 540.0, 110.6),
             Rect::from_corners(50.0, 120.0, 280.0, 120.6),
         ];
-        let groups = group_rules(&rules, 10.0, &[]);
+        let groups = group_rules(&rules, 10.0, &[], &[]);
         assert_eq!(groups.len(), 1, "expected one group, got {groups:?}");
         assert_eq!(groups[0].len(), 2);
         assert!(
@@ -771,5 +866,183 @@ mod tests {
         assert_eq!(tables.len(), 1, "the cmidrule split its own table");
         assert_eq!(tables[0].header_rows, 1);
         assert_eq!(tables[0].rows[1], ["80%", "84.2"]);
+    }
+
+    /// ResNet's page 11 in miniature: two tables stacked in the same measure, the upper one's
+    /// rules nested wholly inside the lower one's, and 29 pt of white between the pair. Every
+    /// geometric test passes — the overlap is a perfect 1.0, the width ratio 0.64, the spacing a
+    /// tenth of [`MAX_RULE_SPACING`] — so only what is written between them tells them apart.
+    ///
+    /// `middle` is the line that lands in that gap.
+    fn stacked_tables(middle: &[(&str, f32, f32)]) -> (PageRaw, Vec<Line>) {
+        let page = page_with(vec![
+            rule(72.0, 139.8, 455.4),
+            rule(96.0, 139.8, 455.4),
+            rule(178.0, 139.8, 455.4),
+            rule(208.0, 51.7, 543.5),
+            rule(218.6, 51.7, 543.5),
+            rule(250.1, 51.7, 543.5),
+        ]);
+        let lines = vec![
+            row(90.0, &[("training", 144.0, 190.0), ("COCO", 300.0, 336.0)]),
+            row(120.0, &[("+context", 144.0, 190.0), ("51.1", 300.0, 336.0)]),
+            row(160.0, &[("ensemble", 144.0, 190.0), ("59.0", 300.0, 336.0)]),
+            row(190.0, middle),
+            row(215.5, &[("system", 56.0, 102.0), ("mAP", 300.0, 336.0)]),
+            row(226.1, &[("baseline", 56.0, 102.0), ("73.2", 300.0, 336.0)]),
+            row(
+                236.4,
+                &[("baseline+++", 56.0, 102.0), ("85.6", 300.0, 336.0)],
+            ),
+        ];
+        (page, lines)
+    }
+
+    /// A line of body prose in that gap leaves the two welded, which is what they were before
+    /// captions were consulted. The pair is genuinely indistinguishable by geometry.
+    #[test]
+    fn stacked_tables_with_nothing_between_them_stay_one() {
+        let (page, lines) = stacked_tables(&[
+            ("by", 130.0, 142.0),
+            ("over", 144.0, 172.0),
+            ("2", 174.0, 180.0),
+            ("points", 182.0, 216.0),
+            ("(Table", 218.0, 250.0),
+            ("9).", 252.0, 266.0),
+        ]);
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(
+            tables.len(),
+            1,
+            "the fixture must weld without a caption, or it proves nothing: {tables:?}"
+        );
+        assert_eq!(tables[0].rows.len(), 7);
+    }
+
+    /// The same stack, with `Table 9.` where the prose was. The caption parts them.
+    #[test]
+    fn a_caption_parts_two_stacked_tables() {
+        let (page, lines) = stacked_tables(&[
+            ("Table", 130.0, 158.0),
+            ("9.", 160.0, 170.0),
+            ("Object", 172.0, 205.0),
+            ("detection", 207.0, 260.0),
+        ]);
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables.len(), 2, "expected two tables, got {tables:?}");
+
+        assert_eq!(tables[0].rows.len(), 3);
+        assert_eq!(tables[0].rows[0], ["training", "COCO"]);
+        assert_eq!(tables[0].rows[2], ["ensemble", "59.0"]);
+        assert_eq!(tables[1].rows.len(), 3);
+        assert_eq!(tables[1].rows[0], ["system", "mAP"]);
+        assert_eq!(tables[1].rows[2], ["baseline+++", "85.6"]);
+    }
+
+    /// REVTeX and IEEEtran number their tables in Roman.
+    #[test]
+    fn a_roman_numbered_caption_parts_them_too() {
+        let (page, lines) = stacked_tables(&[
+            ("TABLE", 130.0, 162.0),
+            ("II", 164.0, 174.0),
+            ("Symmetry", 176.0, 226.0),
+            ("labels", 228.0, 260.0),
+        ]);
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables.len(), 2, "expected two tables, got {tables:?}");
+    }
+
+    /// A paper names its own tables constantly, and a sentence that mentions one is not its
+    /// caption. Only the head of the line counts.
+    #[test]
+    fn a_mention_mid_sentence_is_not_a_caption() {
+        let (page, lines) = stacked_tables(&[
+            ("shown", 130.0, 164.0),
+            ("in", 166.0, 176.0),
+            ("Table", 178.0, 206.0),
+            ("9", 208.0, 214.0),
+            ("above", 216.0, 248.0),
+        ]);
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(
+            tables.len(),
+            1,
+            "a mention split a table that geometry said was one: {tables:?}"
+        );
+    }
+
+    /// Nor is the bare word. `Table` opens plenty of sentences that are not captions, and it is
+    /// the number after it that makes one.
+    #[test]
+    fn the_word_alone_is_not_a_caption() {
+        let (page, lines) = stacked_tables(&[
+            ("Table", 130.0, 158.0),
+            ("entries", 160.0, 200.0),
+            ("are", 202.0, 220.0),
+            ("means", 222.0, 258.0),
+        ]);
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables.len(), 1, "a bare mention split a table: {tables:?}");
+    }
+
+    /// A caption belongs to the column it sits in. One in the *other* column must not reach
+    /// across and part a table that has nothing to do with it.
+    #[test]
+    fn a_caption_in_the_other_column_parts_nothing() {
+        let page = page_with(vec![
+            rule(100.0, 60.0, 280.0),
+            rule(120.0, 60.0, 280.0),
+            rule(200.0, 60.0, 280.0),
+        ]);
+        let lines = vec![
+            row(115.0, &[("Model", 64.0, 100.0), ("Top-1", 200.0, 236.0)]),
+            row(140.0, &[("A", 64.0, 100.0), ("21.4", 200.0, 236.0)]),
+            row(180.0, &[("B", 64.0, 100.0), ("20.1", 200.0, 236.0)]),
+            row(
+                150.0,
+                &[
+                    ("Table", 320.0, 348.0),
+                    ("7.", 350.0, 360.0),
+                    ("Ablations", 362.0, 412.0),
+                ],
+            ),
+        ];
+
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(
+            tables.len(),
+            1,
+            "the next column's caption split this one's table: {tables:?}"
+        );
+        assert_eq!(tables[0].rows.len(), 3);
+    }
+
+    /// A `\cmidrule` is the case the split must never touch: a short rule inside a table, with
+    /// the table's own rows either side of it and no caption anywhere between.
+    #[test]
+    fn a_caption_below_a_table_does_not_reach_back_into_it() {
+        let page = page_with(vec![
+            rule(100.0, 100.0, 320.0),
+            rule(130.0, 100.0, 179.0),
+            rule(200.0, 100.0, 320.0),
+        ]);
+        let lines = vec![
+            row(120.0, &[("Masking", 110.0, 158.0), ("Dev", 240.0, 264.0)]),
+            row(150.0, &[("80%", 110.0, 158.0), ("84.2", 240.0, 264.0)]),
+            row(180.0, &[("100%", 110.0, 158.0), ("84.3", 240.0, 264.0)]),
+            row(
+                215.0,
+                &[
+                    ("Table", 100.0, 128.0),
+                    ("8:", 130.0, 142.0),
+                    ("Ablation", 144.0, 190.0),
+                ],
+            ),
+        ];
+
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables.len(), 1, "the caption below split the table above");
+        assert_eq!(tables[0].rows.len(), 3);
+        assert_eq!(tables[0].header_rows, 1);
     }
 }

@@ -521,6 +521,52 @@ fn tables_are_reconstructed() {
     );
 }
 
+/// ResNet's last page stacks four tables down the same measure, and their rule extents are
+/// nested — 139.8–455.4 inside 51.7–543.5 around 324.6–529.3 — so every pair of them looks like
+/// one tabular and its `\cmidrule`. All seventeen rules used to chain into a single 622 pt block
+/// of 69 rows that swallowed the page's body prose along with three of its four tables.
+#[test]
+fn tables_stacked_down_a_page_stay_four_tables() {
+    let path = paper!("resnet.pdf");
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+
+    let found: Vec<&rustypaper::doc::TableData> = doc
+        .blocks
+        .iter()
+        .filter_map(|b| b.table.as_ref())
+        .filter(|t| t.rows.iter().flatten().any(|c| c.contains("baseline")))
+        .collect();
+
+    // Tables 9 to 12: COCO, PASCAL VOC 2007, PASCAL VOC 2012, ImageNet DET.
+    let coco = found
+        .iter()
+        .find(|t| t.rows.iter().flatten().any(|c| c.contains("multi-scale")))
+        .expect("the COCO table was not found");
+    assert_eq!(coco.rows.len(), 9, "the COCO table is the wrong height");
+
+    let voc: Vec<_> = found
+        .iter()
+        .filter(|t| t.rows.iter().flatten().any(|c| c.contains("baseline+++")))
+        .collect();
+    assert_eq!(voc.len(), 2, "the two PASCAL VOC tables did not come apart");
+    for table in voc {
+        assert_eq!(table.rows.len(), 4, "a VOC table took in its neighbour");
+    }
+
+    // Nothing from the running text may have been dragged in with them.
+    for table in &found {
+        assert!(
+            !table
+                .rows
+                .iter()
+                .flatten()
+                .any(|c| c.contains("We select two adjacent scales")),
+            "body prose was swallowed by a table: {:?}",
+            table.rows
+        );
+    }
+}
+
 /// Table cells must not also appear as paragraphs.
 #[test]
 fn table_content_is_removed_from_the_prose() {
