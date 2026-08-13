@@ -31,14 +31,14 @@ equation fidelity, if it finds fewer tables, or if a paper the baseline scored i
 longer scorable. Refresh `baseline.json` deliberately, with `--json > baseline.json`, only when a
 change is an intended improvement.
 
-Current, over the nine scorable papers:
+Current, over the fifteen scorable papers:
 
 | prose bigram | equation recall | equation fidelity | tables | corpus tests |
 | --- | --- | --- | --- | --- |
-| 0.891 | 0.370 | 0.547 | 26/44 | 31/31 |
+| 0.878 | 0.336 | 0.559 | 46/90 | 42/42 |
 
 Maths and tables are the project's weak point, and the honest place to work next. The corpus
-converts in 2.1 s and 64 MB of resident memory.
+converts in 1.4 s and 66 MB of resident memory.
 
 ## Rules that have earned their place
 

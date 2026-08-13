@@ -211,15 +211,15 @@ project's headline claim:
 
 | | |
 |---|---|
-| equation recall | **0.370** |
-| equation fidelity | **0.547** |
+| equation recall | **0.336** |
+| equation fidelity | **0.559** |
 
-Recall ranges from 1.000 on ResNet, which has two equations, to 0.000 on BERT and unet and 0.035
+Recall ranges from 1.000 on ResNet, which has two equations, to 0.000 on BERT and unet and 0.053
 on a biology paper with 57. **Detection, not reconstruction, is the weaker half**: most display
 equations are never identified as such, and the ones that are come out around half right.
 
 The confidence score is still the weaker signal of the two it reports. Across the corpus the
-converter emits 297 display equations at a mean confidence of 0.83, of which 40 fall below the
+converter emits 357 display equations at a mean confidence of 0.85, of which 42 fall below the
 0.55 fallback threshold — so the image fallback does now fire, where at first it never did.
 Confidence still reflects two specific snags, a guessed radical extent and an unnameable glyph,
 and none of the ways detection goes wrong: an equation that was never recognised as one has no

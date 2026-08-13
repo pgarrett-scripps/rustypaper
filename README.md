@@ -134,7 +134,7 @@ Current scores across the fifteen scorable papers:
 | prose bigram recall | **0.878** | prose comes out right, in the right order |
 | equation recall | **0.336** | most display equations are *not* found |
 | equation fidelity | **0.559** | those that are found are roughly half right |
-| tables | 54 found / 90 in source | badly distributed: 10 of ResNet's 17, 10 of ImageNet's 26, one invented on a paper with none |
+| tables | 46 found / 90 in source | badly distributed: 9 of ResNet's 17, 9 of ImageNet's 26, one invented on a paper with none |
 
 The maths numbers are the honest state of the differentiator, and they are the project's
 weakest point — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). See
