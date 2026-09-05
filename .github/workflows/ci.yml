@@ -44,6 +44,11 @@ jobs:
       - name: Harness self-tests
         run: python3 -m unittest discover -s eval/tests
 
+      - name: Python API and layout contract
+        run: |
+          pip install pytest
+          PYTHONPATH=python pytest python/tests -q
+
       # Quality is a number, and it must not silently fall. Needs the corpus, so it is allowed
       # to be skipped rather than failing the build when arXiv is unreachable.
       - name: Fetch corpus
@@ -55,4 +60,3 @@ jobs:
         if: steps.corpus.outcome == 'success'
         working-directory: eval
         run: PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
-

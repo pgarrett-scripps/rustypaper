@@ -3,14 +3,14 @@ resolver = "2"
 members = ["rustypaper", "rustypaper-py"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.94"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/pgarrett-scripps/rustypaper"
 
 [workspace.dependencies]
-rustypaper = { path = "rustypaper", version = "0.2.0" }
+rustypaper = { path = "rustypaper", version = "0.2.1" }
 # The pure-Rust PDF backend, from the registry. Deliberately not a path dependency: a path
 # only resolves where the sibling checkout happens to exist, which is this machine and not a
 # CI runner, and `cargo fmt --all` walks into it whether it is there or not. To develop the
