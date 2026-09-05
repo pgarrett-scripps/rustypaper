@@ -11,7 +11,7 @@ scripts/fetch-corpus.sh    # 16 arXiv PDFs, not committed; corpus tests skip wit
 scripts/build.sh           # cargo build --release AND install the Python extension
 cargo test --release
 python3 -m unittest discover -s eval/tests
-PYTHONPATH=python pytest python/tests -q   # the Python surface; needs the corpus
+PYTHONPATH=python pytest python/tests -q   # committed fixtures, no corpus download
 ```
 
 **Use `scripts/build.sh`, not bare `cargo build`.** The eval harness loads a compiled extension

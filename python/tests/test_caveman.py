@@ -6,7 +6,7 @@ a level the extension does not recognise, or one that quietly does nothing,
 produces a perfectly good conversion that is simply larger than the caller
 asked for. Nobody notices until the bill.
 
-Run with the repo's own corpus:  pytest python/tests -q
+Run with the committed fixtures: pytest python/tests -q
 """
 
 from __future__ import annotations
@@ -19,24 +19,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
 
-rustypaper = pytest.importorskip("rustypaper")
-
-CORPUS = sorted((ROOT / "corpus").glob("*.pdf"))
-pytestmark = pytest.mark.skipif(
-    not CORPUS, reason="no corpus; run scripts/fetch-corpus.sh"
-)
-
-
-@pytest.fixture(scope="module")
-def paper() -> str:
-    return str(CORPUS[0])
+import rustypaper
 
 
 def test_levels_shrink_monotonically(paper: str) -> None:
     """off >= light >= hard, and each level actually does something.
 
     Asserted as a chain rather than against fixed sizes so it keeps working as
-    the word lists change — what must hold is that a stronger level is never
+    the word lists change. What must hold is that a stronger level is never
     larger, and that light and hard are not silently no-ops.
     """
     off = rustypaper.to_markdown(paper)
@@ -72,8 +62,7 @@ def test_content_words_survive_light(paper: str) -> None:
     """
     full = rustypaper.to_document(paper)["title"] or ""
     light = rustypaper.to_document(paper, "light")["title"] or ""
-    if not full:
-        pytest.skip("this corpus paper has no detected title")
+    assert full, "fixture title was lost"
 
     dropped = [w for w in full.split() if w not in light.split()]
     assert all(len(w) <= 4 for w in dropped), f"light dropped content words: {dropped}"

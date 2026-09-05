@@ -544,14 +544,33 @@ pub fn split_at_gutters(page: &PageRaw, lines: Vec<Line>, gutters: &[(f32, f32)]
 
     let mut out = Vec::with_capacity(lines.len());
     for line in lines {
+        let prose = line
+            .words
+            .iter()
+            .filter(|word| {
+                let text = word.text.trim_matches(|c: char| c.is_ascii_punctuation());
+                text.chars().count() >= 3 && text.chars().all(char::is_alphabetic)
+            })
+            .count()
+            >= 4;
         let mut current: Vec<Placed> = Vec::new();
         let mut pieces: Vec<Vec<Placed>> = Vec::new();
 
         for placed in line.glyphs {
-            let x = page.glyphs[placed.index].bbox.center_x();
+            let bbox = page.glyphs[placed.index].bbox;
             let crossed = current.last().is_some_and(|prev| {
-                let px = page.glyphs[prev.index].bbox.center_x();
-                gutters.iter().any(|&(g0, g1)| px < g0 && x > g1)
+                let previous = page.glyphs[prev.index].bbox;
+                // Sparse coverage can include a ragged column edge. A wide gap
+                // across the center is additional evidence for prose only.
+                // Equations retain the stricter requirement to span the band.
+                gutters.iter().any(|&(g0, g1)| {
+                    let center = (g0 + g1) * 0.5;
+                    (previous.center_x() < g0 && bbox.center_x() > g1)
+                        || (prose
+                            && previous.x1 <= center
+                            && bbox.x0 >= center
+                            && bbox.x0 - previous.x1 >= line.size * 2.0)
+                })
             });
             if crossed && !current.is_empty() {
                 pieces.push(std::mem::take(&mut current));
@@ -961,6 +980,35 @@ mod tests {
         assert_eq!(split[0].text(), "left");
         assert_eq!(split[1].text(), "right");
         assert!(split[0].bbox.x1 < split[1].bbox.x0);
+    }
+
+    #[test]
+    fn a_ragged_column_edge_can_enter_the_coverage_band() {
+        let mut glyphs = run("the left column ends here", 160.0, 100.0, 10.0);
+        glyphs.extend(run("the right column starts here", 320.0, 100.0, 10.0));
+        let page = page_of(glyphs);
+        let split = split_at_gutters(&page, build_lines(&page), &[(255.0, 318.0)]);
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].text(), "the left column ends here");
+        assert_eq!(split[1].text(), "the right column starts here");
+    }
+
+    #[test]
+    fn ordinary_word_spacing_across_a_gutter_keeps_a_full_width_line() {
+        let mut glyphs = run("left", 265.0, 100.0, 10.0);
+        glyphs.extend(run("right", 289.0, 100.0, 10.0));
+        let page = page_of(glyphs);
+        let split = split_at_gutters(&page, build_lines(&page), &[(255.0, 318.0)]);
+        assert_eq!(split.len(), 1);
+    }
+
+    #[test]
+    fn mathematical_terms_do_not_count_as_prose_across_a_sparse_band() {
+        let mut glyphs = run("alpha+1 beta+2 gamma+3 delta+4", 140.0, 100.0, 10.0);
+        glyphs.extend(run("epsilon+5", 320.0, 100.0, 10.0));
+        let page = page_of(glyphs);
+        let split = split_at_gutters(&page, build_lines(&page), &[(255.0, 318.0)]);
+        assert_eq!(split.len(), 1);
     }
 
     /// Lays out `\IEEEPARstart`: an initial two lines deep in the margin, the two lines it rises

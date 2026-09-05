@@ -2,9 +2,9 @@
 
 What these are guarding is the *contract*, not the conversion. A consumer indexes into
 ``blocks`` with the ranges ``sections`` gives it, so a range that is off by one is a paragraph
-attributed to the wrong section — silently, and in a shape that looks entirely plausible.
+attributed to the wrong section, silently, in a shape that looks entirely plausible.
 
-Run with the repo's own corpus:  pytest python/tests -q
+Run with the committed fixtures: pytest python/tests -q
 """
 
 from __future__ import annotations
@@ -17,17 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
 
-rustypaper = pytest.importorskip("rustypaper")
-
-CORPUS = sorted((ROOT / "corpus").glob("*.pdf"))
-pytestmark = pytest.mark.skipif(
-    not CORPUS, reason="no corpus; run scripts/fetch-corpus.sh"
-)
-
-
-@pytest.fixture(scope="module")
-def paper() -> str:
-    return str(CORPUS[0])
+import rustypaper
 
 
 @pytest.fixture(scope="module")
@@ -93,7 +83,8 @@ def test_convert_takes_the_caveman_level(paper: str) -> None:
 def test_typst_and_text_render(paper: str) -> None:
     typst = rustypaper.to_typst(paper)
     text = rustypaper.to_text(paper)
-    assert "#import" in typst, "Typst output should carry its preamble"
+    assert typst.startswith("= Reliable Widget Measurements\n")
+    assert "== 2 Methods" in typst
     assert text.strip(), "plain text should not be empty"
     # Plain text is the same document with the markup taken away.
     assert "#import" not in text

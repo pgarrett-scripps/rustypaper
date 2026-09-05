@@ -19,7 +19,7 @@ cargo install rustypaper          # the command-line tool
 ```
 
 ```toml
-rustypaper = "0.1"            # the library
+rustypaper = "0.2"            # the library
 ```
 
 ```sh
