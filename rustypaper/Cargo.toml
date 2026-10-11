@@ -18,8 +18,7 @@ name = "rustypaper"
 path = "src/main.rs"
 
 [dependencies]
-# Used by the binary only, but cargo has no way to say so for a bin inside a library crate.
-# They are small and pure Rust, so the cost to a library consumer is compile time, not weight.
+# The native executable and Python entry point share the command line implementation.
 anyhow.workspace = true
 clap.workspace = true
 

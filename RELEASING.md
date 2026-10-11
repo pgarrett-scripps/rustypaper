@@ -1,11 +1,11 @@
 # Releasing
 
 One project, one version, one tag. Pushing `vX.Y.Z` publishes the crate to
-crates.io and the wheels to PyPI, both named `rustypaper`.
+crates.io, the wheels and source distribution to PyPI, and standalone executables
+to GitHub Releases. All packages are named `rustypaper`.
 
-Published so far: `rustypaper` 0.1.0, 0.1.1 and 0.2.0 on crates.io, 0.1.1 and
-0.2.0 on PyPI as five platform wheels and an sdist. `rustium-pdf` 0.1.0 and
-0.1.1 on crates.io.
+The latest release before standalone executables and the Python CLI was 0.2.1.
+Do not retag or republish that version to ship these additions.
 
 ## Order matters
 
@@ -27,18 +27,29 @@ into the wheel, not a crate anyone consumes.
 ## Cutting a release
 
 1. Bump `version` in the workspace `Cargo.toml` and in `python/pyproject.toml`.
-   They are separate files and nothing forces them to agree; the release
-   workflow checks the tag against the first one only.
+   Refresh `Cargo.lock` with `cargo check`. The release workflow requires the Rust
+   version, Python version, and publishing tag to agree.
 2. Commit, then tag and push:
 
    ```sh
-   git tag v0.1.2
-   git push origin v0.1.2
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
    ```
 
-The workflow re-runs the tests, checks the tag against the manifest, does a
-`cargo publish --dry-run`, then publishes. To rehearse without publishing,
-run it from the Actions tab with **dry run** left on.
+The workflow runs Rust tests and a crate packaging check, builds all five native
+executables and all five wheels, and tests each executable after archive extraction.
+Each wheel is installed on a matching runner, where both `rustypaper` and
+`python -m rustypaper` must pass the CLI checks. All builds and checks must pass
+before any publishing job starts.
+
+Relevant pull requests run the same packaging jobs without publishing. To rehearse
+manually, run the workflow from the Actions tab with **dry run** left on. A manual
+run with publishing enabled must target the matching version tag, never a branch.
+
+Native executables are built and exercised on matching Linux x86_64 and ARM64,
+macOS Intel and Apple Silicon, and Windows x86_64 runners. Linux binaries use
+Ubuntu 22.04 and require glibc 2.35 or newer. Wheel compatibility is handled
+separately by maturin's manylinux build.
 
 ## What a release needs configured, once
 
@@ -51,12 +62,24 @@ run it from the Actions tab with **dry run** left on.
 ## What ships
 
 The wheel is the extension module and the Python package around it, and
-nothing else. The PDF reader is pure Rust, so the wheel is self-contained:
+includes a `rustypaper` console entry point and `python -m rustypaper`. Both
+call the same Rust command implementation as the standalone executable, so no
+second executable is bundled in the wheel. The PDF reader is pure Rust:
 no native library beside it, nothing per-platform to keep in step, and no
 environment variable for a user to discover.
 
 One wheel per platform covers every supported Python, because the extension
 is built against the stable ABI (`abi3-py39`).
+
+Standalone executables are archived as
+`rustypaper-X.Y.Z-TARGET.tar.gz`, or `.zip` on Windows. Each archive contains a
+matching directory with the executable, README, and both license files. This
+layout follows cargo-binstall's default discovery rules. GitHub Releases also
+includes `SHA256SUMS`. The release job verifies the hashes before upload.
+
+GitHub Actions keeps native binaries under `binary-*` artifacts, wheels under
+`wheel-*`, and the source distribution under `sdist`. PyPI downloads only the
+wheel and source artifacts. Dry runs leave all artifacts available for inspection.
 
 `tests/corpus.rs` is excluded from the crate: it needs PDFs that are not ours
 to redistribute. Unit and robustness tests ship and run anywhere; corpus tests
@@ -74,10 +97,15 @@ cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline
 ## Verifying a release
 
 ```sh
-cargo install rustypaper && rustypaper --help
-pip install rustypaper && python -c "import rustypaper; print(rustypaper.__version__)"
+cargo binstall rustypaper
+rustypaper --version
+pip install rustypaper
+python -m rustypaper --version
+python scripts/smoke_cli.py rustypaper
+python scripts/smoke_cli.py python -m rustypaper
 ```
 
-The second is the one worth actually running: a wheel that imports on the
-build machine and not on a clean one is the failure this packaging is shaped
-to avoid.
+Use a fresh virtual environment for the Python installation and leave `PYTHONPATH`
+unset. The smoke checks run outside the source tree using the committed synthetic
+PDF fixtures. They exercise all output formats, file and batch output, partial
+batch failures, compression, diagnostics, usage errors, and closed output pipes.

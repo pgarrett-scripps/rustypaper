@@ -12,6 +12,7 @@
 use pyo3::create_exception;
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
+use std::ffi::OsString;
 
 create_exception!(
     _rustypaper,
@@ -152,6 +153,7 @@ fn extract_json(py: Python<'_>, path: &str) -> PyResult<String> {
 
 #[pymodule]
 fn _rustypaper(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(_run_cli, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add("ScannedDocument", module.py().get_type::<ScannedDocument>())?;
     module.add_function(wrap_pyfunction!(to_markdown, module)?)?;
@@ -161,4 +163,10 @@ fn _rustypaper(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(convert_json, module)?)?;
     module.add_function(wrap_pyfunction!(extract_json, module)?)?;
     Ok(())
+}
+
+/// Run the same CLI as the native executable, returning its exit status.
+#[pyfunction]
+fn _run_cli(py: Python<'_>, args: Vec<OsString>) -> i32 {
+    py.detach(|| rustypaper::cli::run(args))
 }
