@@ -1,6 +1,6 @@
 name: Release
 
-# Publishes the crate to crates.io and the wheels to PyPI, from a tag.
+# Publishes the crate, Python distributions, and native executables from a tag.
 #
 # The tag is the trigger and the version is read from Cargo.toml, so the two
 # can disagree — and a release published under the wrong number cannot be
@@ -14,6 +14,16 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rustypaper/**'
+      - 'rustypaper-py/**'
+      - 'python/**'
+      - 'scripts/package_binary.py'
+      - 'scripts/smoke_cli.py'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -25,6 +35,9 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: verify the tag
@@ -34,23 +47,36 @@ jobs:
       publish: ${{ steps.version.outputs.publish }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
       - id: version
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          import tomllib
+          from pathlib import Path
+          cargo = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']
+          python = tomllib.loads(Path('python/pyproject.toml').read_text())['project']['version']
+          if cargo != python:
+              raise SystemExit(f'Rust version {cargo} does not match Python version {python}')
+          PY
 
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ github.event_name }}" = "push" ] || [ "$MANUAL_PUBLISH" = "true" ]; then
             tag="${GITHUB_REF#refs/tags/v}"
-            if [ "$tag" != "$version" ]; then
+            if [ "$GITHUB_REF" != "refs/tags/v$version" ]; then
               echo "::error::tag v$tag does not match Cargo.toml version $version."\
                    "A release cannot be unpublished, so this stops here."
               exit 1
             fi
             echo "publish=true" >> "$GITHUB_OUTPUT"
           else
-            echo "publish=${{ inputs.dry_run == false }}" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          MANUAL_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == false }}
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -63,7 +89,7 @@ jobs:
 
   crate:
     name: crates.io
-    needs: verify
+    needs: [verify, binaries, wheels, sdist]
     if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -97,13 +123,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu }
-          - { os: macos-latest,   target: x86_64-apple-darwin }
-          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-15-intel,   target: x86_64-apple-darwin }
+          - { os: macos-14,         target: aarch64-apple-darwin }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
 
       # One wheel per platform covers every supported Python: the extension is
       # built against the stable ABI (abi3-py39), so there is no interpreter
@@ -112,10 +141,17 @@ jobs:
         with:
           working-directory: python
           target: ${{ matrix.target }}
-          args: --release --out dist
+          args: --release --locked --out dist
           # Only meaningful on Linux; builds the wheel inside a manylinux
           # container so it runs on distributions older than the runner.
           manylinux: auto
+
+      - name: Install and test the wheel outside the source tree
+        shell: bash
+        run: |
+          python -m pip install --no-deps python/dist/*.whl
+          python scripts/smoke_cli.py rustypaper
+          python scripts/smoke_cli.py python -m rustypaper
 
       - uses: actions/upload-artifact@v4
         with:
@@ -138,9 +174,67 @@ jobs:
           name: sdist
           path: python/dist/*.tar.gz
 
+  binaries:
+    name: binary / ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu, suffix: '' }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, suffix: '' }
+          - { os: macos-15-intel,   target: x86_64-apple-darwin, suffix: '' }
+          - { os: macos-14,         target: aarch64-apple-darwin, suffix: '' }
+          - { os: windows-latest,  target: x86_64-pc-windows-msvc, suffix: '.exe' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build native CLI
+        run: cargo build --release --locked -p rustypaper --bin rustypaper --target ${{ matrix.target }}
+      - name: Package and test the extracted executable
+        run: python scripts/package_binary.py ${{ matrix.target }} ${{ needs.verify.outputs.version }} target/${{ matrix.target }}/release/rustypaper${{ matrix.suffix }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: dist/*
+
+  github:
+    name: GitHub release binaries
+    needs: [verify, binaries, wheels, sdist]
+    if: needs.verify.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Verify checksums and attach binaries
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          cat *.sha256 > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          if ! gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release create "v$VERSION" --verify-tag --generate-notes
+          fi
+          gh release upload "v$VERSION" *.tar.gz *.zip SHA256SUMS --clobber
+
   pypi:
     name: PyPI
-    needs: [verify, wheels, sdist]
+    needs: [verify, binaries, wheels, sdist]
     if: needs.verify.outputs.publish == 'true'
     runs-on: ubuntu-latest
     environment: pypi
@@ -156,6 +250,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@release/v1

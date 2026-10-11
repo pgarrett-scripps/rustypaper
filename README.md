@@ -15,15 +15,38 @@ crates that exist are generic text extractors with no notion of a paper. This ai
 ## Install
 
 ```sh
-cargo install rustypaper          # the command-line tool
+pip install rustypaper
+rustypaper convert paper.pdf
+python -m rustypaper convert paper.pdf
 ```
 
-```toml
-rustypaper = "0.2"            # the library
-```
+The Python installation includes the same command line interface as the Rust executable.
+All commands and options are shared, including batch conversion, figure extraction, and
+diagnostics. No Rust compiler is needed when installing a supported platform wheel.
+
+Standalone executables are available on the
+[GitHub Releases page](https://github.com/pgarrett-scripps/rustypaper/releases).
+Download the archive for your platform, verify it against `SHA256SUMS`, extract it,
+and put `rustypaper` (or `rustypaper.exe`) on your `PATH`. These executables do not need Python.
+
+| Platform | Targets |
+|---|---|
+| Linux with glibc 2.35 or newer | x86_64, aarch64 |
+| macOS | Intel, Apple Silicon |
+| Windows | x86_64 |
+
+Alternatively, use [cargo-binstall](https://github.com/cargo-bins/cargo-binstall)
+to download a release executable, or Cargo to compile it locally:
 
 ```sh
-pip install rustypaper        # the Python bindings
+cargo binstall rustypaper
+cargo install rustypaper
+```
+
+For the Rust library:
+
+```toml
+rustypaper = "0.2"
 ```
 
 **Nothing else to install.** PDFs are read with

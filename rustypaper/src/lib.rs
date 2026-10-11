@@ -13,6 +13,7 @@
 //! The `Document` is the real output; Markdown is one rendering of it.
 
 pub mod backend;
+pub mod cli;
 pub mod compress;
 pub mod doc;
 pub mod emit;

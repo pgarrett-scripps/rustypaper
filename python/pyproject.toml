@@ -15,6 +15,9 @@ classifiers = [
 [project.urls]
 Repository = "https://github.com/pgarrett-scripps/rustypaper"
 
+[project.scripts]
+rustypaper = "rustypaper.cli:main"
+
 # Built with maturin from the workspace root:
 #   maturin build -m rustypaper-py/Cargo.toml
 # `scripts/build.sh` is the no-maturin path: cargo produces an importable .so directly.
