@@ -1,198 +1,212 @@
 # rustypaper
 
-Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst, JSON and plain
-text. Headings, reading order, figures, tables, equations and references, on a CPU, with no
-models and no native libraries.
+**Turn research PDFs into readable text and structured data.**
 
-The good open-source converters (Marker, MinerU, Docling, Nougat) are Python stacks that want a
-GPU; GROBID is CPU-only and fast but is a JVM service that emits TEI and ignores maths. The Rust
-crates that exist are generic text extractors with no notion of a paper. This aims at the gap:
-**structure-aware, maths-aware, CPU-only, single binary.**
+Rustypaper converts scientific papers to Markdown, plain text, JSON, or Typst. Use it to
+save a paper as an editable document, prepare text for search or an LLM, or extract
+sections for your own analysis tools. Run it from the terminal, Python, or Rust.
 
-> Status: **feature complete**. Converts one- and two-column papers to Markdown, Typst, plain
-> text or JSON, with reading order, figures, tables, mathematics and references.
+It runs locally on your CPU. No GPU, AI model, API key, or document upload is required.
+It is designed for PDFs with selectable text, including one-column and two-column papers.
+It does not perform OCR on scans or image-only PDFs.
 
-## Install
+[Quick start](#quick-start) · [Downloads](#install-without-python) ·
+[Python API](#python-api) · [Limitations](#conversion-quality-and-limitations)
+
+## Quick start
+
+With Python 3.9 or newer:
 
 ```sh
 pip install rustypaper
-rustypaper convert paper.pdf
-python -m rustypaper convert paper.pdf
+rustypaper convert paper.pdf --out paper.md
 ```
 
-The Python installation includes the same command line interface as the Rust executable.
-All commands and options are shared, including batch conversion, figure extraction, and
-diagnostics. No Rust compiler is needed when installing a supported platform wheel.
+Replace `paper.pdf` with your PDF's path. This saves the converted Markdown to `paper.md`.
+Omit `--out` to print it in the terminal instead.
 
-Standalone executables are available on the
-[GitHub Releases page](https://github.com/pgarrett-scripps/rustypaper/releases).
-Download the archive for your platform, verify it against `SHA256SUMS`, extract it,
-and put `rustypaper` (or `rustypaper.exe`) on your `PATH`. These executables do not need Python.
+You can also run the same command through Python:
 
-| Platform | Targets |
+```sh
+python -m rustypaper convert paper.pdf --out paper.md
+```
+
+The [PyPI package](https://pypi.org/project/rustypaper/) includes both the terminal command
+and the Python library. Precompiled packages are available for the platforms below, so
+supported installations do not need a Rust compiler.
+
+## What does the output look like?
+
+Rustypaper recognizes headings, paragraphs, figures, tables, equations, and references,
+and reconstructs the reading order of the paper. For example, the start of the Markdown
+from the repository's [synthetic sample PDF](python/tests/fixtures/single-column.pdf) is:
+
+```markdown
+# Reliable Widget Measurements
+
+Example Author
+
+## Abstract
+
+We describe a simple study of colored widgets on a wooden bench.
+```
+
+This is a shortened excerpt. Conversion quality varies with the paper's layout, especially
+for equations and complex tables. See [limitations](#conversion-quality-and-limitations).
+
+Choose the output that suits your workflow:
+
+| Format | Useful for | CLI option |
+|---|---|---|
+| Markdown | Reading, editing, and use in notes or LLM workflows | `--format md` (default) |
+| Plain text | Search and text processing | `--format text` |
+| JSON | Working with sections, content blocks, and their page locations | `--format json` |
+| Typst | Further editing and typesetting in Typst | `--format typst` |
+
+## Common tasks
+
+Save plain text, structured JSON, or a Typst document:
+
+```sh
+rustypaper convert paper.pdf --format text --out paper.txt
+rustypaper convert paper.pdf --format json --out paper.json
+rustypaper convert paper.pdf --format typst --out paper.typ
+```
+
+Save figures alongside the Markdown, with links to the image files:
+
+```sh
+rustypaper convert paper.pdf --out paper.md --assets figures
+```
+
+Convert several papers into an output folder:
+
+```sh
+rustypaper convert first.pdf second.pdf --out converted
+```
+
+Each PDF gets its own output file. For multiple inputs, `--out` must be a directory.
+
+For all options, run `rustypaper convert --help`. An optional `--caveman light` or
+`--caveman hard` setting shortens prose by removing selected words and phrases. It is
+off by default and changes the wording, so use the default when you want the original prose.
+
+## Install without Python
+
+Download an executable from the [latest release](https://github.com/pgarrett-scripps/rustypaper/releases/latest).
+These downloads do not require Python or a Rust compiler.
+
+| Your computer | Archive name contains |
 |---|---|
-| Linux with glibc 2.35 or newer | x86_64, aarch64 |
-| macOS | Intel, Apple Silicon |
-| Windows | x86_64 |
+| Linux on Intel or AMD, 64-bit | `x86_64-unknown-linux-gnu` |
+| Linux on ARM64 | `aarch64-unknown-linux-gnu` |
+| Mac with an Intel processor | `x86_64-apple-darwin` |
+| Mac with Apple Silicon | `aarch64-apple-darwin` |
+| Windows on Intel or AMD, 64-bit | `x86_64-pc-windows-msvc` |
 
-Alternatively, use [cargo-binstall](https://github.com/cargo-bins/cargo-binstall)
-to download a release executable, or Cargo to compile it locally:
+Extract the archive, then run `./rustypaper --help` on Linux or macOS, or
+`.\rustypaper.exe --help` in Windows PowerShell. Put the executable in a folder on your
+`PATH` to use `rustypaper` from any directory. The release includes `SHA256SUMS` for
+verifying downloads. Standalone Linux executables require glibc 2.35 or newer.
+
+If you use [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), it can download
+the executable for you:
 
 ```sh
 cargo binstall rustypaper
-cargo install rustypaper
 ```
 
-For the Rust library:
+With a Rust toolchain installed, you can also compile from source:
+
+```sh
+cargo install rustypaper --locked
+```
+
+## Python API
+
+After `pip install rustypaper`, convert a PDF directly in your Python code:
+
+```python
+from pathlib import Path
+import rustypaper
+
+markdown = rustypaper.to_markdown("paper.pdf")
+Path("paper.md").write_text(markdown, encoding="utf-8")
+```
+
+To get readable text and structured data from a single conversion:
+
+```python
+import rustypaper
+
+result = rustypaper.convert("paper.pdf")
+print(result.markdown)
+
+document = result.document
+for section in document["sections"]:
+    print(section["title"], section["first_page"], section["last_page"])
+```
+
+The document contains a title, typed content blocks, and a section outline. Blocks carry
+text and page positions. Sections include nested children and `start` / `end` indices,
+so `document["blocks"][section["start"]:section["end"]]` selects a section's contents.
+Page numbers are zero-based. Content before the first heading has a section title of `None`.
+
+Other helpers include `to_text()`, `to_typst()`, and `to_document()`.
+Image-only documents raise `rustypaper.ScannedDocument`.
+
+## Conversion quality and limitations
+
+Rustypaper uses the text and geometry already present in a PDF to recover its structure.
+It is designed for scientific papers. Page layout can change during conversion.
+
+- Scanned or image-only documents need a separate OCR tool.
+- Equations, complex tables, and unusual layouts can be missed or reconstructed incorrectly.
+- Titles split over several lines, subtle subsection headings, and long bibliographies remain
+  challenging. Check the converted output when those details matter to your workflow.
+
+We evaluate conversion on 16 papers across 10 template families. Fifteen have usable source
+text for comparison. This small corpus helps us detect regressions, and results on other
+papers will depend on their layout. See the [evaluation results and methodology](eval/README.md)
+for measurements of text recovery, equations, tables, references, and sections.
+
+If a conversion looks wrong, [open an issue](https://github.com/pgarrett-scripps/rustypaper/issues).
+Include the Rustypaper version, the command you ran, what you expected, and a public PDF link
+or a small sample you can share. `rustypaper --version` prints the installed version.
+
+## For developers
+
+Rustypaper is also a [Rust crate](https://crates.io/crates/rustypaper). Add it to `Cargo.toml`:
 
 ```toml
+[dependencies]
 rustypaper = "0.2"
 ```
 
-**Nothing else to install.** PDFs are read with
-[rustium-pdf](https://github.com/pgarrett-scripps/rustium-pdf), a pure-Rust interpreter, so
-there is no native library to fetch, point an environment variable at, or match versions with.
-`ldd` on the binary shows libc, libm and libgcc and nothing else; the wheel is the extension
-module and the Python package around it, with no C library travelling beside it.
+The Rust API exposes `convert()`, `convert_with()`, and `extract()`.
+PDF reading is provided by [rustium-pdf](https://github.com/pgarrett-scripps/rustium-pdf).
+See the [architecture notes](docs/ARCHITECTURE.md) for how conversion works, the
+[evaluation guide](eval/README.md) for quality checks, and the [release guide](RELEASING.md)
+for packaging and publishing.
 
-## Getting started
-
-```sh
-scripts/fetch-corpus.sh     # evaluation corpus of arXiv papers, not committed
-scripts/build.sh            # cargo build --release, plus installing the Python extension
-```
-
-```sh
-# Convert.
-./target/release/rustypaper convert corpus/resnet.pdf
-./target/release/rustypaper convert corpus/resnet.pdf --format typst --assets figures/
-./target/release/rustypaper convert corpus/*.pdf --out out/        # batch
-./target/release/rustypaper convert paper.pdf --caveman=hard       # -24% words for LLM ingestion
-
-# Diagnostics.
-./target/release/rustypaper probe corpus/resnet.pdf --pages   # counts, fonts, detected gutters
-./target/release/rustypaper text  corpus/resnet.pdf --geometry # reconstructed lines
-./target/release/rustypaper dump  corpus/resnet.pdf --page 0 --pretty
-```
-
-`probe` prints per-page counts, the font histogram and the detected gutters. Gutters are the
-first thing to check when a two-column paper comes out interleaved; the font histogram is the
-first thing to check when text comes out wrong.
-
-## Design
-
-Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the pipeline, the coordinate convention,
-the `PageSource` boundary, and the things the corpus taught this converter the hard way.
-
-The short version: the backend produces a `PageRaw` of glyphs, paths and images, and every later
-stage is a pass over an IR. The `Document` JSON is the contract; Markdown, Typst and plain text
-are renderings of it.
-
-| | |
-|---|---|
-| speed | 2.5–8.7 ms/page, single process |
-| corpus | 16 papers in 10 template families: ML, pure maths, physics, biology, medicine, statistics |
-| memory | 13–30 MB peak for a whole paper |
-| footprint | a 3.2 MB binary, no native library, no models |
-
-Unicode repair turned out not to be needed — glyph-name fallback already resolves TeX ligatures,
-so the tables the plan budgeted for were dropped. De-hyphenation needed a second mechanism the
-plan did not anticipate: the page is read as written, so a soft line-break hyphen is usually
-there and is preferred when it is, but where a document leaves none the words split across the
-break are rejoined using the document's own vocabulary, which needs no word list and knows the
-paper's jargon.
-
-Maths is reconstructed geometrically, MaxTract-style, from exact glyph identities and positions
-rather than by OCR — a born-digital PDF hands you perfect character information, so image-to-
-LaTeX models are solving a problem this pipeline does not have. Equations carry a confidence
-score and fall back to a rendered crop rather than emitting confident-looking nonsense.
-
-Scanned documents are explicitly out of scope: `extract` fails with `Error::Scanned` rather than
-pretending.
-
-## Milestones
-
-| | | status |
-|---|---|---|
-| **M0** | Backend, `PageRaw`, CLI, corpus, thread-safety spike | done |
-| **M1** | Lines/words, furniture removal, columns, reading order → Markdown | done |
-| **M2** | Figures, captions, footnotes, lists, de-hyphenation | done |
-| **M3** | Tables | done |
-| **M4** | Maths detection and reconstruction | done |
-| **M5** | References and citation linking | done |
-| **M6** | Typst emitter, performance pass, batch mode | done |
-
-## Python
-
-The core is Rust; the tooling around it is Python, because evaluation, corpus management and
-comparison against other converters are scripting jobs.
+For local development on Linux, with Rust 1.94 or newer, Python 3.9 or newer, and pytest
+installed, run these commands from a clone of this repository:
 
 ```sh
 scripts/build.sh
-PYTHONPATH=python python3 -c "
-import rustypaper
-print(rustypaper.to_markdown('corpus/resnet.pdf')[:80])
-doc = rustypaper.to_document('corpus/resnet.pdf')   # the document model as a dict
-for section in doc['sections']:                     # the outline, with block ranges
-    print(section['level'], section['title'], section['start'], section['end'])
-
-markdown, doc = rustypaper.convert('corpus/resnet.pdf')   # both, from one pipeline run
-print(rustypaper.to_typst('corpus/resnet.pdf')[:80])
-print(rustypaper.to_text('corpus/resnet.pdf')[:80])
-"
+cargo test --release
+PYTHONPATH=python pytest python/tests -q
+python3 -m unittest discover -s eval/tests
 ```
 
-`sections` is the document's outline: each entry has a `title` (`None` for the front matter that
-precedes every heading), a `level`, a half-open `start`/`end` range into `blocks` that includes
-its nested `children`, and the pages it spans. A consumer that wants the methods section can
-slice the blocks rather than re-deriving structure from the Markdown.
+`scripts/build.sh` builds both the CLI and the Python extension used by the tests. The
+Python tests use committed synthetic PDFs. To run the optional real-paper corpus tests,
+fetch the papers with `scripts/fetch-corpus.sh` before running the tests. See the evaluation
+guide for downloading reference sources and comparing results with the quality baseline.
 
-`ScannedDocument` is raised for image-only PDFs, so callers can route those to an OCR pipeline
-instead. Conversion releases the GIL, so several threads convert in parallel.
+For conversion diagnostics, `rustypaper probe paper.pdf --pages` summarizes the PDF,
+and `rustypaper dump paper.pdf --page 0 --pretty` shows the extracted page data.
 
-## Evaluation
+## License
 
-Quality is measured, not eyeballed. Papers submitted to arXiv as TeX source come with the prose
-their PDF was rendered from, which is free ground truth for exactly this document class — for
-the subset of papers that have it. PDF-only submissions have none, and are reported as skipped
-rather than scored.
-
-```sh
-cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval
-```
-
-Current scores across the fifteen scorable papers:
-
-| metric | value | what it says |
-|---|---|---|
-| prose bigram recall | **0.900** | prose comes out right, in the right order |
-| equation recall | **0.565** | most display equations are found; templates vary widely |
-| equation fidelity | **0.677** | the found ones are mostly right, not wholly right |
-| tables | 62 found / 90 in source | five papers complete; ImageNet's 9/26 is the largest gap |
-| references | 971 found / 1174 in source | eight bibliographies complete; topological's 163/368 is a column gap, not a parsing one |
-| sections | 206 matched / 264 in source | the deficit is subsections set bold at body size |
-
-The maths numbers are the honest state of the differentiator, and they are the project's
-weakest point — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md). See
-[`eval/README.md`](eval/README.md) for what the metrics mean and why plain edit distance is the
-wrong primary measure here.
-
-## Testing
-
-```sh
-cargo test                                    # unit, robustness and corpus tests; corpus tests
-                                              # skip if corpus/ is empty
-python3 -m unittest discover -s eval/tests    # the eval harness's own tests
-PYTHONPATH=python pytest python/tests -q      # the Python surface, against the corpus
-cd eval && PYTHONPATH=.:../python python3 -m rustypaper_eval --baseline baseline.json
-```
-
-Integration tests live in `rustypaper/tests/corpus.rs` and run against real papers. They skip
-rather than fail when the corpus is absent, so a fresh clone is green.
-
-## Licence
-
-MIT OR Apache-2.0.
-
-That covers everything a build contains, the published crate and the published wheels included:
-the dependency tree is Rust, and rustium-pdf is MIT OR Apache-2.0 as well.
+Licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.
