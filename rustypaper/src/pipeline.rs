@@ -1228,6 +1228,56 @@ mod tests {
         assert_eq!(document.blocks[1].text, "as others found[1](#ref-1) too");
     }
 
+    /// A Springer-style bibliography — unlabelled, author-year, one block per column, an entry
+    /// and a DOI tail broken across the column boundary — comes back as one entry per reference,
+    /// with the stray tail on the entry it ends.
+    #[test]
+    fn an_unlabelled_author_year_bibliography_splits_into_entries() {
+        let heading = doc::Block::new(
+            doc::BlockKind::Heading { level: 2 },
+            5,
+            rect(50.0, 40.0, 200.0, 60.0),
+        )
+        .with_text("References");
+        // The first column ends mid-DOI; the second opens with its stray tail.
+        let column1 = paragraph(
+            5,
+            rect(50.0, 80.0, 280.0, 700.0),
+            "Appelgren A, Appelgren B, Kopp S (1995) Neuropeptides in the arthritic TMJ. \
+             J Orofac Pain 9(3):215–225 Azuma Y, Sato I (2017) The localization of CGRP. \
+             Okajimas Folia Anat Jpn 93(4):127–138. https://doi.org/10.2535/ofaj.93.127 \
+             Li, Y., & Guan, C. (2010). Effect of CGRP on TREM-1. J Cent South Univ, 35(2), \
+             100-106. https://doi.org/10.3969/j.issn.1672-7347.2010.",
+        );
+        let column2 = paragraph(
+            5,
+            rect(320.0, 80.0, 550.0, 700.0),
+            "002 Lindquist KA, Belugin S (2021) Identification of trigeminal sensory \
+             neuronal types. eNeuro 14:1-9 Ma W, Dumont Y (2010) Lipopolysaccharide induces \
+             CGRP. Immunology 130(3):399–409",
+        );
+        let mut document = doc::Document {
+            title: None,
+            blocks: vec![heading, column1, column2],
+        };
+        extract_bibliography(&mut document);
+
+        let entries: Vec<&doc::Block> = document
+            .blocks
+            .iter()
+            .filter(|b| b.kind == doc::BlockKind::Reference)
+            .collect();
+        assert_eq!(entries.len(), 5, "got {:?}", entries);
+        assert!(entries[1].text.starts_with("Azuma Y,"));
+        assert!(
+            entries[2].text.ends_with("002"),
+            "the DOI tail stays with its own entry: {:?}",
+            entries[2].text
+        );
+        assert!(entries[3].text.starts_with("Lindquist KA"));
+        assert!(entries[4].text.starts_with("Ma W,"));
+    }
+
     /// A correspondence note's superscript marks an affiliation, not reference 7.
     #[test]
     fn a_correspondence_note_is_not_linked() {
