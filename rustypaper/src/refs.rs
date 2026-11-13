@@ -65,10 +65,12 @@ pub fn opens_bibliography(text: &str) -> Option<usize> {
         }
         let rest = text[heading.len()..].trim_start();
         // The next thing must look like the start of an entry, not a continuation of a word.
+        // A digit counts: journals that number entries `1.` open the list with one, and
+        // requiring a capital found no bibliography at all in papers set that way.
         let plausible = rest
             .chars()
             .next()
-            .is_some_and(|c| c.is_uppercase() || c == '[');
+            .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit() || c == '[');
         if plausible {
             return Some(text.len() - rest.len());
         }
@@ -509,6 +511,7 @@ fn find_authors(text: &str) -> Vec<String> {
     let names: Vec<String> = head
         .split([',', ';'])
         .flat_map(|part| part.split(" and "))
+        .flat_map(|part| part.split(" & "))
         .map(str::trim)
         .filter(|part| {
             !part.is_empty()
@@ -539,14 +542,29 @@ fn find_authors(text: &str) -> Vec<String> {
 /// qualifying stop until the one *after* the title, because the stop closing `(2013a)` follows a
 /// bracket rather than a word — so the author list was taken to run through the title, and the
 /// venue was reported as the title of every entry in the style.
+///
+/// Nature's style defeats both rules: `Conti, E. & Izaurralde, E. Title. Nature 123, 45–67
+/// (2016).` dates the entry at the very end and ends every author in an initial, so the first
+/// qualifying stop is the one after the title and the title was swallowed into the author list.
+/// The `&` before the final author is the shape to key on — see [`nature_boundary`]. Whichever
+/// rule fires earlier wins, because every rule here marks a point the author list cannot
+/// continue past.
 fn author_boundary(text: &str) -> Option<usize> {
     let chars: Vec<char> = text.chars().collect();
-    let mut byte = 0;
+    let at = match (generic_boundary(&chars), nature_boundary(&chars)) {
+        (Some(g), Some(n)) => g.min(n),
+        (g, n) => g.or(n)?,
+    };
+    Some(chars[..at].iter().map(|c| c.len_utf8()).sum())
+}
 
+/// The first stop after a word of more than one letter, or after a parenthesised date.
+/// Returns a character index into `chars`.
+fn generic_boundary(chars: &[char]) -> Option<usize> {
     for (i, c) in chars.iter().enumerate() {
         if *c == '.' && chars.get(i + 1).is_some_and(|n| n.is_whitespace()) {
             if i > 0 && chars[i - 1] == ')' && ends_in_a_date(&chars[..i - 1]) {
-                return Some(byte);
+                return Some(i);
             }
             // The token immediately before the stop.
             let mut start = i;
@@ -554,12 +572,65 @@ fn author_boundary(text: &str) -> Option<usize> {
                 start -= 1;
             }
             if i - start > 1 {
-                return Some(byte);
+                return Some(i);
             }
         }
-        byte += c.len_utf8();
     }
     None
+}
+
+/// Where a Nature-style author list ends: after the last initial of the name that follows the
+/// final `&`. Returns a character index into `chars`.
+///
+/// The shape asked for is `& Surname, I.` — a comma must come between the ampersand and the
+/// initial, which is what separates Nature's surname-first names from an initials-first list
+/// like `Y. Bengio & P. Simard`, where the stop after `P` is the middle of a name and the
+/// generic rule already ends the list correctly. Consecutive initials (`D. I.`) extend the run.
+/// Where the shape is not met, no boundary is reported rather than a guess — an `&` in a venue
+/// name finds no initial within reach and settles nothing.
+fn nature_boundary(chars: &[char]) -> Option<usize> {
+    // The final ampersand of the author region; one later in the entry is a venue's.
+    let amp = (0..chars.len().min(200)).rev().find(|&i| {
+        chars[i] == '&'
+            && i > 0
+            && chars[i - 1].is_whitespace()
+            && chars.get(i + 1).is_some_and(|c| c.is_whitespace())
+    })?;
+
+    let mut comma = false;
+    let mut boundary = None;
+    let mut i = amp + 1;
+    while i < chars.len() && i < amp + 60 {
+        if chars[i] == ',' {
+            comma = true;
+        }
+        if chars[i] == '.' && chars.get(i + 1).is_some_and(|n| n.is_whitespace()) {
+            let mut start = i;
+            while start > 0 && chars[start - 1].is_alphanumeric() {
+                start -= 1;
+            }
+            if i - start == 1 && chars[start].is_uppercase() && comma {
+                boundary = Some(i);
+                // Another initial follows — the `I.` of `D. I.` — so the list runs on.
+                let mut j = i + 1;
+                while chars.get(j).is_some_and(|c| c.is_whitespace()) {
+                    j += 1;
+                }
+                if chars.get(j).is_some_and(|c| c.is_uppercase()) && chars.get(j + 1) == Some(&'.')
+                {
+                    i = j + 1;
+                    continue;
+                }
+                break;
+            }
+            if i - start > 1 {
+                // A full word ended before any initial did: not the Nature shape.
+                break;
+            }
+        }
+        i += 1;
+    }
+    boundary
 }
 
 /// Whether `head` ends in the body of a parenthesised date, its closing bracket already removed.
@@ -619,43 +690,283 @@ fn reads_as_prose(text: &str) -> bool {
 ///
 /// Only numeric citations are linked. Author-year forms (`Devlin et al., 2019`) cannot be
 /// resolved to an entry without matching names, which is the part heuristics get wrong.
-pub fn link_citations(text: &str, known: &[String]) -> String {
-    if known.is_empty() || !text.contains('[') {
-        return text.to_owned();
+///
+/// Two printed forms are recognised. Bracketed runs — `[3]`, `[1, 2]` — are linked when every
+/// part is a known label. Superscript runs — the `3` of `fish³`, including lists and ranges
+/// (`2,3`, `4-6`) — are linked on the same condition, taking the block's `sup` spans as the
+/// evidence that the digits are a citation marker rather than body text. `spans` are character
+/// offsets into `text` (see [`crate::doc::Span`]); the returned spans are the same annotations
+/// remapped onto the rewritten text, with a linked superscript run widened to cover its own link
+/// markup, and any span the rewrite cut through dropped rather than guessed at.
+///
+/// `link_sups` is the caller's judgment on whether a numeric superscript here can be a citation
+/// at all. In the front matter it cannot — the same digits are affiliation markers on author
+/// names — so the pipeline passes `false` there and the spans pass through unlinked. Bracketed
+/// citations are unaffected: `[3]` does not share a shape with anything in a byline.
+pub fn link_citations(
+    text: &str,
+    spans: &[crate::doc::Span],
+    known: &[String],
+    link_sups: bool,
+) -> (String, Vec<crate::doc::Span>) {
+    use crate::doc::{Span, SpanKind};
+
+    if known.is_empty() {
+        return (text.to_owned(), spans.to_vec());
     }
+    let chars: Vec<char> = text.chars().collect();
 
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
+    // Every rewrite is collected as an edit over a character range first and applied in one
+    // pass, so span offsets can be remapped exactly instead of re-derived from the new text.
+    struct Edit {
+        start: usize,
+        end: usize,
+        replacement: String,
+        /// Index into `spans` when the edit rewrites that span's own text.
+        owner: Option<usize>,
+    }
+    let mut edits: Vec<Edit> = Vec::new();
 
-    while let Some(open) = rest.find('[') {
-        let Some(close) = rest[open..].find(']').map(|i| open + i) else {
+    // Bracketed citations.
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '[' {
+            i += 1;
+            continue;
+        }
+        let Some(close) = chars[i + 1..]
+            .iter()
+            .position(|&c| c == ']')
+            .map(|n| i + 1 + n)
+        else {
             break;
         };
-        let inner = &rest[open + 1..close];
+        let inner: String = chars[i + 1..close].iter().collect();
         let parts: Vec<&str> = inner.split(',').map(str::trim).collect();
-
         let all_known = !parts.is_empty()
             && parts
                 .iter()
                 .all(|p| !p.is_empty() && known.iter().any(|k| k == p));
-
-        out.push_str(&rest[..open]);
         if all_known {
-            out.push('[');
-            for (i, part) in parts.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
+            let mut replacement = String::from("[");
+            for (n, part) in parts.iter().enumerate() {
+                if n > 0 {
+                    replacement.push_str(", ");
                 }
-                out.push_str(&format!("[{part}](#ref-{part})"));
+                replacement.push_str(&format!("[{part}](#ref-{part})"));
             }
-            out.push(']');
-        } else {
-            out.push_str(&rest[open..=close]);
+            replacement.push(']');
+            edits.push(Edit {
+                start: i,
+                end: close + 1,
+                replacement,
+                owner: None,
+            });
         }
-        rest = &rest[close + 1..];
+        i = close + 1;
     }
-    out.push_str(rest);
-    out
+
+    // Superscript citations.
+    for (index, span) in spans.iter().enumerate() {
+        if !link_sups || span.kind != SpanKind::Sup {
+            continue;
+        }
+        if let Some(replacement) = sup_citation(&chars, span.start, span.end, known) {
+            edits.push(Edit {
+                start: span.start,
+                end: span.end,
+                replacement,
+                owner: Some(index),
+            });
+        }
+    }
+
+    // Left to right; where a superscript run sits inside a bracketed one, the bracket wins.
+    edits.sort_by_key(|e| (e.start, e.owner.is_some()));
+    let mut kept: Vec<Edit> = Vec::new();
+    for edit in edits {
+        if kept.last().is_none_or(|last| last.end <= edit.start) {
+            kept.push(edit);
+        }
+    }
+
+    // Apply, recording where each edit's replacement landed.
+    let mut out = String::with_capacity(text.len());
+    let mut out_chars = 0usize;
+    let mut cursor = 0usize;
+    // (old start, old end, new start, replacement length in chars, owner)
+    let mut placed: Vec<(usize, usize, usize, usize, Option<usize>)> = Vec::new();
+    for edit in &kept {
+        out.extend(&chars[cursor..edit.start]);
+        out_chars += edit.start - cursor;
+        let length = edit.replacement.chars().count();
+        placed.push((edit.start, edit.end, out_chars, length, edit.owner));
+        out.push_str(&edit.replacement);
+        out_chars += length;
+        cursor = edit.end;
+    }
+    out.extend(&chars[cursor..]);
+
+    let mut remapped: Vec<Span> = Vec::new();
+    'spans: for (index, span) in spans.iter().enumerate() {
+        if let Some(&(_, _, at, length, _)) = placed.iter().find(|p| p.4 == Some(index)) {
+            remapped.push(Span {
+                start: at,
+                end: at + length,
+                kind: span.kind,
+            });
+            continue;
+        }
+        let mut shift = 0isize;
+        for &(start, end, _, length, _) in &placed {
+            if end <= span.start {
+                shift += length as isize - (end - start) as isize;
+            } else if start < span.end {
+                // The rewrite cut through this span; its offsets describe nothing now.
+                continue 'spans;
+            }
+        }
+        remapped.push(Span {
+            start: (span.start as isize + shift) as usize,
+            end: (span.end as isize + shift) as usize,
+            kind: span.kind,
+        });
+    }
+    remapped.sort_by_key(|s| s.start);
+
+    (out, remapped)
+}
+
+/// The link markup for a superscript run that reads as a numeric citation, or `None`.
+///
+/// A run qualifies when it is digits joined by commas or range dashes (`3`, `2,3`, `4-6`),
+/// every label it names — a range's interior included — is a known reference label, and the
+/// character before it reads like a citation site. The last condition is what keeps exponents
+/// and units unlinked: `x²` and `cm²` are superscript digits too, and `2` is usually a known
+/// label, but both follow a short token where a citation marker follows a word or closing
+/// punctuation.
+fn sup_citation(chars: &[char], start: usize, end: usize, known: &[String]) -> Option<String> {
+    if start >= end || end > chars.len() || !sup_follows_citation_site(chars, start) {
+        return None;
+    }
+
+    // Tokenise into numbers and the separators between them.
+    #[derive(PartialEq, Clone, Copy)]
+    enum State {
+        Start,
+        Number,
+        AfterNumber,
+        Separator,
+    }
+    let mut state = State::Start;
+    let mut numbers: Vec<String> = Vec::new();
+    let mut separators: Vec<char> = Vec::new();
+    let mut current = String::new();
+    for &c in &chars[start..end] {
+        match c {
+            '0'..='9' => match state {
+                State::Start | State::Separator => {
+                    current.push(c);
+                    state = State::Number;
+                }
+                State::Number => current.push(c),
+                // Two numbers with nothing between them is not a citation list.
+                State::AfterNumber => return None,
+            },
+            ',' | '-' | '\u{2013}' | '\u{2014}' => match state {
+                State::Number | State::AfterNumber => {
+                    numbers.push(std::mem::take(&mut current));
+                    separators.push(c);
+                    state = State::Separator;
+                }
+                _ => return None,
+            },
+            ' ' => {
+                if state == State::Number {
+                    state = State::AfterNumber;
+                }
+            }
+            _ => return None,
+        }
+    }
+    if !matches!(state, State::Number | State::AfterNumber) {
+        return None;
+    }
+    numbers.push(current);
+
+    if numbers.len() > MAX_SUP_CITATION_LIST || numbers.iter().any(|n| n.len() > 3) {
+        return None;
+    }
+    for number in &numbers {
+        if !known.iter().any(|k| k == number) {
+            return None;
+        }
+    }
+    // A range cites its interior too, so the interior labels must exist for the run to be one.
+    for (i, separator) in separators.iter().enumerate() {
+        if *separator == ',' {
+            continue;
+        }
+        let a: u32 = numbers[i].parse().ok()?;
+        let b: u32 = numbers[i + 1].parse().ok()?;
+        if a >= b || b - a > MAX_SUP_CITATION_RANGE {
+            return None;
+        }
+        for v in a + 1..b {
+            if !known.iter().any(|k| k == &v.to_string()) {
+                return None;
+            }
+        }
+    }
+
+    let mut out = String::new();
+    for (i, number) in numbers.iter().enumerate() {
+        if i > 0 {
+            match separators[i - 1] {
+                ',' => out.push_str(", "),
+                dash => out.push(dash),
+            }
+        }
+        out.push_str(&format!("[{number}](#ref-{number})"));
+    }
+    Some(out)
+}
+
+/// Longest comma list a superscript citation run may carry.
+const MAX_SUP_CITATION_LIST: usize = 20;
+
+/// Widest range (`4-6`) a superscript citation run may span.
+const MAX_SUP_CITATION_RANGE: u32 = 50;
+
+/// Whether the character before a superscript run reads like a citation site.
+///
+/// Citation markers follow a word of prose or its closing punctuation. Exponents follow a digit
+/// (`10⁶`) or a one- or two-letter token (`x²`, `cm²`), and a run opening a block follows
+/// nothing at all.
+fn sup_follows_citation_site(chars: &[char], start: usize) -> bool {
+    let Some(i) = start.checked_sub(1) else {
+        return false;
+    };
+    let previous = chars[i];
+    if matches!(
+        previous,
+        '.' | ',' | ';' | ':' | ')' | ']' | '"' | '\'' | '\u{201D}' | '\u{2019}'
+    ) {
+        return true;
+    }
+    if !previous.is_alphabetic() {
+        return false;
+    }
+    let mut length = 0usize;
+    let mut j = start;
+    while j > 0 && chars[j - 1].is_alphabetic() {
+        length += 1;
+        if length >= 3 {
+            return true;
+        }
+        j -= 1;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -861,6 +1172,63 @@ mod tests {
         );
     }
 
+    /// Nature's style: surname-first names that all end in an initial, the date at the end.
+    /// The `&` before the final author marks where the list can end — see [`nature_boundary`].
+    #[test]
+    fn a_nature_style_entry_yields_its_title() {
+        let parsed = parse(
+            "1. Conti, E. & Izaurralde, E. Nonsense-mediated mRNA decay: molecular insights \
+             and mechanistic variations. Curr. Opin. Cell Biol. 17, 316-325 (2005).",
+        );
+        assert_eq!(
+            parsed.title.as_deref(),
+            Some("Nonsense-mediated mRNA decay: molecular insights and mechanistic variations")
+        );
+        assert!(
+            parsed.authors.contains(&"Conti".to_owned()),
+            "{:?}",
+            parsed.authors
+        );
+        assert!(parsed.authors.contains(&"Izaurralde".to_owned()));
+        assert_eq!(parsed.year, Some(2005));
+    }
+
+    /// The final author's run of initials — `D. I.` — is part of the list, not the title.
+    #[test]
+    fn a_nature_style_author_with_two_initials_is_bounded_after_both() {
+        let parsed = parse(
+            "3. Kourou, K., Exarchos, T. P. & Fotiadis, D. I. Machine learning applications \
+             in cancer prognosis and prediction. Comput. Struct. Biotechnol. J. 13, 8-17 (2015).",
+        );
+        assert_eq!(
+            parsed.title.as_deref(),
+            Some("Machine learning applications in cancer prognosis and prediction")
+        );
+        assert!(
+            parsed.authors.contains(&"Fotiadis".to_owned()),
+            "{:?}",
+            parsed.authors
+        );
+    }
+
+    /// An `&` with no surname-first name after it settles nothing: an initials-first list is
+    /// still ended by the generic rule, and an `&` in a venue name is no boundary at all.
+    #[test]
+    fn an_ampersand_outside_the_nature_shape_moves_no_boundary() {
+        let parsed = parse(
+            "[2] Y. Bengio & P. Simard. Learning long-term dependencies with gradient \
+             descent is difficult. IEEE Transactions, 1994.",
+        );
+        assert_eq!(
+            parsed.title.as_deref(),
+            Some("Learning long-term dependencies with gradient descent is difficult")
+        );
+        assert_eq!(parsed.authors, ["Y. Bengio", "P. Simard"]);
+
+        let venue = parse("Smith, John. A study of things. Johnson & Johnson Reports 5, 3 (2020).");
+        assert_eq!(venue.title.as_deref(), Some("A study of things"));
+    }
+
     #[test]
     fn a_merged_heading_is_recognised() {
         // What paragraph assembly produces when `References` is set at body size.
@@ -869,6 +1237,11 @@ mod tests {
             Some(10)
         );
         assert_eq!(opens_bibliography("REFERENCES [1] A. Author"), Some(11));
+        // A numbered list opens with a digit, not a capital.
+        assert_eq!(
+            opens_bibliography("References 1. Lahiry P, et al."),
+            Some(11)
+        );
         assert_eq!(opens_bibliography("Referenced work is discussed"), None);
         assert_eq!(opens_bibliography("Related Work"), None);
     }
@@ -880,33 +1253,159 @@ mod tests {
         assert!(parsed.title.is_none());
     }
 
+    fn labels(labels: &[&str]) -> Vec<String> {
+        labels.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn sup(start: usize, end: usize) -> crate::doc::Span {
+        crate::doc::Span {
+            start,
+            end,
+            kind: crate::doc::SpanKind::Sup,
+        }
+    }
+
     #[test]
     fn numeric_citations_are_linked() {
-        let known = vec!["1".to_string(), "12".to_string()];
+        let known = labels(&["1", "12"]);
         assert_eq!(
-            link_citations("as shown in [12] and [1]", &known),
+            link_citations("as shown in [12] and [1]", &[], &known, true).0,
             "as shown in [[12](#ref-12)] and [[1](#ref-1)]"
         );
     }
 
     #[test]
     fn multiple_citations_in_one_bracket_are_linked_separately() {
-        let known = vec!["1".to_string(), "2".to_string()];
+        let known = labels(&["1", "2"]);
         assert_eq!(
-            link_citations("see [1, 2]", &known),
+            link_citations("see [1, 2]", &[], &known, true).0,
             "see [[1](#ref-1), [2](#ref-2)]"
         );
     }
 
     #[test]
     fn unknown_or_non_numeric_brackets_are_left_alone() {
-        let known = vec!["1".to_string()];
-        assert_eq!(link_citations("see [99]", &known), "see [99]");
-        assert_eq!(link_citations("an array a[i]", &known), "an array a[i]");
+        let known = labels(&["1"]);
+        assert_eq!(link_citations("see [99]", &[], &known, true).0, "see [99]");
         assert_eq!(
-            link_citations("no brackets here", &known),
+            link_citations("an array a[i]", &[], &known, true).0,
+            "an array a[i]"
+        );
+        assert_eq!(
+            link_citations("no brackets here", &[], &known, true).0,
             "no brackets here"
         );
+    }
+
+    #[test]
+    fn a_superscript_citation_is_linked_and_its_span_widened() {
+        let known = labels(&["3"]);
+        // "fish3." with the 3 superscript.
+        let (text, spans) = link_citations("fish3.", &[sup(4, 5)], &known, true);
+        assert_eq!(text, "fish[3](#ref-3).");
+        assert_eq!(spans, vec![sup(4, 15)]);
+    }
+
+    #[test]
+    fn superscript_lists_and_ranges_are_linked() {
+        let known = labels(&["2", "3", "4", "5", "6"]);
+        let (text, spans) = link_citations(
+            "shown2,3 and done4-6 here",
+            &[sup(5, 8), sup(17, 20)],
+            &known,
+            true,
+        );
+        assert_eq!(
+            text,
+            "shown[2](#ref-2), [3](#ref-3) and done[4](#ref-4)-[6](#ref-6) here"
+        );
+        assert_eq!(spans, vec![sup(5, 29), sup(38, 61)]);
+    }
+
+    #[test]
+    fn a_range_with_a_missing_interior_label_is_not_linked() {
+        // A bibliography with [4] and [6] but no [5] cannot be cited as "4-6".
+        let known = labels(&["4", "6"]);
+        let (text, spans) = link_citations("done4-6 here", &[sup(4, 7)], &known, true);
+        assert_eq!(text, "done4-6 here");
+        assert_eq!(spans, vec![sup(4, 7)]);
+    }
+
+    #[test]
+    fn exponents_and_units_are_not_linked() {
+        let known = labels(&["2", "3", "6"]);
+        // x² is a one-letter token, cm³ a two-letter one, 10⁶ follows a digit: all exponents.
+        for (text, span) in [
+            ("area x2 here", sup(6, 7)),
+            ("a cm3 flask", sup(4, 5)),
+            ("some 106 cells", sup(7, 8)),
+        ] {
+            let (out, spans) = link_citations(text, &[span], &known, true);
+            assert_eq!(out, text);
+            assert_eq!(spans, vec![span]);
+        }
+    }
+
+    #[test]
+    fn superscript_offsets_count_characters_not_bytes() {
+        let known = labels(&["7"]);
+        // "Müller" is six characters and seven bytes; the span is at character offsets.
+        let (text, spans) = link_citations("Müller7 agrees", &[sup(6, 7)], &known, true);
+        assert_eq!(text, "Müller[7](#ref-7) agrees");
+        assert_eq!(spans, vec![sup(6, 17)]);
+    }
+
+    #[test]
+    fn spans_after_a_bracket_rewrite_are_shifted() {
+        let known = labels(&["1"]);
+        // A subscript after a linked bracket must move with the text.
+        let sub = crate::doc::Span {
+            start: 9,
+            end: 10,
+            kind: crate::doc::SpanKind::Sub,
+        };
+        let (text, spans) = link_citations("see [1] H2O", &[sub], &known, true);
+        assert_eq!(text, "see [[1](#ref-1)] H2O");
+        assert_eq!(
+            spans,
+            vec![crate::doc::Span {
+                start: 19,
+                end: 20,
+                kind: crate::doc::SpanKind::Sub,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_byline_with_affiliation_superscripts_is_left_unlinked() {
+        // Front matter: the pipeline passes link_sups = false there. The affiliation markers
+        // have exactly the shape of citations, so only the flag keeps them unlinked — and the
+        // spans must survive, because the superscripts are still real.
+        let known = labels(&["1", "2"]);
+        let byline = "Abdul-rizaq Hamoud1, Khaled Alganem2, Ali Imami1";
+        let spans = vec![sup(18, 19), sup(35, 36), sup(47, 48)];
+        let (text, out) = link_citations(byline, &spans, &known, false);
+        assert_eq!(text, byline);
+        assert_eq!(out, spans);
+    }
+
+    #[test]
+    fn brackets_are_still_linked_when_superscripts_are_not() {
+        let known = labels(&["1"]);
+        let (text, _) = link_citations("see [1] here3", &[sup(12, 13)], &known, false);
+        assert_eq!(text, "see [[1](#ref-1)] here3");
+    }
+
+    #[test]
+    fn a_corresponding_author_marker_with_an_asterisk_never_links() {
+        // "Richa Pathak1*" — the starred affiliation marker is not a citation list even in
+        // body text, because '*' is not a digit or separator.
+        let known = labels(&["1"]);
+        let byline = "Richa Pathak1*";
+        let spans = vec![sup(12, 14)];
+        let (text, out) = link_citations(byline, &spans, &known, true);
+        assert_eq!(text, byline);
+        assert_eq!(out, spans);
     }
 
     #[test]

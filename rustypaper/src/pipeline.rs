@@ -413,6 +413,9 @@ fn extract_bibliography(document: &mut doc::Document) {
         document.blocks[block].text.truncate(offset);
         let trimmed = document.blocks[block].text.trim_end().len();
         document.blocks[block].text.truncate(trimmed);
+        // Spans are character offsets; keep only those entirely within the kept text.
+        let kept = document.blocks[block].text.chars().count();
+        document.blocks[block].spans.retain(|s| s.end <= kept);
     }
 
     // The bibliography runs to the next heading — papers put appendices after it.
@@ -498,6 +501,19 @@ fn extract_bibliography(document: &mut doc::Document) {
     document.blocks.splice(first..end, entries);
 
     // Link citations only once the labels are known.
+    link_document_citations(document);
+}
+
+/// Rewrites recognised citations as links to the reference list, document-wide.
+///
+/// Superscripts are not linked in blocks that read as an author byline or a correspondence
+/// note, because the numeric superscripts there are affiliation markers that share their shape
+/// with a citation exactly: `Richa Pathak¹` points at a department, not at reference 1, and
+/// linking it hands every downstream consumer a false citation. The judgment is made from the
+/// block's own shape rather than its position, because position lies — a split title renders as
+/// headings above the byline, and correspondence notes sit below the abstract. The spans stay
+/// as annotations; only the linking is withheld.
+fn link_document_citations(document: &mut doc::Document) {
     let labels: Vec<String> = document
         .blocks
         .iter()
@@ -506,14 +522,84 @@ fn extract_bibliography(document: &mut doc::Document) {
     if labels.is_empty() {
         return;
     }
-    for block in &mut document.blocks {
+
+    for block in document.blocks.iter_mut() {
         if matches!(
             block.kind,
             doc::BlockKind::Paragraph | doc::BlockKind::ListItem { .. } | doc::BlockKind::Caption
         ) {
-            block.text = refs::link_citations(&block.text, &labels);
+            let link_sups = !is_correspondence_note(&block.text) && !is_author_byline(&block.text);
+            let (text, spans) = refs::link_citations(&block.text, &block.spans, &labels, link_sups);
+            block.text = text;
+            block.spans = spans;
         }
     }
+}
+
+/// Whether a block is a correspondence note, where a superscript marks an affiliation.
+///
+/// Journals print the word verbatim — `*Correspondence:` or `Correspondence to:` — and the
+/// block it opens carries the affiliation list, so the match is on the opening word alone.
+fn is_correspondence_note(text: &str) -> bool {
+    text.trim_start()
+        .trim_start_matches(['*', '†', ' '])
+        .starts_with("Correspondence")
+}
+
+/// Whether a block reads as an author byline: a list of personal names, most carrying a
+/// trailing numeric affiliation marker.
+///
+/// A segment between commas (or `and`/`&`) counts as a name when, after any trailing marker
+/// characters are stripped, it is one to five words that each open with an uppercase letter and
+/// contain nothing but letters and name punctuation. At least three such names, making up most
+/// of the segments, with markers on at least half of them, is a byline — prose about three
+/// cited authors never clears all three bars, because its sentence words fail the name test
+/// and dilute the segment count.
+fn is_author_byline(text: &str) -> bool {
+    let mut segments = 0usize;
+    let mut names = 0usize;
+    let mut marked = 0usize;
+    for segment in text
+        .split(", ")
+        .flat_map(|s| s.split(" and "))
+        .flat_map(|s| s.split(" & "))
+    {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        segments += 1;
+        if let Some(has_marker) = name_with_marker(segment) {
+            names += 1;
+            if has_marker {
+                marked += 1;
+            }
+        }
+    }
+    names >= 3 && marked * 2 >= names && names * 3 >= segments * 2
+}
+
+/// `Some(had_marker)` when a segment is a personal name with an optional trailing affiliation
+/// marker (`Khaled Alganem1`, `Sumanta Kumar Mallik1*`), or `None` when it is not a name.
+fn name_with_marker(segment: &str) -> Option<bool> {
+    let stripped = segment.trim_end_matches(|c: char| {
+        c.is_ascii_digit() || matches!(c, '*' | ',' | '†' | '‡' | '§' | '¶' | ' ')
+    });
+    let has_marker = stripped.len() < segment.len();
+    let words: Vec<&str> = stripped.split_whitespace().collect();
+    if words.is_empty() || words.len() > 5 {
+        return None;
+    }
+    for word in words {
+        let mut chars = word.chars();
+        if !chars.next().is_some_and(|c| c.is_uppercase()) {
+            return None;
+        }
+        if !chars.all(|c| c.is_alphabetic() || matches!(c, '.' | '-' | '\'' | '\u{2019}')) {
+            return None;
+        }
+    }
+    Some(has_marker)
 }
 
 /// The column a line sits in, given the page's text extent and its gutters.
@@ -603,6 +689,9 @@ fn apply_inline_math(
                     text: format!("${latex}$"),
                     start: span.start,
                     end: span.end,
+                    // The rendered LaTeX replaces the covered words, so the glyph-level script
+                    // runs no longer describe its characters; the maths carries them itself.
+                    scripts: Vec::new(),
                 });
             }
             None => rebuilt.push(word.clone()),
@@ -1088,5 +1177,135 @@ mod tests {
         assert!(names_the_bibliography_elsewhere("References 21"));
         assert!(!names_the_bibliography_elsewhere("References"));
         assert!(!names_the_bibliography_elsewhere("7 References"));
+    }
+
+    fn sup(start: usize, end: usize) -> doc::Span {
+        doc::Span {
+            start,
+            end,
+            kind: doc::SpanKind::Sup,
+        }
+    }
+
+    /// A byline's affiliation markers are not citations: the superscripts stay unlinked (spans
+    /// kept) while the same digits in a body paragraph link.
+    #[test]
+    fn byline_affiliation_superscripts_are_not_linked_as_citations() {
+        let byline = "Abdul-rizaq Hamoud1, Khaled Alganem1, Sean Hanna2 and Ali S. Imami1";
+        let mut byline_block = paragraph(0, rect(50.0, 60.0, 500.0, 80.0), byline);
+        byline_block.spans = vec![sup(18, 19), sup(35, 36), sup(48, 49), sup(66, 67)];
+
+        let mut body = paragraph(0, rect(50.0, 150.0, 500.0, 200.0), "as others found1 too");
+        body.spans = vec![sup(15, 16)];
+
+        let mut entry = doc::Block::new(
+            doc::BlockKind::Reference,
+            0,
+            rect(50.0, 300.0, 500.0, 320.0),
+        )
+        .with_text("[1] A. Author. A title. 2020.");
+        entry.reference = Some(refs::parse("[1] A. Author. A title. 2020."));
+        let mut entry2 = doc::Block::new(
+            doc::BlockKind::Reference,
+            0,
+            rect(50.0, 320.0, 500.0, 340.0),
+        )
+        .with_text("[2] B. Author. Another title. 2021.");
+        entry2.reference = Some(refs::parse("[2] B. Author. Another title. 2021."));
+
+        let mut document = doc::Document {
+            title: None,
+            blocks: vec![byline_block, body, entry, entry2],
+        };
+        link_document_citations(&mut document);
+
+        assert_eq!(document.blocks[0].text, byline, "the byline must not link");
+        assert_eq!(
+            document.blocks[0].spans,
+            vec![sup(18, 19), sup(35, 36), sup(48, 49), sup(66, 67)],
+            "the affiliation superscripts stay as annotations"
+        );
+        assert_eq!(document.blocks[1].text, "as others found[1](#ref-1) too");
+    }
+
+    /// A correspondence note's superscript marks an affiliation, not reference 7.
+    #[test]
+    fn a_correspondence_note_is_not_linked() {
+        let note = "*Correspondence:7 Department of Electrical Engineering, Cincinnati, OH";
+        let mut block = paragraph(0, rect(50.0, 100.0, 500.0, 140.0), note);
+        block.spans = vec![sup(16, 17)];
+
+        let mut entry = doc::Block::new(
+            doc::BlockKind::Reference,
+            0,
+            rect(50.0, 300.0, 500.0, 320.0),
+        )
+        .with_text("[7] A. Author. A title. 2020.");
+        entry.reference = Some(refs::parse("[7] A. Author. A title. 2020."));
+
+        let mut document = doc::Document {
+            title: None,
+            blocks: vec![block, entry],
+        };
+        link_document_citations(&mut document);
+
+        assert_eq!(document.blocks[0].text, note);
+        assert_eq!(document.blocks[0].spans, vec![sup(16, 17)]);
+    }
+
+    /// Prose that cites three authors by name is not a byline: the sentence's own words fail
+    /// the name test, so its citations still link.
+    #[test]
+    fn prose_citing_authors_by_name_still_links() {
+        let mut body = paragraph(
+            0,
+            rect(50.0, 150.0, 500.0, 200.0),
+            "Early results from Smith1, Jones2 and Brown1 disagreed about the mechanism.",
+        );
+        body.spans = vec![sup(24, 25), sup(32, 33), sup(43, 44)];
+
+        let mut entry = doc::Block::new(
+            doc::BlockKind::Reference,
+            0,
+            rect(50.0, 300.0, 500.0, 320.0),
+        )
+        .with_text("[1] A. Smith. A title. 2020.");
+        entry.reference = Some(refs::parse("[1] A. Smith. A title. 2020."));
+        let mut entry2 = doc::Block::new(
+            doc::BlockKind::Reference,
+            0,
+            rect(50.0, 320.0, 500.0, 340.0),
+        )
+        .with_text("[2] B. Jones. Another title. 2021.");
+        entry2.reference = Some(refs::parse("[2] B. Jones. Another title. 2021."));
+
+        let mut document = doc::Document {
+            title: None,
+            blocks: vec![body, entry, entry2],
+        };
+        link_document_citations(&mut document);
+
+        assert_eq!(
+            document.blocks[0].text,
+            "Early results from Smith[1](#ref-1), Jones[2](#ref-2) and Brown[1](#ref-1) \
+             disagreed about the mechanism."
+        );
+    }
+
+    #[test]
+    fn byline_shapes_are_recognised() {
+        assert!(is_author_byline(
+            "Richa Pathak1, Sumanta Kumar Mallik1*, Prasanna Kumar Patil2, Krishna Kala1, \
+             Neetu Shahi1, Kishor Kunal1 & Pramod Kumar Pandey1*"
+        ));
+        assert!(is_author_byline(
+            "Abdul-rizaq Hamoud1, Khaled Alganem1, Jarek Meller3,4,5,6,7, \
+             Sinead M. O’Donovan9 and Robert McCullumsmith1,2*"
+        ));
+        // Two names are not a list, and prose dilutes the names it does contain.
+        assert!(!is_author_byline("Richa Pathak1, Sumanta Kumar Mallik1*"));
+        assert!(!is_author_byline(
+            "the method of Smith1, as refined by Jones2 and Brown3, was applied to all samples"
+        ));
     }
 }

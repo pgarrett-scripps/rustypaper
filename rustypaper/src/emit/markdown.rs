@@ -1,6 +1,6 @@
 //! GitHub-flavoured Markdown.
 
-use crate::doc::{Block, BlockKind, Document};
+use crate::doc::{Block, BlockKind, Document, Span, SpanKind};
 
 /// Renders a document as Markdown.
 pub fn render(doc: &Document) -> String {
@@ -19,7 +19,7 @@ fn render_block(out: &mut String, block: &Block) {
     match block.kind {
         BlockKind::Title => {
             out.push_str("# ");
-            out.push_str(&escape(&block.text));
+            out.push_str(&styled(&block.text, &block.spans));
         }
         BlockKind::Heading { level } => {
             // Level 1 headings sit under the title, so they render as `##`.
@@ -27,11 +27,11 @@ fn render_block(out: &mut String, block: &Block) {
                 out.push('#');
             }
             out.push(' ');
-            out.push_str(&escape(&block.text));
+            out.push_str(&styled(&block.text, &block.spans));
         }
         BlockKind::Caption => {
             out.push('*');
-            out.push_str(&escape(&block.text));
+            out.push_str(&styled(&block.text, &block.spans));
             out.push('*');
         }
         BlockKind::Figure => {
@@ -50,7 +50,7 @@ fn render_block(out: &mut String, block: &Block) {
                 None if block.text.is_empty() => out.push_str("*[figure]*"),
                 None => {
                     out.push('*');
-                    out.push_str(&escape(&block.text));
+                    out.push_str(&styled(&block.text, &block.spans));
                     out.push('*');
                 }
             }
@@ -59,11 +59,13 @@ fn render_block(out: &mut String, block: &Block) {
             // The document's own marker is kept in the text, so emit a plain bullet and let
             // Markdown renumber rather than fighting over `1.` versus `(a)`.
             out.push_str(if ordered { "1. " } else { "- " });
-            out.push_str(strip_marker(&block.text));
+            let rest = strip_marker(&block.text);
+            let shifted = marker_shifted_spans(&block.text, rest, &block.spans);
+            out.push_str(&wrap_spans(rest, &shifted));
         }
         BlockKind::Footnote => {
             out.push_str("> ");
-            out.push_str(&escape(&block.text));
+            out.push_str(&styled(&block.text, &block.spans));
         }
         BlockKind::Equation => match (&block.math, &block.asset) {
             // A reconstruction the pass was not sure of is shown as a picture rather than as
@@ -96,9 +98,45 @@ fn render_block(out: &mut String, block: &Block) {
             Some(data) => render_table(out, data),
             None => out.push_str("*[table]*"),
         },
-        BlockKind::Paragraph => out.push_str(&escape(&block.text)),
+        BlockKind::Paragraph => out.push_str(&styled(&block.text, &block.spans)),
     }
     out.push_str("\n\n");
+}
+
+/// Renders text with its inline spans as `<sup>`/`<sub>` tags, then escapes any line-leading
+/// marker. The tags annotate in place — the characters between them are the block's own.
+fn styled(text: &str, spans: &[Span]) -> String {
+    escape(&wrap_spans(text, spans))
+}
+
+/// Wraps each span's character range in the matching HTML tag.
+///
+/// Span offsets count characters, not bytes — see [`crate::doc::Span`]. A span that is out of
+/// order, out of range or empty is skipped: rendering it flat is better than wrapping the wrong
+/// characters.
+fn wrap_spans(text: &str, spans: &[Span]) -> String {
+    if spans.is_empty() {
+        return text.to_owned();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + spans.len() * 11);
+    let mut at = 0usize;
+    for span in spans {
+        if span.start < at || span.end > chars.len() || span.start >= span.end {
+            continue;
+        }
+        out.extend(&chars[at..span.start]);
+        let (open, close) = match span.kind {
+            SpanKind::Sup => ("<sup>", "</sup>"),
+            SpanKind::Sub => ("<sub>", "</sub>"),
+        };
+        out.push_str(open);
+        out.extend(&chars[span.start..span.end]);
+        out.push_str(close);
+        at = span.end;
+    }
+    out.extend(&chars[at..]);
+    out
 }
 
 /// Renders a table as GitHub-flavoured Markdown.
@@ -162,6 +200,22 @@ fn cell(text: &str) -> String {
     text.replace('|', "\\|").trim().to_owned()
 }
 
+/// Slides spans left past a stripped list marker. The marker's characters are gone from the
+/// front, so offsets shift with the text; a span inside the marker itself describes nothing
+/// afterwards and is dropped.
+pub(crate) fn marker_shifted_spans(text: &str, rest: &str, spans: &[Span]) -> Vec<Span> {
+    let removed = text.chars().count() - rest.chars().count();
+    spans
+        .iter()
+        .filter(|s| s.start >= removed)
+        .map(|s| Span {
+            start: s.start - removed,
+            end: s.end - removed,
+            kind: s.kind,
+        })
+        .collect()
+}
+
 /// Removes a leading list marker, which the emitter re-adds in Markdown's own form.
 pub(crate) fn strip_marker(text: &str) -> &str {
     let rest = text
@@ -211,6 +265,7 @@ mod tests {
         Block {
             kind,
             text: text.to_owned(),
+            spans: Vec::new(),
             page: 0,
             bbox: Rect::from_corners(0.0, 0.0, 1.0, 1.0),
             size: 10.0,
@@ -219,6 +274,62 @@ mod tests {
             math: None,
             reference: None,
         }
+    }
+
+    #[test]
+    fn sup_and_sub_spans_render_as_html_tags() {
+        let mut b = block(BlockKind::Paragraph, "as fish3 and H2O show");
+        b.spans = vec![
+            Span {
+                start: 7,
+                end: 8,
+                kind: SpanKind::Sup,
+            },
+            Span {
+                start: 14,
+                end: 15,
+                kind: SpanKind::Sub,
+            },
+        ];
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert_eq!(
+            render(&doc),
+            "as fish<sup>3</sup> and H<sub>2</sub>O show\n"
+        );
+    }
+
+    #[test]
+    fn span_offsets_are_characters_not_bytes() {
+        // "Müller" is six characters and seven bytes; a byte-offset reading would cut the "ü".
+        let mut b = block(BlockKind::Paragraph, "Müller7 agrees");
+        b.spans = vec![Span {
+            start: 6,
+            end: 7,
+            kind: SpanKind::Sup,
+        }];
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert_eq!(render(&doc), "Müller<sup>7</sup> agrees\n");
+    }
+
+    #[test]
+    fn list_item_spans_shift_with_the_stripped_marker() {
+        let mut b = block(BlockKind::ListItem { ordered: true }, "1. fish3 point");
+        b.spans = vec![Span {
+            start: 7,
+            end: 8,
+            kind: SpanKind::Sup,
+        }];
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert_eq!(render(&doc), "1. fish<sup>3</sup> point\n");
     }
 
     #[test]

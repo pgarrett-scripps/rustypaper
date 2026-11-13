@@ -163,6 +163,9 @@ pub fn compress(document: &mut Document, level: Level) {
         );
         if compressible {
             block.text = compress_text_at(&block.text, level);
+            // The rewrite moves and removes words, so the span offsets describe nothing
+            // afterwards. Dropped rather than remapped: absent beats wrong.
+            block.spans.clear();
         }
     }
 }

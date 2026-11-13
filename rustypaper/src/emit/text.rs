@@ -52,6 +52,7 @@ mod tests {
         Block {
             kind,
             text: text.to_owned(),
+            spans: Vec::new(),
             page: 0,
             bbox: Rect::from_corners(0.0, 0.0, 1.0, 1.0),
             size: 10.0,
