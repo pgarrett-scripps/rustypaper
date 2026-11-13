@@ -1193,7 +1193,7 @@ mod tests {
                 Rect::from_corners(0.0, 0.0, 100.0, 10.0),
             )
             .with_text(text);
-            title.spans = vec![span.clone()];
+            title.spans = vec![span];
             let mut blocks = vec![title];
             strip_title_badge(&mut blocks);
             assert_eq!(blocks[0].text, text);
