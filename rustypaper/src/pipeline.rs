@@ -413,6 +413,9 @@ fn extract_bibliography(document: &mut doc::Document) {
         document.blocks[block].text.truncate(offset);
         let trimmed = document.blocks[block].text.trim_end().len();
         document.blocks[block].text.truncate(trimmed);
+        // Spans are character offsets; keep only those entirely within the kept text.
+        let kept = document.blocks[block].text.chars().count();
+        document.blocks[block].spans.retain(|s| s.end <= kept);
     }
 
     // The bibliography runs to the next heading — papers put appendices after it.
@@ -511,7 +514,9 @@ fn extract_bibliography(document: &mut doc::Document) {
             block.kind,
             doc::BlockKind::Paragraph | doc::BlockKind::ListItem { .. } | doc::BlockKind::Caption
         ) {
-            block.text = refs::link_citations(&block.text, &labels);
+            let (text, spans) = refs::link_citations(&block.text, &block.spans, &labels);
+            block.text = text;
+            block.spans = spans;
         }
     }
 }
@@ -603,6 +608,9 @@ fn apply_inline_math(
                     text: format!("${latex}$"),
                     start: span.start,
                     end: span.end,
+                    // The rendered LaTeX replaces the covered words, so the glyph-level script
+                    // runs no longer describe its characters; the maths carries them itself.
+                    scripts: Vec::new(),
                 });
             }
             None => rebuilt.push(word.clone()),

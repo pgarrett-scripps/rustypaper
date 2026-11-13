@@ -187,6 +187,7 @@ mod tests {
             text: t.to_owned(),
             start: 0,
             end: 1,
+            scripts: Vec::new(),
         };
         let line = Line {
             bbox,

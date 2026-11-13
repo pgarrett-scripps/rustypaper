@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use crate::ir::Rect;
 use crate::layout::stats::Stats;
-use crate::text::lines::Line;
+use crate::text::lines::{Line, Script, ScriptRun};
 use crate::text::vocab::Vocabulary;
 
 /// A baseline step larger than leading by this factor starts a new block.
@@ -112,10 +112,41 @@ pub struct TableData {
     pub header_rows: usize,
 }
 
+/// What an inline span marks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpanKind {
+    /// Superscript — a citation marker, an affiliation mark, an exponent.
+    #[serde(rename = "sup")]
+    Sup,
+    /// Subscript — a chemical index, a variable's index.
+    #[serde(rename = "sub")]
+    Sub,
+}
+
+/// An inline annotation over a range of [`Block::text`], without moving the text itself.
+///
+/// `start..end` is half-open and counts **characters** (Unicode scalar values), not bytes: the
+/// JSON output's first consumer is Python, which indexes strings by character, and `"µ"` must
+/// cost one position there, not two. Spans are kept in order and never overlap. Every pass that
+/// rewrites a block's text either remaps its spans or drops the ones it can no longer vouch for
+/// — an absent span is honest where a stale offset points at the wrong characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Span {
+    /// Character offset of the span's first character.
+    pub start: usize,
+    /// One past the span's last character.
+    pub end: usize,
+    pub kind: SpanKind,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
     pub kind: BlockKind,
     pub text: String,
+    /// Inline sup/subscript spans over `text`, in order, non-overlapping. Character offsets —
+    /// see [`Span`].
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub spans: Vec<Span>,
     /// Zero-based page the block starts on.
     pub page: usize,
     pub bbox: Rect,
@@ -142,6 +173,7 @@ impl Block {
         Self {
             kind,
             text: String::new(),
+            spans: Vec::new(),
             page,
             bbox,
             size: 0.0,
@@ -154,6 +186,11 @@ impl Block {
 
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
         self.text = text.into();
+        self
+    }
+
+    pub fn with_spans(mut self, spans: Vec<Span>) -> Self {
+        self.spans = spans;
         self
     }
 
@@ -411,7 +448,7 @@ fn build_block(
     vocab: &Vocabulary,
     page_height: f32,
 ) -> Option<Block> {
-    let text = join_lines(group, vocab);
+    let (text, spans) = join_lines(group, vocab);
     if text.trim().is_empty() {
         return None;
     }
@@ -439,7 +476,12 @@ fn build_block(
         BlockKind::Paragraph
     };
 
-    Some(Block::new(kind, page, bbox).with_text(text).with_size(size))
+    Some(
+        Block::new(kind, page, bbox)
+            .with_text(text)
+            .with_spans(spans)
+            .with_size(size),
+    )
 }
 
 /// Whether a block opens with a list marker, and whether that marker is ordered.
@@ -499,13 +541,19 @@ fn is_footnote(group: &[&Line], size: f32, stats: Stats, page_height: f32) -> bo
 /// A geometric guard comes first either way: hyphenation only happens where a line was
 /// broken to fit, so a line stopping short of the block's right edge ended for some other reason
 /// and its last word is whole.
-fn join_lines(group: &[&Line], vocab: &Vocabulary) -> String {
+fn join_lines(group: &[&Line], vocab: &Vocabulary) -> (String, Vec<Span>) {
     let right_edge = group.iter().map(|l| l.bbox.x1).fold(0.0f32, f32::max);
 
     let mut out = String::new();
+    // Length of `out` in characters, maintained alongside, because spans are character offsets
+    // while `String` operations here are byte offsets.
+    let mut out_chars = 0usize;
+    let mut spans: Vec<Span> = Vec::new();
     for (i, line) in group.iter().enumerate() {
-        let text = line.text();
+        let (text, runs) = line.text_with_scripts();
         if i == 0 {
+            spans.extend(runs.iter().filter_map(|r| script_span(r, 0)));
+            out_chars += text.chars().count();
             out.push_str(&text);
             continue;
         }
@@ -517,17 +565,72 @@ fn join_lines(group: &[&Line], vocab: &Vocabulary) -> String {
             .and_then(|(head, tail)| rejoin_across_break(vocab, head, tail))
         {
             Some(merged) => {
-                out.truncate(out.len() - head_len(&out));
+                let head = head_len(&out);
+                let head_chars = out[out.len() - head..].chars().count();
+                out.truncate(out.len() - head);
+                out_chars -= head_chars;
+                // The rejoined word is a rewrite — a hyphen may have vanished from its middle —
+                // so offsets into either of its halves no longer describe the output. Spans
+                // touching it are dropped rather than guessed at.
+                spans.retain(|s| s.end <= out_chars);
+                let first = first_word_len(&text);
+                let first_chars = text[..first].chars().count();
+                out_chars += merged.chars().count();
                 out.push_str(&merged);
-                out.push_str(&text[first_word_len(&text)..]);
+                spans.extend(
+                    runs.iter()
+                        .filter(|r| r.start >= first_chars)
+                        .filter_map(|r| script_span(r, out_chars - first_chars)),
+                );
+                out_chars += text[first..].chars().count();
+                out.push_str(&text[first..]);
             }
             None => {
                 out.push(' ');
+                out_chars += 1;
+                spans.extend(runs.iter().filter_map(|r| script_span(r, out_chars)));
+                out_chars += text.chars().count();
                 out.push_str(&text);
             }
         }
     }
-    out.trim().to_owned()
+    trim_with_spans(out, spans)
+}
+
+/// A [`Span`] for a script run shifted `shift` characters right; `None` for a normal-script run,
+/// which marks nothing.
+fn script_span(run: &ScriptRun, shift: usize) -> Option<Span> {
+    let kind = match run.script {
+        Script::Superscript => SpanKind::Sup,
+        Script::Subscript => SpanKind::Sub,
+        Script::Normal => return None,
+    };
+    Some(Span {
+        start: shift + run.start,
+        end: shift + run.end,
+        kind,
+    })
+}
+
+/// Trims the joined text, shifting span offsets left by the removed lead and dropping any span
+/// the trim cut into.
+fn trim_with_spans(out: String, mut spans: Vec<Span>) -> (String, Vec<Span>) {
+    let trimmed = out.trim();
+    if trimmed.len() == out.len() {
+        return (out, spans);
+    }
+    let lead = out[..out.len() - out.trim_start().len()].chars().count();
+    let kept = trimmed.chars().count();
+    let trimmed = trimmed.to_owned();
+    spans.retain_mut(|span| {
+        if span.start < lead || span.end > lead + kept {
+            return false;
+        }
+        span.start -= lead;
+        span.end -= lead;
+        true
+    });
+    (trimmed, spans)
 }
 
 /// Decides whether the word ending one line and the word starting the next are one word.
@@ -769,6 +872,14 @@ fn coalesce_fragments(blocks: &mut Vec<Block>, starts: &mut Vec<usize>, stats: S
         match joins {
             true => {
                 let previous = merged.last_mut().expect("checked above");
+                // Spans count characters, so the shift is the absorbed text's new character
+                // offset, not its byte offset.
+                let shift = previous.text.chars().count() + 1;
+                previous.spans.extend(block.spans.iter().map(|span| Span {
+                    start: span.start + shift,
+                    end: span.end + shift,
+                    kind: span.kind,
+                }));
                 previous.text.push(' ');
                 previous.text.push_str(&block.text);
                 previous.bbox = previous.bbox.union(&block.bbox);
@@ -942,6 +1053,7 @@ mod tests {
                 text: text.to_owned(),
                 start: 0,
                 end: 1,
+                scripts: Vec::new(),
             }],
         }
     }
@@ -965,6 +1077,7 @@ mod tests {
                     text: (*t).to_owned(),
                     start: 0,
                     end: 1,
+                    scripts: Vec::new(),
                 })
                 .collect(),
             ..line("", 100.0, 10.0, 0.0, 50.0)

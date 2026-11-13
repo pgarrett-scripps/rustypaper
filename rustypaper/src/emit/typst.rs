@@ -9,7 +9,7 @@
 //! LaTeX's, so formulae go through the `mitex` package, which renders LaTeX inside Typst. The
 //! import is emitted automatically when a document contains any.
 
-use crate::doc::{Block, BlockKind, Document, TableData};
+use crate::doc::{Block, BlockKind, Document, Span, SpanKind, TableData};
 
 /// Renders a document as Typst.
 pub fn render(doc: &Document) -> String {
@@ -40,7 +40,7 @@ fn render_block(out: &mut String, block: &Block) {
     match &block.kind {
         BlockKind::Title => {
             out.push_str("= ");
-            out.push_str(&inline(&block.text));
+            out.push_str(&styled(&block.text, &block.spans));
         }
         BlockKind::Heading { level } => {
             // Typst's `=` is the document title, so a level-1 section is `==`.
@@ -48,34 +48,36 @@ fn render_block(out: &mut String, block: &Block) {
                 out.push('=');
             }
             out.push(' ');
-            out.push_str(&inline(&block.text));
+            out.push_str(&styled(&block.text, &block.spans));
         }
         BlockKind::Figure => match &block.asset {
             Some(path) => {
                 out.push_str("#figure(\n  image(\"");
                 out.push_str(path);
                 out.push_str("\"),\n  caption: [");
-                out.push_str(&inline(&block.text));
+                out.push_str(&styled(&block.text, &block.spans));
                 out.push_str("],\n)");
             }
             None => {
                 out.push_str("#emph[");
-                out.push_str(&inline(&block.text));
+                out.push_str(&styled(&block.text, &block.spans));
                 out.push(']');
             }
         },
         BlockKind::Caption => {
             out.push_str("#emph[");
-            out.push_str(&inline(&block.text));
+            out.push_str(&styled(&block.text, &block.spans));
             out.push(']');
         }
         BlockKind::ListItem { ordered } => {
             out.push_str(if *ordered { "+ " } else { "- " });
-            out.push_str(&inline(strip_marker(&block.text)));
+            let rest = strip_marker(&block.text);
+            let shifted = super::markdown::marker_shifted_spans(&block.text, rest, &block.spans);
+            out.push_str(&styled(rest, &shifted));
         }
         BlockKind::Footnote => {
             out.push_str("#footnote[");
-            out.push_str(&inline(&block.text));
+            out.push_str(&styled(&block.text, &block.spans));
             out.push(']');
         }
         BlockKind::Equation => match (&block.math, &block.asset) {
@@ -106,9 +108,42 @@ fn render_block(out: &mut String, block: &Block) {
             }
             out.push_str(&inline(&block.text));
         }
-        BlockKind::Paragraph => out.push_str(&inline(&block.text)),
+        BlockKind::Paragraph => out.push_str(&styled(&block.text, &block.spans)),
     }
     out.push_str("\n\n");
+}
+
+/// Renders text with its inline spans as `#super[…]`/`#sub[…]`, escaping each segment.
+///
+/// Span offsets count characters, not bytes — see [`crate::doc::Span`]. Each segment is escaped
+/// on its own, which resets [`inline`]'s maths state at the boundary; that is safe because spans
+/// never cover inline maths — the maths pass drops script runs when it rewrites a word. A span
+/// that is out of order, out of range or empty is skipped: flat beats wrong.
+fn styled(text: &str, spans: &[Span]) -> String {
+    if spans.is_empty() {
+        return inline(text);
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0usize;
+    for span in spans {
+        if span.start < at || span.end > chars.len() || span.start >= span.end {
+            continue;
+        }
+        let before: String = chars[at..span.start].iter().collect();
+        out.push_str(&inline(&before));
+        out.push_str(match span.kind {
+            SpanKind::Sup => "#super[",
+            SpanKind::Sub => "#sub[",
+        });
+        let covered: String = chars[span.start..span.end].iter().collect();
+        out.push_str(&inline(&covered));
+        out.push(']');
+        at = span.end;
+    }
+    let rest: String = chars[at..].iter().collect();
+    out.push_str(&inline(&rest));
+    out
 }
 
 /// Renders a table with real cells, which is the thing Markdown cannot do.
@@ -176,6 +211,7 @@ mod tests {
         Block {
             kind,
             text: text.to_owned(),
+            spans: Vec::new(),
             page: 0,
             bbox: Rect::from_corners(0.0, 0.0, 1.0, 1.0),
             size: 10.0,
@@ -184,6 +220,43 @@ mod tests {
             math: None,
             reference: None,
         }
+    }
+
+    #[test]
+    fn sup_and_sub_spans_render_as_typst_functions() {
+        let mut b = block(BlockKind::Paragraph, "as fish3 and H2O show");
+        b.spans = vec![
+            Span {
+                start: 7,
+                end: 8,
+                kind: SpanKind::Sup,
+            },
+            Span {
+                start: 14,
+                end: 15,
+                kind: SpanKind::Sub,
+            },
+        ];
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert_eq!(render(&doc), "as fish#super[3] and H#sub[2]O show\n");
+    }
+
+    #[test]
+    fn spanned_segments_are_still_escaped() {
+        let mut b = block(BlockKind::Paragraph, "see *3 here");
+        b.spans = vec![Span {
+            start: 4,
+            end: 6,
+            kind: SpanKind::Sup,
+        }];
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert_eq!(render(&doc), "see #super[\\*3] here\n");
     }
 
     #[test]

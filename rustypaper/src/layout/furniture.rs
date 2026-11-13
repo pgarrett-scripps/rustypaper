@@ -225,6 +225,7 @@ mod tests {
                 text: text.to_owned(),
                 start: 0,
                 end: 1,
+                scripts: Vec::new(),
             }],
         }
     }

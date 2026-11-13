@@ -49,6 +49,13 @@ const MIN_WORD_GAP_RATIO: f32 = 0.10;
 /// split to be believed.
 const GAP_CLASS_SEPARATION: f32 = 2.5;
 
+/// A whitespace glyph narrower than this fraction of its font size is a break *hint*, not a word
+/// space, and does not split a word. Springer PDFs set a zero-advance space between the
+/// characters of a URL so a viewer may wrap it anywhere, and believing those marks rendered
+/// `https://doi.org/...` as `h t t p s : / / do i . o r g`. A real word space is never this
+/// narrow: justification compresses one to about 0.19 em at its tightest.
+const SPACE_MARK_MIN_WIDTH_RATIO: f32 = 0.05;
+
 /// Beyond this many degrees off horizontal, a glyph is not part of running text.
 const MAX_TEXT_ANGLE_DEGREES: f32 = 5.0;
 
@@ -107,6 +114,21 @@ pub struct Line {
     pub words: Vec<Word>,
 }
 
+/// A run of consecutive superscript or subscript characters within a word's text.
+///
+/// Offsets count **characters** (Unicode scalar values), not bytes, because the inline spans
+/// derived from these runs end up in the JSON output, whose first consumer indexes strings by
+/// character. A glyph may expand to several characters (`ﬃ` → `ffi`), so a run's length is not
+/// its glyph count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptRun {
+    /// Character offset of the run's first character.
+    pub start: usize,
+    /// One past the run's last character.
+    pub end: usize,
+    pub script: Script,
+}
+
 #[derive(Debug, Clone)]
 pub struct Word {
     pub bbox: Rect,
@@ -114,6 +136,9 @@ pub struct Word {
     /// Range within [`Line::glyphs`].
     pub start: usize,
     pub end: usize,
+    /// Superscript and subscript runs within `text`, in order, non-overlapping. Character
+    /// offsets — see [`ScriptRun`].
+    pub scripts: Vec<ScriptRun>,
 }
 
 impl Line {
@@ -127,6 +152,50 @@ impl Line {
             out.push_str(&word.text);
         }
         out
+    }
+
+    /// The line's text as [`Line::text`] builds it, together with the sup/subscript runs within
+    /// it. Run offsets are characters into the returned string — see [`ScriptRun`].
+    ///
+    /// Not every run the glyphs carry is reported. A real script marker — a citation number, an
+    /// exponent, the `2` of a formula — is a few characters riding on a line of normal text.
+    /// When a run is long, or the runs together cover much of the line, the classification is
+    /// the artefact of a misjudged merge (a small-type footnote absorbed into a neighbouring
+    /// line, the glyph soup of a figure's axis labels), and annotating it would mark whole words
+    /// of prose as scripts. Those runs are dropped: prefer an absent annotation to a wrong one.
+    pub fn text_with_scripts(&self) -> (String, Vec<ScriptRun>) {
+        /// The longest believable script marker: `10,11,14-16` is eleven characters.
+        const MAX_RUN_CHARS: usize = 12;
+        /// Scripts must stay a minority of their host line: under a quarter of its characters.
+        const LINE_SHARE: usize = 4;
+
+        let mut out = String::new();
+        let mut runs = Vec::new();
+        let mut chars = 0usize;
+        for (i, word) in self.words.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+                chars += 1;
+            }
+            for run in &word.scripts {
+                if run.end - run.start > MAX_RUN_CHARS {
+                    continue;
+                }
+                runs.push(ScriptRun {
+                    start: chars + run.start,
+                    end: chars + run.end,
+                    script: run.script,
+                });
+            }
+            out.push_str(&word.text);
+            chars += word.text.chars().count();
+        }
+
+        let covered: usize = runs.iter().map(|r| r.end - r.start).sum();
+        if covered * LINE_SHARE > chars {
+            runs.clear();
+        }
+        (out, runs)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -618,7 +687,19 @@ fn compact_spaces(page: &PageRaw, line: &mut Line) {
     let mut pending_break = false;
 
     for placed in line.glyphs.drain(..) {
-        if is_space(&page.glyphs[placed.index]) {
+        let glyph = &page.glyphs[placed.index];
+        // U+200B ZERO WIDTH SPACE is a line-break hint, not a word boundary and not text —
+        // Springer sets one between every character of a URL. Dropped outright: it neither
+        // breaks a word nor appears in the output, and it leaves any pending break standing.
+        if matches!(glyph.text, crate::ir::GlyphText::Char('\u{200B}')) {
+            continue;
+        }
+        if is_space(glyph) {
+            // A space that occupies no width is a line-break hint, not a word boundary — see
+            // [`SPACE_MARK_MIN_WIDTH_RATIO`] — so it neither starts a break nor cancels one.
+            if glyph.bbox.width() < glyph.size * SPACE_MARK_MIN_WIDTH_RATIO {
+                continue;
+            }
             // A leading space says nothing about word structure within the line.
             pending_break = !compacted.is_empty();
             continue;
@@ -659,6 +740,9 @@ fn segment_words(page: &PageRaw, line: &mut Line) {
     let mut start = 0usize;
     let mut buf = [0u8; 4];
     let mut text = String::new();
+    let mut chars = 0usize;
+    let mut scripts: Vec<ScriptRun> = Vec::new();
+    let mut open: Option<ScriptRun> = None;
 
     for i in 0..line.glyphs.len() {
         let split = if marked {
@@ -667,13 +751,45 @@ fn segment_words(page: &PageRaw, line: &mut Line) {
             i > 0 && ratios[i - 1] > threshold
         };
         if split && i > 0 {
-            push_word(page, line, start, i, std::mem::take(&mut text));
+            if let Some(run) = open.take() {
+                scripts.push(ScriptRun { end: chars, ..run });
+            }
+            push_word(
+                page,
+                line,
+                start,
+                i,
+                std::mem::take(&mut text),
+                std::mem::take(&mut scripts),
+            );
             start = i;
+            chars = 0;
         }
         let glyph = &page.glyphs[line.glyphs[i].index];
-        text.push_str(page.glyph_str(glyph, &mut buf));
+        let piece = page.glyph_str(glyph, &mut buf);
+        let script = line.glyphs[i].script;
+        match &mut open {
+            Some(run) if run.script == script => {}
+            slot => {
+                if let Some(run) = slot.take() {
+                    scripts.push(ScriptRun { end: chars, ..run });
+                }
+                if script != Script::Normal && !piece.is_empty() {
+                    *slot = Some(ScriptRun {
+                        start: chars,
+                        end: chars,
+                        script,
+                    });
+                }
+            }
+        }
+        text.push_str(piece);
+        chars += piece.chars().count();
     }
-    push_word(page, line, start, line.glyphs.len(), text);
+    if let Some(run) = open.take() {
+        scripts.push(ScriptRun { end: chars, ..run });
+    }
+    push_word(page, line, start, line.glyphs.len(), text, scripts);
 }
 
 /// Gap between glyph `i` and its predecessor, as a fraction of font size.
@@ -743,7 +859,14 @@ fn word_gap_threshold(ratios: &[f32]) -> f32 {
     ((sorted[split - 1] + sorted[split]) * 0.5).clamp(MIN_WORD_GAP_RATIO, fallback)
 }
 
-fn push_word(page: &PageRaw, line: &mut Line, start: usize, end: usize, text: String) {
+fn push_word(
+    page: &PageRaw,
+    line: &mut Line,
+    start: usize,
+    end: usize,
+    text: String,
+    scripts: Vec<ScriptRun>,
+) {
     if start >= end || text.is_empty() {
         return;
     }
@@ -753,6 +876,7 @@ fn push_word(page: &PageRaw, line: &mut Line, start: usize, end: usize, text: St
         text,
         start,
         end,
+        scripts,
     });
 }
 
@@ -959,6 +1083,81 @@ mod tests {
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].glyphs.len(), 2);
         assert_eq!(lines[0].text(), "ab");
+    }
+
+    /// Springer sets a zero-advance space between the characters of a URL as a break hint, and
+    /// treating those marks as word spaces rendered `https://doi` as `h t t p s : / / do i`.
+    #[test]
+    fn a_zero_width_space_mark_does_not_break_a_word() {
+        let mut glyphs = Vec::new();
+        let mut x = 72.0;
+        for c in "https://doi".chars() {
+            glyphs.push(glyph(c, x, 100.0, 10.0));
+            x += 5.0;
+            // The break hint: a real, zero-width space at the next glyph's own origin.
+            let mut hint = glyph(' ', x, 100.0, 10.0);
+            hint.bbox = Rect::from_corners(x, 93.0, x, 100.0);
+            glyphs.push(hint);
+        }
+        // A full-width space then starts a genuine second word, and puts the line on the
+        // marks-are-authoritative path: the zero-width hints must still not split anything.
+        glyphs.push(glyph(' ', x, 100.0, 10.0));
+        glyphs.extend(run("next", x + 5.0, 100.0, 10.0));
+        let page = page_of(glyphs);
+
+        let lines = build_lines(&page);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text(), "https://doi next");
+    }
+
+    /// With ActualText honoured, the break hint arrives as the character it states: U+200B,
+    /// a zero-width space. It is neither a word break nor text — it must vanish entirely, or
+    /// `find_doi` and URL parsing downstream see `https://d​oi` and fail the match.
+    #[test]
+    fn a_zero_width_space_character_is_not_a_break_and_not_output() {
+        let mut glyphs = Vec::new();
+        let mut x = 72.0;
+        for c in "https://doi".chars() {
+            glyphs.push(glyph(c, x, 100.0, 10.0));
+            x += 5.0;
+            let mut hint = glyph('\u{200B}', x, 100.0, 10.0);
+            hint.bbox = Rect::from_corners(x, 93.0, x, 100.0);
+            glyphs.push(hint);
+        }
+        // A real space then starts a second word, putting the line on the
+        // marks-are-authoritative path.
+        glyphs.push(glyph(' ', x, 100.0, 10.0));
+        glyphs.extend(run("next", x + 5.0, 100.0, 10.0));
+        let page = page_of(glyphs);
+
+        let lines = build_lines(&page);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text(), "https://doi next");
+        assert!(
+            !lines[0].text().contains('\u{200B}'),
+            "the zero-width space leaked into the text"
+        );
+    }
+
+    /// A superscript glyph becomes a script run on its word, in character offsets.
+    #[test]
+    fn a_superscript_becomes_a_script_run_on_its_word() {
+        let mut glyphs = run("fish", 72.0, 100.0, 10.0);
+        glyphs.extend(run("3", 92.0, 96.0, 7.0));
+        let page = page_of(glyphs);
+
+        let lines = build_lines(&page);
+        assert_eq!(lines.len(), 1);
+        let (text, runs) = lines[0].text_with_scripts();
+        assert_eq!(text, "fish3");
+        assert_eq!(
+            runs,
+            vec![ScriptRun {
+                start: 4,
+                end: 5,
+                script: Script::Superscript
+            }]
+        );
     }
 
     #[test]
