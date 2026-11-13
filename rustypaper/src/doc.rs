@@ -395,6 +395,7 @@ pub fn assemble_placed(
     coalesce_fragments(&mut blocks, &mut starts, stats);
     demote_lonely_list_items(&mut blocks);
     promote_title(&mut blocks, stats);
+    strip_title_badge(&mut blocks);
     assign_heading_levels(&mut blocks);
 
     let title = blocks
@@ -964,6 +965,36 @@ fn promote_title(blocks: &mut [Block], stats: Stats) {
     }
 }
 
+/// Strips a journal badge glued onto the front of the title.
+///
+/// Nature-family covers print an `OPEN` access badge as superscript capitals flush against the
+/// title's first word, and its glyphs arrive on the title's own line, so the Title block opens
+/// with a superscript run of capitals: `OPENAssessing…`. A real title never opens with a
+/// superscript, so a leading all-capitals sup run of two or more letters is furniture: the
+/// characters and their span are dropped and the remaining spans shifted back.
+fn strip_title_badge(blocks: &mut [Block]) {
+    let Some(block) = blocks.iter_mut().find(|b| b.kind == BlockKind::Title) else {
+        return;
+    };
+    let Some(first) = block.spans.first() else {
+        return;
+    };
+    if first.kind != SpanKind::Sup || first.start != 0 || first.end < 2 {
+        return;
+    }
+    let cut = first.end;
+    let chars: Vec<char> = block.text.chars().collect();
+    if cut >= chars.len() || !chars[..cut].iter().all(|c| c.is_ascii_uppercase()) {
+        return;
+    }
+    block.text = chars[cut..].iter().collect();
+    block.spans.remove(0);
+    for span in &mut block.spans {
+        span.start -= cut;
+        span.end -= cut;
+    }
+}
+
 /// Assigns heading levels.
 ///
 /// Section numbering is authoritative where it exists — `3.2` is unambiguously one level below
@@ -1086,6 +1117,88 @@ mod tests {
             one_line(&["the", "learning", "rate", "and", "learning", "curve", "of"]),
             one_line(&["a", "learning", "b", "learning", "c", "learning", "d"]),
         ]])
+    }
+
+    /// Nature's open-access badge: superscript capitals glued to the title's first word.
+    #[test]
+    fn a_badge_glued_onto_the_title_is_stripped() {
+        let mut title = Block::new(
+            BlockKind::Title,
+            0,
+            Rect::from_corners(0.0, 0.0, 100.0, 10.0),
+        )
+        .with_text("OPENAssessing the effect");
+        title.spans = vec![
+            Span {
+                start: 0,
+                end: 4,
+                kind: SpanKind::Sup,
+            },
+            Span {
+                start: 20,
+                end: 21,
+                kind: SpanKind::Sup,
+            },
+        ];
+        let mut blocks = vec![title];
+        strip_title_badge(&mut blocks);
+        assert_eq!(blocks[0].text, "Assessing the effect");
+        assert_eq!(
+            blocks[0].spans,
+            vec![Span {
+                start: 16,
+                end: 17,
+                kind: SpanKind::Sup,
+            }],
+            "the remaining span shifted back with the text"
+        );
+    }
+
+    /// A genuine superscript elsewhere in a title is not a badge, and neither is a mixed-case
+    /// opening run.
+    #[test]
+    fn a_title_without_a_leading_capital_sup_run_is_untouched() {
+        for (text, span) in [
+            // The run is not at the start.
+            (
+                "Assessing OPENthings",
+                Span {
+                    start: 10,
+                    end: 14,
+                    kind: SpanKind::Sup,
+                },
+            ),
+            // The covered characters are not all capitals.
+            (
+                "Openness in science",
+                Span {
+                    start: 0,
+                    end: 4,
+                    kind: SpanKind::Sup,
+                },
+            ),
+            // A single character is too short to be a badge.
+            (
+                "E pluribus unum",
+                Span {
+                    start: 0,
+                    end: 1,
+                    kind: SpanKind::Sup,
+                },
+            ),
+        ] {
+            let mut title = Block::new(
+                BlockKind::Title,
+                0,
+                Rect::from_corners(0.0, 0.0, 100.0, 10.0),
+            )
+            .with_text(text);
+            title.spans = vec![span.clone()];
+            let mut blocks = vec![title];
+            strip_title_badge(&mut blocks);
+            assert_eq!(blocks[0].text, text);
+            assert_eq!(blocks[0].spans, vec![span]);
+        }
     }
 
     #[test]

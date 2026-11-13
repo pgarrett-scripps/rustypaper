@@ -698,10 +698,16 @@ fn reads_as_prose(text: &str) -> bool {
 /// offsets into `text` (see [`crate::doc::Span`]); the returned spans are the same annotations
 /// remapped onto the rewritten text, with a linked superscript run widened to cover its own link
 /// markup, and any span the rewrite cut through dropped rather than guessed at.
+///
+/// `link_sups` is the caller's judgment on whether a numeric superscript here can be a citation
+/// at all. In the front matter it cannot — the same digits are affiliation markers on author
+/// names — so the pipeline passes `false` there and the spans pass through unlinked. Bracketed
+/// citations are unaffected: `[3]` does not share a shape with anything in a byline.
 pub fn link_citations(
     text: &str,
     spans: &[crate::doc::Span],
     known: &[String],
+    link_sups: bool,
 ) -> (String, Vec<crate::doc::Span>) {
     use crate::doc::{Span, SpanKind};
 
@@ -762,7 +768,7 @@ pub fn link_citations(
 
     // Superscript citations.
     for (index, span) in spans.iter().enumerate() {
-        if span.kind != SpanKind::Sup {
+        if !link_sups || span.kind != SpanKind::Sup {
             continue;
         }
         if let Some(replacement) = sup_citation(&chars, span.start, span.end, known) {
@@ -1263,7 +1269,7 @@ mod tests {
     fn numeric_citations_are_linked() {
         let known = labels(&["1", "12"]);
         assert_eq!(
-            link_citations("as shown in [12] and [1]", &[], &known).0,
+            link_citations("as shown in [12] and [1]", &[], &known, true).0,
             "as shown in [[12](#ref-12)] and [[1](#ref-1)]"
         );
     }
@@ -1272,7 +1278,7 @@ mod tests {
     fn multiple_citations_in_one_bracket_are_linked_separately() {
         let known = labels(&["1", "2"]);
         assert_eq!(
-            link_citations("see [1, 2]", &[], &known).0,
+            link_citations("see [1, 2]", &[], &known, true).0,
             "see [[1](#ref-1), [2](#ref-2)]"
         );
     }
@@ -1280,13 +1286,13 @@ mod tests {
     #[test]
     fn unknown_or_non_numeric_brackets_are_left_alone() {
         let known = labels(&["1"]);
-        assert_eq!(link_citations("see [99]", &[], &known).0, "see [99]");
+        assert_eq!(link_citations("see [99]", &[], &known, true).0, "see [99]");
         assert_eq!(
-            link_citations("an array a[i]", &[], &known).0,
+            link_citations("an array a[i]", &[], &known, true).0,
             "an array a[i]"
         );
         assert_eq!(
-            link_citations("no brackets here", &[], &known).0,
+            link_citations("no brackets here", &[], &known, true).0,
             "no brackets here"
         );
     }
@@ -1295,7 +1301,7 @@ mod tests {
     fn a_superscript_citation_is_linked_and_its_span_widened() {
         let known = labels(&["3"]);
         // "fish3." with the 3 superscript.
-        let (text, spans) = link_citations("fish3.", &[sup(4, 5)], &known);
+        let (text, spans) = link_citations("fish3.", &[sup(4, 5)], &known, true);
         assert_eq!(text, "fish[3](#ref-3).");
         assert_eq!(spans, vec![sup(4, 15)]);
     }
@@ -1307,6 +1313,7 @@ mod tests {
             "shown2,3 and done4-6 here",
             &[sup(5, 8), sup(17, 20)],
             &known,
+            true,
         );
         assert_eq!(
             text,
@@ -1319,7 +1326,7 @@ mod tests {
     fn a_range_with_a_missing_interior_label_is_not_linked() {
         // A bibliography with [4] and [6] but no [5] cannot be cited as "4-6".
         let known = labels(&["4", "6"]);
-        let (text, spans) = link_citations("done4-6 here", &[sup(4, 7)], &known);
+        let (text, spans) = link_citations("done4-6 here", &[sup(4, 7)], &known, true);
         assert_eq!(text, "done4-6 here");
         assert_eq!(spans, vec![sup(4, 7)]);
     }
@@ -1333,7 +1340,7 @@ mod tests {
             ("a cm3 flask", sup(4, 5)),
             ("some 106 cells", sup(7, 8)),
         ] {
-            let (out, spans) = link_citations(text, &[span], &known);
+            let (out, spans) = link_citations(text, &[span], &known, true);
             assert_eq!(out, text);
             assert_eq!(spans, vec![span]);
         }
@@ -1343,7 +1350,7 @@ mod tests {
     fn superscript_offsets_count_characters_not_bytes() {
         let known = labels(&["7"]);
         // "Müller" is six characters and seven bytes; the span is at character offsets.
-        let (text, spans) = link_citations("Müller7 agrees", &[sup(6, 7)], &known);
+        let (text, spans) = link_citations("Müller7 agrees", &[sup(6, 7)], &known, true);
         assert_eq!(text, "Müller[7](#ref-7) agrees");
         assert_eq!(spans, vec![sup(6, 17)]);
     }
@@ -1357,7 +1364,7 @@ mod tests {
             end: 10,
             kind: crate::doc::SpanKind::Sub,
         };
-        let (text, spans) = link_citations("see [1] H2O", &[sub], &known);
+        let (text, spans) = link_citations("see [1] H2O", &[sub], &known, true);
         assert_eq!(text, "see [[1](#ref-1)] H2O");
         assert_eq!(
             spans,
@@ -1367,6 +1374,38 @@ mod tests {
                 kind: crate::doc::SpanKind::Sub,
             }]
         );
+    }
+
+    #[test]
+    fn a_byline_with_affiliation_superscripts_is_left_unlinked() {
+        // Front matter: the pipeline passes link_sups = false there. The affiliation markers
+        // have exactly the shape of citations, so only the flag keeps them unlinked — and the
+        // spans must survive, because the superscripts are still real.
+        let known = labels(&["1", "2"]);
+        let byline = "Abdul-rizaq Hamoud1, Khaled Alganem2, Ali Imami1";
+        let spans = vec![sup(18, 19), sup(35, 36), sup(47, 48)];
+        let (text, out) = link_citations(byline, &spans, &known, false);
+        assert_eq!(text, byline);
+        assert_eq!(out, spans);
+    }
+
+    #[test]
+    fn brackets_are_still_linked_when_superscripts_are_not() {
+        let known = labels(&["1"]);
+        let (text, _) = link_citations("see [1] here3", &[sup(12, 13)], &known, false);
+        assert_eq!(text, "see [[1](#ref-1)] here3");
+    }
+
+    #[test]
+    fn a_corresponding_author_marker_with_an_asterisk_never_links() {
+        // "Richa Pathak1*" — the starred affiliation marker is not a citation list even in
+        // body text, because '*' is not a digit or separator.
+        let known = labels(&["1"]);
+        let byline = "Richa Pathak1*";
+        let spans = vec![sup(12, 14)];
+        let (text, out) = link_citations(byline, &spans, &known, true);
+        assert_eq!(text, byline);
+        assert_eq!(out, spans);
     }
 
     #[test]
