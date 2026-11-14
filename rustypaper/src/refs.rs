@@ -107,6 +107,12 @@ pub fn split_entries(text: &str) -> Vec<String> {
     if starts.len() < 2 {
         starts = author_starts(&chars);
     }
+    // The sentence-anchored signal needs a full stop before each entry, and the Springer house
+    // style gives it none — its entries end in a page range or a DOI. The parenthesised year
+    // after the author list is the anchor there instead.
+    if starts.len() < 2 {
+        starts = year_capped_author_starts(&chars);
+    }
 
     if starts.len() < 2 {
         let trimmed = text.trim();
@@ -154,6 +160,13 @@ fn label_positions(chars: &[char], bracketed: bool) -> Vec<usize> {
             j += 1;
         }
         if j == digits_at || j - digits_at > 3 {
+            i += 1;
+            continue;
+        }
+        // A label is never zero-padded, but a date inside a spaced-out DOI is: `2016. 01. 026
+        // Appelgren` then `2010. 02. 002 Lindquist` reads as the sequence 1, 2 without this,
+        // and two phantom labels outrank every real signal in the text.
+        if chars[digits_at] == '0' {
             i += 1;
             continue;
         }
@@ -234,17 +247,26 @@ fn author_starts(chars: &[char]) -> Vec<usize> {
             starts.push(i);
         }
     }
-    if starts.len() < 3 {
-        return Vec::new();
+    if entry_sized(&starts, chars.len()) {
+        starts
+    } else {
+        Vec::new()
     }
+}
 
-    let mut lengths: Vec<usize> = starts.windows(2).map(|w| w[1] - w[0]).collect();
-    lengths.push(chars.len() - starts[starts.len() - 1]);
-    lengths.sort_unstable();
-    if lengths[lengths.len() / 2] > MEDIAN_ENTRY_LIMIT {
-        return Vec::new();
+/// Whether a proposed segmentation fired on every entry rather than on a few lucky places.
+///
+/// At least three pieces, and a median piece of entry size — the guards both author signals
+/// share, and why either leaves a style it does not fit whole for the caller instead of cutting
+/// through the middle of somebody's title.
+fn entry_sized(starts: &[usize], total: usize) -> bool {
+    if starts.len() < 3 {
+        return false;
     }
-    starts
+    let mut lengths: Vec<usize> = starts.windows(2).map(|w| w[1] - w[0]).collect();
+    lengths.push(total - starts[starts.len() - 1]);
+    lengths.sort_unstable();
+    lengths[lengths.len() / 2] <= MEDIAN_ENTRY_LIMIT
 }
 
 /// Whether what sits before `at` ended a sentence, rather than an author's initial.
@@ -333,6 +355,252 @@ fn particle_len(chars: &[char], at: usize) -> usize {
     } else {
         0
     }
+}
+
+/// Finds the offsets where entries begin, in the styles that close each author list with a
+/// parenthesised year: `Lindquist KA, Belugin S (2021) Title.` and `Hamoud, A. B., & Pathak,
+/// R. C. (1995). Title.`
+///
+/// [`author_starts`] cannot see the first of these at all. It anchors on the sentence end before
+/// each surname, and the Springer natural-science style gives it none: an entry there ends in a
+/// page range or a DOI, and the next begins with no punctuation in between — `... 9(3):215–225
+/// Azuma Y, Sato I (2017)`. The year in parentheses is the anchor instead: it sits immediately
+/// after the author list at the head of an entry and nowhere else, so each one is walked back to
+/// the earliest boundary from which the text still parses as nothing but names, and that
+/// boundary is where the entry starts.
+///
+/// Walking back from the year, rather than forward from a boundary, is what makes the stray text
+/// a column break leaves behind land on the right side. The tail of a DOI hyphenated across
+/// columns — `002 Lindquist KA, ...` — does not parse as a name, so the walk stops after it and
+/// the digits stay with the entry they end, instead of opening the next one.
+///
+/// A parenthesised year *inside* an entry — a title citing `(2010)`, a report numbered
+/// `(19)` — does not fire: the words before it must be an unbroken author list, every segment of
+/// it carrying initials, which is also what keeps an in-text `Smith (1995)` whole. The guards of
+/// [`entry_sized`] apply unchanged, so a bibliography this signal only half-fits is left in one
+/// piece for the caller rather than cut badly.
+fn year_capped_author_starts(chars: &[char]) -> Vec<usize> {
+    let mut starts = vec![0usize];
+    for paren in 1..chars.len() {
+        if !opens_a_year(chars, paren) {
+            continue;
+        }
+        if let Some(start) = author_list_before(chars, paren) {
+            if start > *starts.last().expect("seeded") {
+                starts.push(start);
+            }
+        }
+    }
+    if entry_sized(&starts, chars.len()) {
+        starts
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether `at` opens `(1995)` — a parenthesised, plausible year, `(2017a)` included.
+fn opens_a_year(chars: &[char], at: usize) -> bool {
+    if chars.get(at) != Some(&'(') {
+        return false;
+    }
+    let digits = at + 1;
+    let mut i = digits;
+    while chars.get(i).is_some_and(char::is_ascii_digit) {
+        i += 1;
+    }
+    if i - digits != 4 {
+        return false;
+    }
+    let year: u32 = chars[digits..i]
+        .iter()
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0);
+    if !(1800..=2099).contains(&year) {
+        return false;
+    }
+    // `(2017a)`: the letter styles give two same-year papers by the same authors.
+    if chars.get(i).is_some_and(|c| c.is_ascii_lowercase()) {
+        i += 1;
+    }
+    chars.get(i) == Some(&')')
+}
+
+/// The offset where the author list ending just before the `(` at `paren` begins, if one does.
+///
+/// The earliest boundary that still parses as a complete author list wins, because the list is
+/// read from its far end: any later boundary is the middle of it. Overshooting into the previous
+/// entry would need that entry to *end* with text shaped exactly like `Surname XY, ` — and
+/// entries end in years, page ranges and DOIs, none of which parse as a name.
+fn author_list_before(chars: &[char], paren: usize) -> Option<usize> {
+    let mut end = paren;
+    while end > 0 && chars[end - 1] == ' ' {
+        end -= 1;
+    }
+    // The year must stand clear of the list; `al.(1998)` glued to a word is a citation, not a
+    // bibliography entry's date.
+    if end == paren || end == 0 {
+        return None;
+    }
+    let mut at = end.saturating_sub(MEDIAN_ENTRY_LIMIT);
+    while at < end {
+        let boundary = at == 0 || chars[at - 1].is_whitespace();
+        if boundary && parses_as_author_list(chars, at, end) {
+            return Some(at);
+        }
+        at += 1;
+    }
+    None
+}
+
+/// Whether `chars[at..end]` is exactly an author list: names, separators, nothing else.
+fn parses_as_author_list(chars: &[char], mut at: usize, end: usize) -> bool {
+    loop {
+        let Some(next) = author_segment(chars, at, end) else {
+            return false;
+        };
+        at = next;
+        if at == end {
+            return true;
+        }
+        if let Some(next) = et_al(chars, at, end) {
+            return next == end;
+        }
+        let Some(next) = list_separator(chars, at) else {
+            return false;
+        };
+        at = next;
+    }
+}
+
+/// One author: an optional particle, a surname, and initials — `Lindquist KA` or `Hamoud, A. B.`
+///
+/// The initials are required. They are what tells `Mikami N` from a title's last two words, and
+/// their absence is what keeps an in-text `Smith (1995)` from reading as an entry head.
+fn author_segment(chars: &[char], at: usize, end: usize) -> Option<usize> {
+    let mut i = at;
+    loop {
+        let p = particle_len(chars, i);
+        if p > 0 && i + p < end && chars[i + p] == ' ' {
+            i += p + 1;
+        } else {
+            break;
+        }
+    }
+    let len = segment_surname_len(chars, i);
+    if len == 0 || i + len >= end {
+        return None;
+    }
+    i += len;
+    if chars[i] == ' ' {
+        plain_initials(chars, i + 1, end)
+    } else if chars[i] == ',' && chars.get(i + 1) == Some(&' ') {
+        dotted_initials(chars, i + 2, end)
+    } else {
+        None
+    }
+}
+
+/// The length of the surname starting at `at`, under this splitter's stricter spelling.
+///
+/// [`surname_len`] with one more demand: a lowercase letter somewhere. The only thing standing
+/// between `measured by SDS PAGE (2001)` mid-entry and a fresh entry is that `SDS` is not spelt
+/// the way a surname is.
+fn segment_surname_len(chars: &[char], at: usize) -> usize {
+    let len = surname_len(chars, at);
+    if len > 0 && chars[at..at + len].iter().any(|c| c.is_lowercase()) {
+        len
+    } else {
+        0
+    }
+}
+
+/// Undotted initials, `KA` or `H-M`: one to three capitals, ending at `end` or a separator.
+fn plain_initials(chars: &[char], at: usize, end: usize) -> Option<usize> {
+    let mut i = at;
+    let mut letters = 0;
+    while i < end {
+        let c = chars[i];
+        if c.is_alphabetic() && c.is_uppercase() {
+            letters += 1;
+            i += 1;
+        } else if c == '-'
+            && letters > 0
+            && chars
+                .get(i + 1)
+                .is_some_and(|c| c.is_alphabetic() && c.is_uppercase())
+        {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if (1..=3).contains(&letters) && (i == end || chars[i] == ',' || chars[i] == ' ') {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+/// Dotted initials, `A. B.`, `A.B.` or `A.-B.`: each a capital and a full stop.
+fn dotted_initials(chars: &[char], at: usize, end: usize) -> Option<usize> {
+    let mut i = at;
+    let mut count = 0;
+    while count < 4 {
+        let letter = match chars.get(i) {
+            Some(&'-') if count > 0 => i + 1,
+            Some(&' ') if count > 0 => i + 1,
+            _ if count == 0 => i,
+            _ => break,
+        };
+        if letter >= end
+            || !(chars[letter].is_alphabetic() && chars[letter].is_uppercase())
+            || chars.get(letter + 1) != Some(&'.')
+        {
+            break;
+        }
+        i = letter + 2;
+        count += 1;
+    }
+    if count >= 1 && (i == end || chars[i] == ',' || chars[i] == ' ') {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+/// The end of an `et al` closing the list at `at`, in any of its spellings, or `None`.
+fn et_al(chars: &[char], at: usize, end: usize) -> Option<usize> {
+    let mut i = at;
+    if chars.get(i) == Some(&',') {
+        i += 1;
+    }
+    for c in [' ', 'e', 't', ' ', 'a', 'l'] {
+        if chars.get(i) != Some(&c) {
+            return None;
+        }
+        i += 1;
+    }
+    if chars.get(i) == Some(&'.') {
+        i += 1;
+    }
+    (i <= end).then_some(i)
+}
+
+/// The end of the separator between two authors at `at`, or `None`.
+fn list_separator(chars: &[char], at: usize) -> Option<usize> {
+    for sep in [", and ", ", & ", " and ", " & ", ", "] {
+        let mut i = at;
+        let matched = sep.chars().all(|c| {
+            let hit = chars.get(i) == Some(&c);
+            i += 1;
+            hit
+        });
+        if matched {
+            return Some(at + sep.chars().count());
+        }
+    }
+    None
 }
 
 /// Parses one entry.
@@ -1603,5 +1871,133 @@ mod tests {
         assert_eq!(entries.len(), 3, "got {entries:?}");
         assert!(entries[1].starts_with("Abra`moff, M. D."));
         assert!(entries[2].starts_with("Heikkila\u{a8}, J."));
+    }
+
+    /// Springer's natural-science style: no labels, no comma after the surname, and no full stop
+    /// at the end of an entry — the next author list follows a page range or a DOI directly, and
+    /// only the parenthesised year says where an entry begins.
+    #[test]
+    fn springer_author_year_entries_split_on_their_year() {
+        let text = "Appelgren A, Appelgren B, Kopp S (1995) Neuropeptides in the arthritic \
+                    TMJ. J Orofac Pain 9(3):215–225 Azuma Y, Sato I (2017) The localization of \
+                    CGRP. Okajimas Folia Anat Jpn 93(4):127–138. https://doi.org/10.2535 \
+                    de Carvalho-Barbosa M, Kavelaars A (2016) Dorsal root ganglion \
+                    infiltration. J Pain 17(7):775–786 Maruyama K, Ohno N et al (2017) \
+                    Nociceptors boost the resolution. Cell Rep 19(13):2730–2742 Ren K (1999) \
+                    An improved method. Physiol Behav 67(5):711–716";
+        let entries = split_entries(text);
+        assert_eq!(entries.len(), 5, "got {entries:?}");
+        assert!(entries[0].starts_with("Appelgren A,"));
+        assert!(entries[0].ends_with("215–225"));
+        assert!(entries[1].starts_with("Azuma Y,"));
+        assert!(entries[2].starts_with("de Carvalho-Barbosa M,"));
+        assert!(entries[3].starts_with("Maruyama K,"));
+        assert!(entries[4].starts_with("Ren K (1999)"));
+    }
+
+    /// The APA shape — dotted initials after a comma, an ampersand before the last author, a
+    /// letter on the year of a same-year pair — splits on the same signal.
+    #[test]
+    fn apa_author_year_entries_split_on_their_year() {
+        let text = "Hamoud, A. B., & Pathak, R. C. (1995). A first title of reasonable \
+                    length. Journal of Examples, 12(3), 45-67 Kopp, S., Lundeberg, T., & \
+                    Theodorsson, E. (2001). A second title. Journal of Examples, 13(1), 1-15 \
+                    Sato, I. (2017a). A third title. Journal of Examples, 20(2), 100-110";
+        let entries = split_entries(text);
+        assert_eq!(entries.len(), 3, "got {entries:?}");
+        assert!(entries[1].starts_with("Kopp, S.,"));
+        assert!(entries[2].starts_with("Sato, I. (2017a)"));
+    }
+
+    /// A parenthesised year inside an entry — a title citing one — is not an entry boundary,
+    /// because the words before it do not read as an author list.
+    #[test]
+    fn a_year_inside_an_entry_does_not_split_it() {
+        let text = "Lindquist KA, Belugin S (2021) Revisiting the world cup (2010) field \
+                    report. eNeuro 14:1-9 Ma W, Dumont Y (2010) Lipopolysaccharide induces \
+                    CGRP. Immunology 130(3):399–409 Mikami N, Miyagi Y (2013) CGRP and cAMP \
+                    promote IL-9 production. J Immunol 190(8):4046–4055";
+        let entries = split_entries(text);
+        assert_eq!(entries.len(), 3, "got {entries:?}");
+        assert!(entries[0].contains("world cup (2010)"), "{:?}", entries[0]);
+    }
+
+    /// Running prose never reads as an entry head: a narrative `Smith (1995)` has no initials.
+    #[test]
+    fn narrative_author_year_citations_do_not_split_prose() {
+        let text = "As Smith (1995) showed, and as later confirmed (see Jones (1996) and the \
+                    review (1997) cited therein), the effect holds across cohorts (2001).";
+        assert_eq!(split_entries(text).len(), 1);
+    }
+
+    /// The stray tail a column break leaves — the digits of a DOI hyphenated across columns —
+    /// belongs to the entry it ends, not the one below it. The walk back from the next entry's
+    /// year stops at the digits, because they do not parse as a name.
+    #[test]
+    fn a_column_break_fragment_stays_with_the_previous_entry() {
+        let text = "Li, Y., & Guan, C. (2010). Effect of CGRP on TREM-1. J Cent South Univ, \
+                    35(2), 100-106. https://doi.org/10.3969/j.issn.1672-7347.2010. \
+                    002 Lindquist KA, Belugin S (2021) Identification of trigeminal sensory \
+                    neuronal types. eNeuro 14:1-9 Ma W, Dumont Y (2010) Lipopolysaccharide \
+                    induces CGRP. Immunology 130(3):399–409";
+        let entries = split_entries(text);
+        assert_eq!(entries.len(), 3, "got {entries:?}");
+        assert!(entries[0].ends_with("002"), "{:?}", entries[0]);
+        assert!(entries[1].starts_with("Lindquist KA"));
+    }
+
+    /// Labels still outrank the year signal where a journal numbers an author-year list.
+    #[test]
+    fn labels_outrank_year_capped_author_lists() {
+        let text = "1. Smith J, Brown K (1995) First title. J Ex 1:1-10 2. Jones K (1996) \
+                    Second title. J Ex 2:11-20 3. Green T, White S (1997) Third title. J Ex \
+                    3:21-30";
+        let entries = split_entries(text);
+        assert_eq!(entries.len(), 3, "got {entries:?}");
+        assert!(entries[0].starts_with("1. Smith"));
+        assert!(entries[2].starts_with("3. Green"));
+    }
+
+    /// Two pieces are not a segmentation: the signal must have fired across the whole list.
+    #[test]
+    fn two_year_capped_entries_stay_whole() {
+        let text = "Appelgren A, Kopp S (1995) Neuropeptides in the arthritic TMJ. J Orofac \
+                    Pain 9(3):215–225 Azuma Y, Sato I (2017) The localization of CGRP. \
+                    Okajimas 93:127–138.";
+        assert_eq!(split_entries(text).len(), 1);
+    }
+
+    /// Capitalised abbreviations mid-entry are not surnames: `SDS PAGE (2001)` stays put,
+    /// because a surname is spelt with a lowercase letter somewhere.
+    #[test]
+    fn an_all_caps_abbreviation_is_not_an_author() {
+        let text = "Lindquist KA, Belugin S (2021) Proteins measured by SDS PAGE (2001) \
+                    protocols. eNeuro 14:1-9 Ma W, Dumont Y (2010) Lipopolysaccharide induces \
+                    CGRP. Immunology 130(3):399–409 Mikami N, Miyagi Y (2013) CGRP and cAMP \
+                    promote IL-9. J Immunol 190(8):4046–4055";
+        let entries = split_entries(text);
+        assert_eq!(entries.len(), 3, "got {entries:?}");
+        assert!(entries[0].contains("SDS PAGE (2001)"), "{:?}", entries[0]);
+    }
+
+    #[test]
+    fn zero_padded_doi_dates_are_not_labels() {
+        // A DOI the reader spaced out carries `2016. 01. 026` — and `01.` then `02.` later in
+        // the list read as the label sequence 1, 2, which outranked the year-capped author
+        // lists and left the bibliography in two giant pieces.
+        let text = "Afroz S, Arakaki R (2019) CGRP induces differential regulation. Int J Mol \
+                    Sci 20(3):711 Bowen EJ, Schmidt TW (2006) Tumor necrosis factor-alpha \
+                    stimulation of calcitonin. J Neurochem 240:349\u{2013}363. https:// doi. \
+                    org/ 10. 1016/j. jconr el. 2016. 01. 026 Appelgren A, Appelgren B (1995) \
+                    Neuropeptides in the arthritic TMJ. J Orofac Pain 9(3):215\u{2013}225. \
+                    https:// doi. org/ 10. 3969/j. issn. 1672- 7347. 2010. 02. 002 Lindquist \
+                    KA, Belugin S (2021) Identification of trigeminal sensory neuronal types. \
+                    eNeuro 8(5):1\u{2013}14";
+        let entries = split_entries(text);
+        assert_eq!(entries.len(), 4, "got {entries:?}");
+        assert!(entries[1].ends_with("026"), "{:?}", entries[1]);
+        assert!(entries[2].starts_with("Appelgren A"), "{:?}", entries[2]);
+        assert!(entries[2].ends_with("002"), "{:?}", entries[2]);
+        assert!(entries[3].starts_with("Lindquist KA"), "{:?}", entries[3]);
     }
 }
