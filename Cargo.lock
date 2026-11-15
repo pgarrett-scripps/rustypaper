@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "rustypaper"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "anyhow",
  "clap",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "rustypaper-py"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "pyo3",
  "rustypaper",

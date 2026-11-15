@@ -1,6 +1,6 @@
 [project]
 name = "rustypaper"
-version = "0.2.3"
+version = "0.2.4"
 description = "Structure-aware conversion of born-digital scientific PDFs to Markdown, Typst and JSON."
 readme = "../README.md"
 requires-python = ">=3.9"
