@@ -732,9 +732,7 @@ fn segment_words(page: &PageRaw, line: &mut Line) {
     }
 
     let marked = line.glyphs.iter().any(|p| p.break_before);
-    let ratios: Vec<f32> = (1..line.glyphs.len())
-        .map(|i| gap_ratio(page, line, i))
-        .collect();
+    let ratios = gap_ratios(page, line);
     let threshold = word_gap_threshold(&ratios);
 
     let mut start = 0usize;
@@ -792,15 +790,60 @@ fn segment_words(page: &PageRaw, line: &mut Line) {
     push_word(page, line, start, line.glyphs.len(), text, scripts);
 }
 
-/// Gap between glyph `i` and its predecessor, as a fraction of font size.
+/// No kern pulls a glyph back over its predecessor by more than this fraction of the font
+/// size. A line whose pen gaps claim a deeper overlap has advances that contradict the
+/// recorded origins — Arbortext's `AdvOT` fonts carry `/Widths` up to 0.27 em wider than the
+/// pitch the producer actually set, every glyph positioned individually — and nothing the pen
+/// says about that line can be believed.
+const PEN_OVERLAP_DISTRUST_RATIO: f32 = 0.15;
+
+/// Inter-glyph gaps for one line, as fractions of font size.
 ///
-/// Normalised by the smaller of the two sizes so that a gap before a superscript is judged at
-/// the superscript's scale rather than the body's.
-fn gap_ratio(page: &PageRaw, line: &Line, i: usize) -> f32 {
-    let prev = &page.glyphs[line.glyphs[i - 1].index];
-    let curr = &page.glyphs[line.glyphs[i].index];
-    let scale = prev.size.min(curr.size).max(1.0);
-    (curr.bbox.x0 - prev.bbox.x1) / scale
+/// Measured from the pen when the line's advances can be believed: the distance from where
+/// each glyph's advance left the pen to where the next glyph's origin picked it up, projected
+/// on the baseline. That is the spacing the typesetter chose. Ink gaps — right edge of one
+/// ink box to left edge of the next — measure the letterforms instead: tabular digits are set
+/// solid at a fixed pitch, yet a narrow `1` leaves up to 0.2 em of white inside its cell on
+/// each side, and an ink gap reads that white as a word break (`brainsci 1 1 020 1 74`).
+///
+/// Being pure geometry between recorded origins, the pen gap also holds across show-op
+/// boundaries — a space made by a `TJ` offset or a text-matrix move is pen displacement and
+/// reads as a gap, while letterspacing (`Tc`) is part of the advance and reads as none.
+///
+/// The ink gaps stand in for the whole line when any advance is unknown or any pen gap
+/// claims an overlap deeper than a kern — see [`PEN_OVERLAP_DISTRUST_RATIO`] — so a font
+/// whose widths are wrong gets exactly the segmentation it got before advances were carried.
+/// The two metrics are never mixed within a line: each would misread the other's gaps.
+///
+/// Each gap is normalised by the smaller of the two sizes so that a gap before a superscript
+/// is judged at the superscript's scale rather than the body's.
+fn gap_ratios(page: &PageRaw, line: &Line) -> Vec<f32> {
+    let pair = |i: usize| {
+        let prev = &page.glyphs[line.glyphs[i - 1].index];
+        let curr = &page.glyphs[line.glyphs[i].index];
+        let scale = prev.size.min(curr.size).max(1.0);
+        (prev, curr, scale)
+    };
+    let pen: Option<Vec<f32>> = (1..line.glyphs.len())
+        .map(|i| {
+            let (prev, curr, scale) = pair(i);
+            if prev.advance <= 0.0 {
+                return None;
+            }
+            let (dx, dy) = (curr.origin.x - prev.origin.x, curr.origin.y - prev.origin.y);
+            let along = dx * prev.angle.cos() + dy * prev.angle.sin();
+            Some((along - prev.advance) / scale)
+        })
+        .collect();
+    match pen {
+        Some(ratios) if ratios.iter().all(|&r| r >= -PEN_OVERLAP_DISTRUST_RATIO) => ratios,
+        _ => (1..line.glyphs.len())
+            .map(|i| {
+                let (prev, curr, scale) = pair(i);
+                (curr.bbox.x0 - prev.bbox.x1) / scale
+            })
+            .collect(),
+    }
 }
 
 /// Finds the gap ratio separating intra-word from inter-word spacing on one line.
@@ -892,6 +935,7 @@ mod tests {
             text: GlyphText::Char(c),
             bbox: Rect::from_corners(x, baseline - size * 0.7, x + width, baseline),
             origin: Point::new(x, baseline),
+            advance: 0.0,
             font: FontId(0),
             size,
             angle: 0.0,
@@ -957,6 +1001,92 @@ mod tests {
         let lines = build_lines(&page);
         assert_eq!(lines[0].words.len(), 1);
         assert_eq!(lines[0].text(), "abcd");
+    }
+
+    /// A glyph set in a `pitch`-wide cell whose ink spans only `ink` of it, centred — a
+    /// tabular digit with wide side bearings. The advance is the pitch.
+    fn cell(c: char, x: f32, baseline: f32, size: f32, pitch: f32, ink: f32) -> Glyph {
+        let pad = (pitch - ink) * 0.5;
+        Glyph {
+            advance: pitch,
+            bbox: Rect::from_corners(x + pad, baseline - size * 0.7, x + pad + ink, baseline),
+            ..glyph(c, x, baseline, size)
+        }
+    }
+
+    #[test]
+    fn set_solid_digits_with_wide_side_bearings_stay_one_word() {
+        // The geometry that printed `brainsci 1 1 020 1 74`: tabular digits set solid at a
+        // fixed pitch — every advance exactly one cell — but a narrow `1` inks only a strip
+        // of its cell, so the ink gap around each `1` reads as 0.2 em of white. The pen
+        // never leaves the pitch, and the pen is what decides.
+        let mut glyphs = Vec::new();
+        let (x0, size, pitch) = (72.0, 8.0, 4.0);
+        for (i, c) in "11020174".chars().enumerate() {
+            let ink = if c == '1' { 2.2 } else { 3.4 };
+            glyphs.push(cell(c, x0 + i as f32 * pitch, 100.0, size, pitch, ink));
+        }
+        let page = page_of(glyphs);
+
+        let lines = build_lines(&page);
+        assert_eq!(lines[0].words.len(), 1, "side bearings are not spaces");
+        assert_eq!(lines[0].text(), "11020174");
+    }
+
+    #[test]
+    fn lying_advances_fall_back_to_the_ink() {
+        // The Arbortext shape: `/Widths` wider than the pitch the producer actually set, every
+        // glyph positioned individually. The pen claims each glyph overlaps the next by
+        // 0.27 em and reports word gaps as zero; only the ink still shows them.
+        let (size, pitch, adv) = (8.2, 4.2, 6.4);
+        let mut glyphs: Vec<Glyph> = Vec::new();
+        let mut x = 72.0;
+        for word in ["mouse", "strains"] {
+            for c in word.chars() {
+                glyphs.push(Glyph {
+                    advance: adv,
+                    bbox: Rect::from_corners(x, 100.0 - size * 0.7, x + pitch - 0.3, 100.0),
+                    ..glyph(c, x, 100.0, size)
+                });
+                x += pitch;
+            }
+            x += adv - pitch; // the word gap: pen gap exactly zero, ink gap 2.5pt
+        }
+        let page = page_of(glyphs);
+
+        let lines = build_lines(&page);
+        assert_eq!(lines[0].words.len(), 2, "the ink still shows the word gap");
+        assert_eq!(lines[0].text(), "mouse strains");
+    }
+
+    #[test]
+    fn a_pen_jump_between_show_ops_is_still_a_space() {
+        // A word space made by moving the pen — a TJ offset or a text-matrix move — rather
+        // than by showing a space glyph. No glyph's advance accounts for the jump, so the
+        // pen gap reports it.
+        let (size, adv) = (10.0, 5.0);
+        let mut glyphs: Vec<Glyph> = Vec::new();
+        let mut x = 72.0;
+        for c in "hello".chars() {
+            glyphs.push(Glyph {
+                advance: adv,
+                ..glyph(c, x, 100.0, size)
+            });
+            x += adv;
+        }
+        x += 3.0; // 0.3 em of pen travel between the shows
+        for c in "world".chars() {
+            glyphs.push(Glyph {
+                advance: adv,
+                ..glyph(c, x, 100.0, size)
+            });
+            x += adv;
+        }
+        let page = page_of(glyphs);
+
+        let lines = build_lines(&page);
+        assert_eq!(lines[0].words.len(), 2);
+        assert_eq!(lines[0].text(), "hello world");
     }
 
     #[test]

@@ -239,6 +239,11 @@ pub enum GlyphText {
 /// One rendered character.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Glyph {
+    /// Pen advance from this glyph's origin to the next, in page units along the baseline —
+    /// the displacement the PDF interpreter applied after showing it, character and word
+    /// spacing included. `0.0` means the backend does not know it, and the ink box has to
+    /// stand in for the pen.
+    pub advance: f32,
     pub text: GlyphText,
     /// Tight glyph bounds — the inked extent, used for baseline and script detection.
     pub bbox: Rect,
@@ -431,6 +436,7 @@ mod tests {
             text,
             bbox: Rect::from_corners(0.0, 0.0, 1.0, 1.0),
             origin: Point::new(0.0, 0.0),
+            advance: 0.0,
             font: FontId(0),
             size: 10.0,
             angle: 0.0,
@@ -465,6 +471,7 @@ mod tests {
             text: GlyphText::Char('a'),
             bbox: Rect::from_corners(0.0, 0.0, 1.0, 1.0),
             origin: Point::new(0.0, 0.0),
+            advance: 0.0,
             font: FontId(0),
             size: 10.0,
             angle: 0.0,
