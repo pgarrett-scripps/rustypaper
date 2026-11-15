@@ -729,6 +729,17 @@ fn line_reaches(line: &Line, right_edge: f32, size: f32) -> bool {
     right_edge - line.bbox.x1 <= size
 }
 
+/// Whether `left`'s last word and `right`'s first word are one URL wrapped across the break
+/// between two *blocks* — the test [`join_lines`] applies between two lines of one block,
+/// offered to the seam where a reference entry continues across a page or column break. The
+/// guards are [`url_wrap`]'s own: the caller decides only that the two texts are already a
+/// continuation, never that unrelated blocks should join.
+pub(crate) fn url_wrap_at_seam(left: &str, right: &str) -> bool {
+    split_boundary(left, right)
+        .and_then(|(head, tail)| url_wrap(head, tail))
+        .is_some()
+}
+
 /// The last word of `left` and the first word of `right`, if both exist.
 fn split_boundary<'a>(left: &'a str, right: &'a str) -> Option<(&'a str, &'a str)> {
     let head = left.rsplit(' ').next()?;
