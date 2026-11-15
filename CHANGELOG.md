@@ -4,6 +4,32 @@ Notable changes to rustypaper. The format follows [Keep a Changelog](https://kee
 and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Earlier releases
 predate this file; their story is in the tag messages and `docs/ARCHITECTURE.md`.
 
+## [0.2.4] - 2026-11-14
+
+Reference-list accuracy over the fourteen-paper peer-review pilot: broken DOIs fall 4 to 1,
+entries whose `year` field disagrees with the year printed in the entry fall 35 to 0, and
+running-header text inside entries falls 2 to 0. Corpus eval is unchanged on every metric.
+
+### Fixed
+
+- A URL or DOI wrapped across a line break inside a bibliography entry is rejoined, with the
+  join refused where the next line opens with any label shape or a bare year, so an entry
+  boundary is never swallowed into a link. (#8)
+- Words are segmented by the pen rather than the ink wherever the reader's space marks can be
+  trusted, with an ink fallback only on lines whose marks overlap suspiciously. Justified
+  bibliographies no longer split inside words and numbers — `2017` read as `201 7` — which had
+  broken DOIs and years alike. (#9)
+- A URL wrapped at the page break between two bibliography blocks is rejoined across the seam
+  instead of gaining a space, mending the DOIs of entries that straddle a page turn. (#10)
+- The publication year of a reference entry now steps over the DOI's digits (a DOI embeds the
+  year an identifier was minted, not the printed year) and prefers the first year the style
+  marks — `(2022)` in author–year styles, the `2022;` that opens a Vancouver volume — over
+  volume and article numbers that merely sit in the year band. (#11)
+- A running header set as two spans a fraction of a point apart, which line building merges on
+  some pages, is recognised as furniture by composition: a margin line whose signature is the
+  exact concatenation of signatures that each clear the repetition quorum is stripped, so the
+  header no longer lands inside a bibliography entry at the page break. (#11)
+
 ## [0.2.3] - 2026-11-14
 
 ### Added
@@ -56,6 +82,7 @@ structure instead of the structure itself.
 
 First crates.io release of the pure-Rust pipeline.
 
+[0.2.4]: https://github.com/pgarrett-scripps/rustypaper/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/pgarrett-scripps/rustypaper/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/pgarrett-scripps/rustypaper/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/pgarrett-scripps/rustypaper/compare/v0.2.0...v0.2.1
