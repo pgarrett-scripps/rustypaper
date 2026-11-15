@@ -683,21 +683,37 @@ fn url_wrap(head: &str, tail: &str) -> Option<String> {
     if !in_url || !head.ends_with(['/', '-', '.', '_']) {
         return None;
     }
-    // A numbered bibliography's next entry starts with its own label — `15.` — and an entry
-    // often ends with a complete DOI and a final period. That boundary looks exactly like a
-    // wrap (separator-ended head, digit-bearing tail) and must never be glued: one swallowed
-    // label collapses every entry after it.
-    let label_like = tail.strip_suffix('.').is_some_and(|digits| {
-        !digits.is_empty() && digits.len() <= 3 && digits.bytes().all(|b| b.is_ascii_digit())
-    });
-    if label_like {
-        return None;
+    // A numbered bibliography's next entry starts with its own label — `15.`, `(15)`, `15)`,
+    // `[15]` or a bare `15` — and an entry often ends with a complete DOI and a final period,
+    // or a URL ending in `/`. That boundary looks exactly like a wrap (separator-ended head,
+    // digit-bearing tail) and must never be glued: one swallowed label collapses every entry
+    // after it. The one head that keeps its claim is a hyphen-ended one — an entry does not
+    // end mid-identifier at a hyphen, so `…08328-` + `5` is still the identifier's own tail.
+    if !head.ends_with('-') {
+        if label_shaped(tail) {
+            return None;
+        }
+        // A pure-digit tail after a final period is a year starting the next line, not a
+        // DOI fragment: every wrapped identifier observed continues with a slash, dot,
+        // hyphen or letter, never with bare digits alone.
+        if head.ends_with('.') && !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
     }
     let urlish = tail
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || "-._~/%#?=&:+();<>".contains(c));
     let continues = tail.contains('/') || tail.chars().any(|c| c.is_ascii_digit());
     (urlish && continues).then(|| format!("{head}{tail}"))
+}
+
+/// A reference label as bibliographies print them: one to three digits, bare, wrapped in
+/// `()` or `[]`, or followed by `.`, `)` or `]`.
+fn label_shaped(tail: &str) -> bool {
+    let digits = tail
+        .trim_start_matches(['(', '['])
+        .trim_end_matches(['.', ')', ']']);
+    !digits.is_empty() && digits.len() <= 3 && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Whether `head` starts like a bare DOI: `10.` then at least four digits, with the
@@ -1322,10 +1338,32 @@ mod tests {
         // The head ends mid-word, not at a separator a typesetter breaks after.
         assert_eq!(url_wrap("https://doi.org/10.1038/srep", "14206"), None);
         // An entry ending in a DOI and a period, with the next entry's label on the next
-        // line: the label is a new entry, not the DOI's continuation.
+        // line: the label is a new entry, not the DOI's continuation, in every style a
+        // bibliography prints one.
+        let entry_end = "https://doi.org/10.1101/2020.04.02.022277.";
+        for label in ["15.", "15", "15)", "(15)", "[15]", "15]", "7", "7."] {
+            assert_eq!(url_wrap(entry_end, label), None, "glued label {label:?}");
+        }
+        // The same labels after an entry whose URL ends in a slash.
+        for label in ["15.", "15", "15)", "(15)"] {
+            assert_eq!(
+                url_wrap("https://doi.org/10.1016/j.cell.2020.01.001/", label),
+                None,
+                "glued label {label:?} after a slash"
+            );
+        }
+        // A year starting the next line after a sentence-final URL is prose, not a DOI tail.
+        assert_eq!(url_wrap("https://example.com/survey.", "2010"), None);
+        assert_eq!(url_wrap("https://example.com/.", "3"), None);
+    }
+
+    #[test]
+    fn a_hyphen_ended_head_keeps_its_claim_on_a_digit_tail() {
+        // An entry does not end mid-identifier at a hyphen: `…08328-` + `5` is the
+        // identifier's own tail even though `5` alone is label-shaped.
         assert_eq!(
-            url_wrap("https://doi.org/10.1101/2020.04.02.022277.", "15."),
-            None
+            url_wrap("https://doi.org/10.1038/s41467-019-08328-", "5"),
+            Some("https://doi.org/10.1038/s41467-019-08328-5".into())
         );
     }
 

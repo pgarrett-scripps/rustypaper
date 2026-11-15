@@ -91,6 +91,85 @@ fn wrapped_doi_fixture() -> Vec<u8> {
     assemble_pdf(&objects)
 }
 
+/// A reference list in which every entry ends with a complete DOI and a period at a line's
+/// end, and the next entry's label — in the given style — starts the next line. That boundary
+/// has the exact shape of a URL wrap, and gluing one label collapses every entry after it.
+fn label_collision_fixture(labels: [&str; 3]) -> Vec<u8> {
+    let mut content = String::new();
+
+    content.push_str("BT\n/F2 16 Tf\n72 720 Td\n(Measurements of Synthetic Widgets)Tj\nET\n");
+    content.push_str("BT\n/F1 10 Tf\n72 690 Td\n12.5 TL\n");
+    content.push_str("(This synthetic page exists to test reference extraction. The three)Tj\n");
+    content.push_str("T*\n(entries below are invented and cite no actual publications.)Tj\nET\n");
+    content.push_str("BT\n/F2 12 Tf\n72 650 Td\n(References)Tj\nET\n");
+
+    let bodies = [
+        "Ada Example. Reliable widget placement on a level bench.",
+        "Grace Sample. Repeated readings of unchanged objects.",
+        "Mary Fixture. A comparison of instruments under fixed placement.",
+    ];
+    content.push_str("BT\n/F1 10 Tf\n72 630 Td\n12.5 TL\n");
+    for (i, (label, body)) in labels.iter().zip(bodies).enumerate() {
+        writeln!(content, "({label} {body})Tj\nT*").unwrap();
+        // The entry's last line ends in its DOI and a final period; the next entry's
+        // label starts the next line.
+        writeln!(
+            content,
+            "(Synthetic Journal, 2020. https://doi.org/10.1101/2020.04.02.02227{i}.)Tj\nT*"
+        )
+        .unwrap();
+    }
+    content.push_str("ET\n");
+
+    let objects = vec![
+        "<</Type /Catalog /Pages 2 0 R>>".to_owned(),
+        "<</Type /Pages /Kids [3 0 R] /Count 1>>".to_owned(),
+        "<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources <</Font <</F1 5 0 R /F2 6 0 R>>>> /Contents 4 0 R>>"
+            .to_owned(),
+        format!(
+            "<</Length {}>>\nstream\n{content}\nendstream",
+            content.len() + 1
+        ),
+        "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding>>"
+            .to_owned(),
+        "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>"
+            .to_owned(),
+    ];
+    assemble_pdf(&objects)
+}
+
+#[test]
+fn an_entry_label_after_a_doi_is_never_glued_to_it() {
+    for (style, labels) in [
+        ("numbered", ["1.", "2.", "3."]),
+        ("bare", ["1", "2", "3"]),
+        ("parenthesised", ["(1)", "(2)", "(3)"]),
+    ] {
+        let path = std::env::temp_dir().join(format!("rustypaper-urlwrap-labels-{style}.pdf"));
+        std::fs::write(&path, label_collision_fixture(labels)).expect("write fixture");
+        let doc = rustypaper::convert(&path).expect("conversion failed");
+        let _ = std::fs::remove_file(&path);
+
+        let all_text: Vec<&str> = doc.blocks.iter().map(|b| b.text.as_str()).collect();
+        for i in 0..labels.len() {
+            let doi = format!("https://doi.org/10.1101/2020.04.02.02227{i}.");
+            assert!(
+                all_text.iter().any(|t| t.contains(&doi)),
+                "{style}: DOI {doi:?} lost from {all_text:?}"
+            );
+            // The next entry's label must not have been read as the DOI's continuation.
+            if let Some(next) = labels.get(i + 1) {
+                let fused = format!("{doi}{next}");
+                assert!(
+                    !all_text.iter().any(|t| t.contains(&fused)),
+                    "{style}: label glued onto the DOI before it: {fused:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_doi_wrapped_across_lines_comes_out_whole() {
     let path = std::env::temp_dir().join("rustypaper-urlwrap-references.pdf");
