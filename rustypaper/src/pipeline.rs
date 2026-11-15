@@ -443,7 +443,13 @@ fn extract_bibliography(document: &mut doc::Document) {
         } else {
             &block.text
         };
-        if !joined.is_empty() {
+        // A reference entry wraps its URL at the page or column break that split these
+        // blocks exactly as it wraps at a line break inside one — radiofrequency's
+        // `…10.3390/` ends one page and `ijerph192316150` opens the next. These blocks are
+        // already one bibliography being rejoined, so the seam gets the same test a line
+        // break gets, and the space is withheld only where its guards say the identifier
+        // continues.
+        if !joined.is_empty() && !doc::url_wrap_at_seam(&joined, body) {
             joined.push(' ');
         }
         origins.push((joined.len(), block));

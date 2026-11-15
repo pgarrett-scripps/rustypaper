@@ -139,6 +139,123 @@ fn label_collision_fixture(labels: [&str; 3]) -> Vec<u8> {
     assemble_pdf(&objects)
 }
 
+/// Two pages: the first carries the front matter, the References heading, and the opening of
+/// the reference list up to `page_one_last`; the second opens with `page_two_first` and
+/// finishes the list. The seam between the pages is the seam under test.
+fn page_break_fixture(page_one_last: &str, page_two_first: &str) -> Vec<u8> {
+    let mut first = String::new();
+    first.push_str("BT\n/F2 16 Tf\n72 720 Td\n(Measurements of Synthetic Widgets)Tj\nET\n");
+    first.push_str("BT\n/F1 10 Tf\n72 690 Td\n12.5 TL\n");
+    first.push_str("(This synthetic page exists to test reference extraction. The three)Tj\n");
+    first.push_str("T*\n(entries below are invented and cite no actual publications.)Tj\nET\n");
+    first.push_str("BT\n/F2 12 Tf\n72 650 Td\n(References)Tj\nET\n");
+    first.push_str("BT\n/F1 10 Tf\n72 630 Td\n12.5 TL\n");
+    first.push_str(
+        "(1. Ada Example. Reliable widget placement on a level bench. Synthetic)Tj\nT*\n",
+    );
+    writeln!(first, "({page_one_last})Tj\nT*").unwrap();
+    first.push_str("ET\n");
+
+    let mut second = String::new();
+    second.push_str("BT\n/F1 10 Tf\n72 720 Td\n12.5 TL\n");
+    writeln!(second, "({page_two_first})Tj\nT*").unwrap();
+    second
+        .push_str("(3. Mary Fixture. A comparison of instruments under fixed placement.)Tj\nT*\n");
+    second.push_str("(Annals of Test Data, 7:1-9, 2022.)Tj\nT*\n");
+    second.push_str("ET\n");
+
+    let objects = vec![
+        "<</Type /Catalog /Pages 2 0 R>>".to_owned(),
+        "<</Type /Pages /Kids [3 0 R 5 0 R] /Count 2>>".to_owned(),
+        "<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources <</Font <</F1 7 0 R /F2 8 0 R>>>> /Contents 4 0 R>>"
+            .to_owned(),
+        format!(
+            "<</Length {}>>\nstream\n{first}\nendstream",
+            first.len() + 1
+        ),
+        "<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources <</Font <</F1 7 0 R /F2 8 0 R>>>> /Contents 6 0 R>>"
+            .to_owned(),
+        format!(
+            "<</Length {}>>\nstream\n{second}\nendstream",
+            second.len() + 1
+        ),
+        "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding>>"
+            .to_owned(),
+        "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>"
+            .to_owned(),
+    ];
+    assemble_pdf(&objects)
+}
+
+#[test]
+fn a_doi_wrapped_across_a_page_break_comes_out_whole() {
+    let path = std::env::temp_dir().join("rustypaper-urlwrap-pagebreak.pdf");
+    std::fs::write(
+        &path,
+        page_break_fixture(
+            "Journal of Widgets, 12:45-67, 2020. https://doi.org/10.3390/",
+            "ijerph192316150 2. Grace Sample. Repeated readings of unchanged objects.",
+        ),
+    )
+    .expect("write fixture");
+
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let _ = std::fs::remove_file(&path);
+
+    let entries: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter(|b| b.kind == rustypaper::doc::BlockKind::Reference)
+        .map(|b| b.text.clone())
+        .collect();
+
+    assert_eq!(entries.len(), 3, "expected three entries, got {entries:?}");
+    assert!(
+        entries
+            .iter()
+            .any(|t| t.contains("https://doi.org/10.3390/ijerph192316150")),
+        "DOI broken at the page break: {entries:?}"
+    );
+    assert!(
+        !entries.iter().any(|t| t.contains("10.3390/ ijerph")),
+        "space survived at the page break: {entries:?}"
+    );
+}
+
+#[test]
+fn an_entry_label_opening_the_next_page_is_never_glued() {
+    // The first page ends with a complete DOI and an entry-final slash — the shape a wrap
+    // has — and the next page opens with the following entry's label. The seam must stay
+    // a space: one swallowed label collapses every entry after it.
+    let path = std::env::temp_dir().join("rustypaper-urlwrap-pagebreak-label.pdf");
+    std::fs::write(
+        &path,
+        page_break_fixture(
+            "Journal of Widgets, 12:45-67, 2020. https://example.org/widgets/",
+            "2. Grace Sample. Repeated readings of unchanged objects. Journal of",
+        ),
+    )
+    .expect("write fixture");
+
+    let doc = rustypaper::convert(&path).expect("conversion failed");
+    let _ = std::fs::remove_file(&path);
+
+    let entries: Vec<String> = doc
+        .blocks
+        .iter()
+        .filter(|b| b.kind == rustypaper::doc::BlockKind::Reference)
+        .map(|b| b.text.clone())
+        .collect();
+
+    assert_eq!(entries.len(), 3, "expected three entries, got {entries:?}");
+    assert!(
+        !entries.iter().any(|t| t.contains("widgets/2.")),
+        "the next entry's label was glued onto the URL: {entries:?}"
+    );
+}
+
 #[test]
 fn an_entry_label_after_a_doi_is_never_glued_to_it() {
     for (style, labels) in [
