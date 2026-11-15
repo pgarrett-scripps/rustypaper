@@ -665,6 +665,7 @@ mod tests {
                 text: GlyphText::Char('x'),
                 bbox: Rect::from_corners(x, baseline - 7.0, x + 5.0, baseline),
                 origin: Point::new(x, baseline),
+                advance: 0.0,
                 font: FontId(0),
                 size: 10.0,
                 angle: 0.0,

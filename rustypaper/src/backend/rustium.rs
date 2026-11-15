@@ -278,6 +278,9 @@ fn collect_glyphs(page: &Page, space: &Space, fonts: &mut FontTable, raw: &mut P
             text,
             bbox,
             origin: space.point(g.origin),
+            // The page transform is rigid — shift, flip, `/Rotate` — so the advance length
+            // carries over from user space unchanged.
+            advance: g.advance,
             font,
             size: resolve_size(g.font_size, &bbox, angle),
             angle,
