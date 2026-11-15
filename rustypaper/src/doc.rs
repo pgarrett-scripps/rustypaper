@@ -560,11 +560,16 @@ fn join_lines(group: &[&Line], vocab: &Vocabulary) -> (String, Vec<Span>) {
         }
 
         let justified = line_reaches(group[i - 1], right_edge, group[i - 1].size);
-        match justified
-            .then(|| split_boundary(&out, &text))
-            .flatten()
-            .and_then(|(head, tail)| rejoin_across_break(vocab, head, tail))
-        {
+        match split_boundary(&out, &text).and_then(|(head, tail)| {
+            // A URL wrap is tried first and without the geometric guard: a line broken inside
+            // a URL often cannot be stretched to the margin, and a trailing hyphen there is
+            // part of the identifier, not a hyphenation to undo.
+            url_wrap(head, tail).or_else(|| {
+                justified
+                    .then(|| rejoin_across_break(vocab, head, tail))
+                    .flatten()
+            })
+        }) {
             Some(merged) => {
                 let head = head_len(&out);
                 let head_chars = out[out.len() - head..].chars().count();
@@ -657,6 +662,66 @@ fn rejoin_across_break(vocab: &Vocabulary, head: &str, tail: &str) -> Option<Str
             .all(|c| c.is_alphanumeric() || c == '-')
             .then(|| format!("{head}{tail}")),
     }
+}
+
+/// Joins a URL or DOI wrapped across a line break back into one token.
+///
+/// A typesetter breaks a long URL *after* a separator — `/`, `-`, `.`, `_` — and adds no
+/// hyphen, so the separator ending the line is itself the evidence of continuation. The word
+/// vocabulary knows nothing here, and the usual soft-hyphen removal would eat a `-` that is
+/// part of the identifier, which is why this runs before [`rejoin_across_break`].
+///
+/// Both sides are held to it. The head must already be inside a URL (a scheme, `www.`,
+/// `doi.org/`, or a bare DOI prefix) and end at a separator; the tail must be made of URL
+/// characters and carry a digit or a `/`, so a sentence that genuinely ends in a URL cannot
+/// swallow the capitalised word that starts the next one.
+fn url_wrap(head: &str, tail: &str) -> Option<String> {
+    let in_url = head.contains("://")
+        || head.starts_with("www.")
+        || head.starts_with("doi.org/")
+        || bare_doi_prefix(head);
+    if !in_url || !head.ends_with(['/', '-', '.', '_']) {
+        return None;
+    }
+    // A numbered bibliography's next entry starts with its own label — `15.`, `(15)`, `15)`,
+    // `[15]` or a bare `15` — and an entry often ends with a complete DOI and a final period,
+    // or a URL ending in `/`. That boundary looks exactly like a wrap (separator-ended head,
+    // digit-bearing tail) and must never be glued: one swallowed label collapses every entry
+    // after it. The one head that keeps its claim is a hyphen-ended one — an entry does not
+    // end mid-identifier at a hyphen, so `…08328-` + `5` is still the identifier's own tail.
+    if !head.ends_with('-') {
+        if label_shaped(tail) {
+            return None;
+        }
+        // A pure-digit tail after a final period is a year starting the next line, not a
+        // DOI fragment: every wrapped identifier observed continues with a slash, dot,
+        // hyphen or letter, never with bare digits alone.
+        if head.ends_with('.') && !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+    }
+    let urlish = tail
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-._~/%#?=&:+();<>".contains(c));
+    let continues = tail.contains('/') || tail.chars().any(|c| c.is_ascii_digit());
+    (urlish && continues).then(|| format!("{head}{tail}"))
+}
+
+/// A reference label as bibliographies print them: one to three digits, bare, wrapped in
+/// `()` or `[]`, or followed by `.`, `)` or `]`.
+fn label_shaped(tail: &str) -> bool {
+    let digits = tail
+        .trim_start_matches(['(', '['])
+        .trim_end_matches(['.', ')', ']']);
+    !digits.is_empty() && digits.len() <= 3 && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Whether `head` starts like a bare DOI: `10.` then at least four digits, with the
+/// registrant's `/` already seen.
+fn bare_doi_prefix(head: &str) -> bool {
+    head.strip_prefix("10.").is_some_and(|rest| {
+        rest.bytes().take_while(u8::is_ascii_digit).count() >= 4 && rest.contains('/')
+    })
 }
 
 /// Whether a line runs to the block's right edge, within one character's slack.
@@ -1233,6 +1298,73 @@ mod tests {
         assert_eq!(rejoin_across_break(&vocab, "-", "ing"), None);
         // Punctuation starting the next line means the line ended for another reason.
         assert_eq!(rejoin_across_break(&vocab, "learn-", "(ing)"), None);
+    }
+
+    #[test]
+    fn a_url_broken_at_a_separator_rejoins_without_a_space() {
+        // The shapes the pilot papers print: broken after the scheme, after a path slash,
+        // after a dot inside the DOI, and at a hyphen that is part of the identifier.
+        assert_eq!(
+            url_wrap("https://", "doi.org/10.1038/s41467-019-08328-5"),
+            Some("https://doi.org/10.1038/s41467-019-08328-5".into())
+        );
+        assert_eq!(
+            url_wrap("https://doi.org/10.1186/", "s12974-021-02283-z."),
+            Some("https://doi.org/10.1186/s12974-021-02283-z.".into())
+        );
+        assert_eq!(
+            url_wrap("https://doi.org/10.", "1016/s0196-9781(02)00015-3"),
+            Some("https://doi.org/10.1016/s0196-9781(02)00015-3".into())
+        );
+        assert_eq!(
+            url_wrap("https://doi.org/10.1128/jb.181.21.6650-", "6655.1999"),
+            Some("https://doi.org/10.1128/jb.181.21.6650-6655.1999".into())
+        );
+        // A bare DOI with no scheme still counts as being inside a URL.
+        assert_eq!(
+            url_wrap("10.1016/j.", "expneurol.2015.05.005"),
+            Some("10.1016/j.expneurol.2015.05.005".into())
+        );
+    }
+
+    #[test]
+    fn a_sentence_ending_in_a_url_keeps_the_next_word_separate() {
+        // The tail is an ordinary word: no digit, no slash. The URL ended with the sentence.
+        assert_eq!(url_wrap("https://example.com/", "The"), None);
+        assert_eq!(url_wrap("https://example.com/survey.", "Respondents"), None);
+        // The head is not inside a URL at all.
+        assert_eq!(url_wrap("ratio.", "2020"), None);
+        assert_eq!(url_wrap("learn-", "ing"), None);
+        // The head ends mid-word, not at a separator a typesetter breaks after.
+        assert_eq!(url_wrap("https://doi.org/10.1038/srep", "14206"), None);
+        // An entry ending in a DOI and a period, with the next entry's label on the next
+        // line: the label is a new entry, not the DOI's continuation, in every style a
+        // bibliography prints one.
+        let entry_end = "https://doi.org/10.1101/2020.04.02.022277.";
+        for label in ["15.", "15", "15)", "(15)", "[15]", "15]", "7", "7."] {
+            assert_eq!(url_wrap(entry_end, label), None, "glued label {label:?}");
+        }
+        // The same labels after an entry whose URL ends in a slash.
+        for label in ["15.", "15", "15)", "(15)"] {
+            assert_eq!(
+                url_wrap("https://doi.org/10.1016/j.cell.2020.01.001/", label),
+                None,
+                "glued label {label:?} after a slash"
+            );
+        }
+        // A year starting the next line after a sentence-final URL is prose, not a DOI tail.
+        assert_eq!(url_wrap("https://example.com/survey.", "2010"), None);
+        assert_eq!(url_wrap("https://example.com/.", "3"), None);
+    }
+
+    #[test]
+    fn a_hyphen_ended_head_keeps_its_claim_on_a_digit_tail() {
+        // An entry does not end mid-identifier at a hyphen: `…08328-` + `5` is the
+        // identifier's own tail even though `5` alone is label-shaped.
+        assert_eq!(
+            url_wrap("https://doi.org/10.1038/s41467-019-08328-", "5"),
+            Some("https://doi.org/10.1038/s41467-019-08328-5".into())
+        );
     }
 
     #[test]
