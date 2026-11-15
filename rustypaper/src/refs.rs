@@ -662,6 +662,10 @@ fn leading_label(text: &str) -> Option<(String, &str)> {
 /// Vancouver volume — beats an unmarked one, because a volume or article number can sit in the
 /// year band (`2021;1865(12):130014` is volume 1865) while a marked year is the style saying
 /// which number is the date.
+///
+/// Among marked years the *first* wins, unlike among plain ones. The hazard runs the other way:
+/// material swept into the entry's tail — a running header, the opening of the next entry at a
+/// column seam — arrives marked, while the entry's own marked year opens the citation.
 fn find_year(text: &str) -> Option<u16> {
     let chars: Vec<char> = text.chars().collect();
     let identifier = arxiv_span(&chars);
@@ -704,7 +708,7 @@ fn find_year(text: &str) -> Option<u16> {
                         _ => false,
                     };
                 if in_parens || chars.get(i + 4) == Some(&';') {
-                    marked = Some(year);
+                    marked.get_or_insert(year);
                 }
                 found = Some(year);
             }
@@ -1384,6 +1388,18 @@ mod tests {
         assert_eq!(
             parse("Smith J (2019a) A title. Journal 12, 2021.").year,
             Some(2019)
+        );
+    }
+
+    /// Among marked years the first wins: what an entry sweeps up at its tail — a running header,
+    /// the next entry's opening at a column seam — arrives marked too, and the entry's own marked
+    /// year comes first.
+    #[test]
+    fn the_first_marked_year_beats_a_later_one() {
+        assert_eq!(
+            parse("Thul PJ, et al. A map. Science. 2017;356(6340):eaal3321. Hamoud et al. Journal (2024) 22:501")
+                .year,
+            Some(2017)
         );
     }
 
