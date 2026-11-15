@@ -654,10 +654,24 @@ fn leading_label(text: &str) -> Option<(String, &str)> {
 /// publication year sits at the end in most styles. Two runs of four digits are ruled out first,
 /// because in the styles that put the year early the *last* number in the entry is one of them
 /// and the year is not — see [`in_a_page_range`] and [`arxiv_span`].
+///
+/// Two refinements of "the last one", both learned from entries where the last plausible year is
+/// not the year at all. Digits inside the DOI are stepped over the way the arXiv identifier is:
+/// `10.1016/j.sjbs.2014.07.006` embeds the year an identifier was minted, not the year printed on
+/// the entry. And a year the style *marks* — `(2022)` in author–year styles, `2022;` opening a
+/// Vancouver volume — beats an unmarked one, because a volume or article number can sit in the
+/// year band (`2021;1865(12):130014` is volume 1865) while a marked year is the style saying
+/// which number is the date.
+///
+/// Among marked years the *first* wins, unlike among plain ones. The hazard runs the other way:
+/// material swept into the entry's tail — a running header, the opening of the next entry at a
+/// column seam — arrives marked, while the entry's own marked year opens the citation.
 fn find_year(text: &str) -> Option<u16> {
     let chars: Vec<char> = text.chars().collect();
     let identifier = arxiv_span(&chars);
+    let doi = doi_char_span(text);
     let mut found = None;
+    let mut marked = None;
     for i in 0..chars.len().saturating_sub(3) {
         if !chars[i].is_ascii_digit() {
             continue;
@@ -675,16 +689,39 @@ fn find_year(text: &str) -> Option<u16> {
         if identifier.as_ref().is_some_and(|span| span.contains(&i)) {
             continue;
         }
+        if doi.as_ref().is_some_and(|span| span.contains(&i)) {
+            continue;
+        }
         if in_a_page_range(&chars, i) {
             continue;
         }
         if let Ok(year) = window.parse::<u16>() {
             if (1800..=2100).contains(&year) {
+                // `(2022)` and `(2022a)` are marked; so is the `2022;` that opens a Vancouver
+                // volume. `22(4)` is not: the parenthesis there encloses the issue, not the year,
+                // and an issue number never opens with one.
+                let in_parens = i > 0
+                    && chars[i - 1] == '('
+                    && match chars.get(i + 4) {
+                        Some(')') => true,
+                        Some(c) if c.is_ascii_lowercase() => chars.get(i + 5) == Some(&')'),
+                        _ => false,
+                    };
+                if in_parens || chars.get(i + 4) == Some(&';') {
+                    marked.get_or_insert(year);
+                }
                 found = Some(year);
             }
         }
     }
-    found
+    marked.or(found)
+}
+
+/// Where the DOI sits, as a span of character indices, so the year search can step over it.
+fn doi_char_span(text: &str) -> Option<std::ops::Range<usize>> {
+    let doi = find_doi(text)?;
+    let start = text[..text.find(&doi)?].chars().count();
+    Some(start..start + doi.chars().count())
 }
 
 /// Whether the four digits at `at` are one end of a page range.
@@ -1313,6 +1350,56 @@ mod tests {
         assert_eq!(
             parse("A. Author. A title. Journal 6, 1817-1853, 2005.").year,
             Some(2005)
+        );
+    }
+
+    /// A DOI embeds the year an identifier was minted, which can differ from the printed year.
+    #[test]
+    fn a_year_inside_a_doi_is_not_the_year() {
+        assert_eq!(
+            parse("Alkhalaf S. A title. Saudi J Biol Sci. 2015;22(4):465-9. 10.1016/j.sjbs.2014.07.006")
+                .year,
+            Some(2015)
+        );
+    }
+
+    /// Vancouver style reads `Journal. YYYY;volume(issue):pages`, and both the volume and an
+    /// article number can land in the band a year occupies.
+    #[test]
+    fn a_volume_or_article_number_does_not_beat_a_marked_year() {
+        assert_eq!(
+            parse("Berger B. A title. Biochim Biophys Acta Gen Subj. 2021;1865(12):130014.").year,
+            Some(2021)
+        );
+        // An article number is the worse trap: no dash, no parenthesis, just four digits last.
+        assert_eq!(
+            parse("Hu H, et al. A title. Int J Mol Sci. 2021;22(4):1831.").year,
+            Some(2021)
+        );
+    }
+
+    /// Author–year styles mark the year with parentheses, possibly with a disambiguating letter.
+    #[test]
+    fn a_parenthesised_year_beats_a_later_plain_one() {
+        assert_eq!(
+            parse("Kucukguven A, et al. (2022) A title. Ann Anat 240:151882, vol 2023.").year,
+            Some(2022)
+        );
+        assert_eq!(
+            parse("Smith J (2019a) A title. Journal 12, 2021.").year,
+            Some(2019)
+        );
+    }
+
+    /// Among marked years the first wins: what an entry sweeps up at its tail — a running header,
+    /// the next entry's opening at a column seam — arrives marked too, and the entry's own marked
+    /// year comes first.
+    #[test]
+    fn the_first_marked_year_beats_a_later_one() {
+        assert_eq!(
+            parse("Thul PJ, et al. A map. Science. 2017;356(6340):eaal3321. Hamoud et al. Journal (2024) 22:501")
+                .year,
+            Some(2017)
         );
     }
 
