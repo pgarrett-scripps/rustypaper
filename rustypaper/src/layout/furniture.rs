@@ -17,7 +17,7 @@
 //! that carries the whole document. See [`alternates`] for what stops that from being a licence
 //! to delete anything that repeats twice.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::text::lines::Line;
 
@@ -92,6 +92,11 @@ pub fn strip(pages: &mut [Vec<Line>], page_heights: &[f32]) -> usize {
         .into_iter()
         .filter(|&at| alternates(at, total, &by_class))
         .collect();
+    let established: HashSet<&str> = seen
+        .iter()
+        .filter(|(_, &n)| n >= quorum)
+        .map(|(key, _)| key.as_str())
+        .collect();
 
     let mut removed = 0;
     for (index, (lines, &height)) in pages.iter_mut().zip(page_heights).enumerate() {
@@ -107,13 +112,38 @@ pub fn strip(pages: &mut [Vec<Line>], page_heights: &[f32]) -> usize {
                     .get(&(at, parity))
                     .and_then(|counts| counts.get(&key))
                     .is_some_and(|&n| n >= class_quorum(class_size(total, parity)));
-            let furniture = repeats || carries_its_class;
+            let furniture = repeats || carries_its_class || composed_of(&key, &established);
             removed += usize::from(furniture);
             !furniture
         });
     }
 
     removed
+}
+
+/// Whether a signature is two or more quorum-clearing signatures run together.
+///
+/// A running head set as two spans a fraction of a point apart builds as two lines on most pages
+/// and as one merged line where the baselines coincide. The merged line's own signature then
+/// appears only a handful of times — below any quorum — while each of its halves clears the
+/// whole-document quorum comfortably. Signatures concatenate exactly, because whitespace is
+/// dropped and case is folded, so the merged line can be recognised as the composition it is.
+///
+/// At least two parts are required: a line matching a single furniture signature is already
+/// covered by the quorum test, and demanding a genuine composition keeps this from being a
+/// second, laxer spelling of it.
+fn composed_of(sig: &str, established: &HashSet<&str>) -> bool {
+    fn splits(rest: &str, established: &HashSet<&str>, parts: usize) -> bool {
+        if rest.is_empty() {
+            return parts >= 2;
+        }
+        established.iter().any(|head| {
+            !head.is_empty()
+                && rest.starts_with(head)
+                && splits(&rest[head.len()..], established, parts + 1)
+        })
+    }
+    splits(sig, established, 0)
 }
 
 /// Whether the head at this margin alternates between recto and verso pages.
@@ -457,6 +487,54 @@ mod tests {
                 .iter()
                 .any(|l| l.text().starts_with("Scikit-learn")),
             "two same-parity pages are too thin to establish an alternation"
+        );
+    }
+
+    /// A head set as two spans half a point apart in baseline: line building keeps them apart on
+    /// most pages and merges them where the baselines coincide. The merged line's signature is
+    /// seen nowhere else, but it is exactly the concatenation of two signatures that each clear
+    /// the quorum, and it is as much furniture as its halves.
+    #[test]
+    fn a_merged_pair_of_furniture_lines_is_furniture() {
+        let mut pages: Vec<Vec<Line>> = (0..8)
+            .map(|i| {
+                let mut page = vec![line(&format!("body of page {}", i + 1), 300.0)];
+                if i == 5 {
+                    page.push(line(
+                        "Hamoud et al. Journal (2024) 22:287 Page 6 of 17",
+                        40.0,
+                    ));
+                } else {
+                    page.push(line("Hamoud et al. Journal (2024) 22:287", 40.0));
+                    page.push(line(&format!("Page {} of 17", i + 1), 40.5));
+                }
+                page
+            })
+            .collect();
+        let heights = vec![HEIGHT; 8];
+        strip(&mut pages, &heights);
+        assert!(
+            pages.iter().all(|p| p.len() == 1),
+            "the merged head is two furniture signatures run together, in {:?}",
+            pages
+                .iter()
+                .flatten()
+                .map(Line::text)
+                .collect::<Vec<String>>()
+        );
+    }
+
+    /// The composition test must not become a laxer spelling of the quorum: a margin line whose
+    /// signature matches a single furniture signature with something else appended is not a
+    /// concatenation of two established heads, and it stays.
+    #[test]
+    fn a_furniture_prefix_alone_does_not_compose() {
+        let (mut pages, heights) = document(8);
+        pages[0].push(line("Preprint. Under review. Comments welcome", 55.0));
+        strip(&mut pages, &heights);
+        assert!(
+            pages[0].iter().any(|l| l.text().ends_with("welcome")),
+            "one established head plus a one-off tail is not a composition"
         );
     }
 
