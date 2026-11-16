@@ -169,6 +169,15 @@ fn render_table(out: &mut String, data: &TableData) {
         out.push('\n');
     }
     out.push(')');
+    if data.confidence < crate::table::MIN_CONFIDENCE {
+        out.push_str("\n#emph[");
+        out.push_str(
+            "Low-confidence table reconstruction: the printed grid did not survive \
+             conversion, so rows and columns here may not match the page. Repair from the \
+             original.",
+        );
+        out.push(']');
+    }
 }
 
 /// Escapes the characters that carry meaning in Typst markup, leaving mathematics alone.
@@ -299,6 +308,7 @@ mod tests {
                 vec!["GNMT".into(), "24.61".into()],
             ],
             header_rows: 1,
+            confidence: 1.0,
         });
         let doc = Document {
             title: None,

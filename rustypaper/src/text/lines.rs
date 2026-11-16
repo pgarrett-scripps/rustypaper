@@ -737,6 +737,11 @@ fn segment_words(page: &PageRaw, line: &mut Line) {
     let marked = line.glyphs.iter().any(|p| p.break_before);
     let ratios = gap_ratios(page, line);
     let threshold = word_gap_threshold(&ratios);
+    let split_ratio = if page.turned {
+        TURNED_LINE_SPLIT_RATIO
+    } else {
+        MARKED_LINE_SPLIT_RATIO
+    };
 
     let mut start = 0usize;
     let mut buf = [0u8; 4];
@@ -747,7 +752,7 @@ fn segment_words(page: &PageRaw, line: &mut Line) {
 
     for i in 0..line.glyphs.len() {
         let split = if marked {
-            line.glyphs[i].break_before || (i > 0 && ratios[i - 1] > MARKED_LINE_SPLIT_RATIO)
+            line.glyphs[i].break_before || (i > 0 && ratios[i - 1] > split_ratio)
         } else {
             i > 0 && ratios[i - 1] > threshold
         };
@@ -810,6 +815,17 @@ const PEN_OVERLAP_DISTRUST_RATIO: f32 = 0.15;
 /// still nowhere near it; the small-gap inference that marks exist to suppress stays
 /// suppressed.
 const MARKED_LINE_SPLIT_RATIO: f32 = 4.0;
+
+/// [`MARKED_LINE_SPLIT_RATIO`] for a page whose frame was turned upright.
+///
+/// A turned page is a landscape table drawn sideways, and its cells reach the content
+/// stream run by run, so nearly every cell seam is an unmarked gap and the 4-em floor
+/// welds whole header rows into single words (`SourceFreq.Instrument`). No word contains a
+/// 2-em internal gap either, so the lower floor still cannot split inside one — but it is
+/// confined to turned pages because 2 em is close enough to a wide display-math gap that
+/// applying it everywhere broke equation grouping on an upright corpus paper
+/// (metasurface's equation recall fell 0.26 → 0.22).
+const TURNED_LINE_SPLIT_RATIO: f32 = 2.0;
 
 /// Inter-glyph gaps for one line, as fractions of font size.
 ///

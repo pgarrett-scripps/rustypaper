@@ -114,12 +114,28 @@ pub struct MathData {
 }
 
 /// A table's contents, flattened for emission.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TableData {
     /// Cell text, row-major.
     pub rows: Vec<Vec<String>>,
     /// How many leading rows are header rows.
     pub header_rows: usize,
+    /// How much to trust the grid — [`MathData::confidence`]'s analogue for tables.
+    ///
+    /// It starts at 1.0 and is multiplied by 0.75 once for each shape of damage the
+    /// reconstruction shows from outside: most rows reduced to a single filled cell
+    /// (wrapped printed cells emitted as shards), most rows filling at most half their
+    /// columns (the printed grid was never found), and a page whose frame had to be turned
+    /// upright (cell seams weld there more than anywhere else). So 1.0 means "nothing
+    /// looked wrong", not "verified correct"; below [`crate::table::MIN_CONFIDENCE`] (0.6,
+    /// i.e. two registered doubts) the emitters print a warning under the table, and any
+    /// value under 1.0 flags a grid worth re-reading against the page.
+    #[serde(default = "full_confidence")]
+    pub confidence: f32,
+}
+
+fn full_confidence() -> f32 {
+    1.0
 }
 
 /// What an inline span marks.

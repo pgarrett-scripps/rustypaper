@@ -310,6 +310,12 @@ pub struct PageRaw {
     pub height: f32,
     /// Page rotation that was applied, in degrees (0, 90, 180 or 270).
     pub rotation: i32,
+    /// Whether the frame was turned upright because the page's text ran sideways — see
+    /// `backend::normalize_rotation`. The geometry downstream is ordinary, but the word
+    /// marks a `PageSource` owes were synthesized before the turn, so word and cell seams
+    /// on such a page are less complete than on a page born upright.
+    #[serde(default)]
+    pub turned: bool,
     pub glyphs: Vec<Glyph>,
     pub paths: Vec<PathItem>,
     pub images: Vec<ImageItem>,

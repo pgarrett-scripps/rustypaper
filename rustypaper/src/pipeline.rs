@@ -258,6 +258,7 @@ fn lift_tables(
                     doc::TableData {
                         rows: table.rows.clone(),
                         header_rows: table.header_rows,
+                        confidence: table.confidence,
                     },
                 ));
             }
@@ -1146,6 +1147,7 @@ mod tests {
         doc::TableData {
             rows: vec![vec!["a".to_owned(), "b".to_owned()]],
             header_rows: 1,
+            confidence: 1.0,
         }
     }
 
