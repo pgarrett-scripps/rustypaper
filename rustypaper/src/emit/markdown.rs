@@ -165,9 +165,21 @@ fn render_table(out: &mut String, data: &crate::doc::TableData) {
         cells.resize(columns, String::new());
         write_row(out, &cells);
     }
+    if data.confidence < crate::table::MIN_CONFIDENCE {
+        out.push('\n');
+        out.push_str(LOW_CONFIDENCE_NOTE);
+        out.push('\n');
+    }
     // The trailing blank line is added by the caller.
     out.pop();
 }
+
+/// Printed under a table whose grid reconstruction registered too many doubts — see
+/// [`crate::doc::TableData::confidence`]. An absent grid would hide the words; a confident
+/// grid would lie about them. The note is the honest middle.
+pub(crate) const LOW_CONFIDENCE_NOTE: &str = "*Low-confidence table reconstruction: \
+the printed grid did not survive conversion, so rows and columns here may not match the \
+page. Repair from the original.*";
 
 fn flatten_header(data: &crate::doc::TableData, columns: usize) -> Vec<String> {
     let mut header = vec![String::new(); columns];
@@ -459,6 +471,7 @@ mod tests {
                 vec!["GNMT".into(), "24.61".into()],
             ],
             header_rows: 1,
+            confidence: 1.0,
         });
         let doc = Document {
             title: None,
@@ -476,6 +489,7 @@ mod tests {
         b.table = Some(crate::doc::TableData {
             rows: vec![vec!["a".into(), "b".into()], vec!["c".into(), "d".into()]],
             header_rows: 0,
+            confidence: 1.0,
         });
         let doc = Document {
             title: None,
@@ -495,12 +509,49 @@ mod tests {
         b.table = Some(crate::doc::TableData {
             rows: vec![vec!["a|b".into(), "c".into()]],
             header_rows: 1,
+            confidence: 1.0,
         });
         let doc = Document {
             title: None,
             blocks: vec![b],
         };
         assert!(render(&doc).contains("a\\|b"));
+    }
+
+    /// Two registered doubts mean the grid is a sketch, and the reader is told so in place.
+    #[test]
+    fn a_low_confidence_table_carries_a_warning() {
+        let mut b = block(BlockKind::Table, "");
+        b.table = Some(crate::doc::TableData {
+            rows: vec![vec!["a".into(), "b".into()], vec!["c".into(), "d".into()]],
+            header_rows: 1,
+            confidence: 0.5,
+        });
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        let out = render(&doc);
+        assert!(
+            out.contains("Low-confidence table reconstruction"),
+            "no warning under a doubted table: {out:?}"
+        );
+    }
+
+    /// One doubt is a flag in the JSON, not a printed warning.
+    #[test]
+    fn a_single_doubt_prints_no_warning() {
+        let mut b = block(BlockKind::Table, "");
+        b.table = Some(crate::doc::TableData {
+            rows: vec![vec!["a".into(), "b".into()], vec!["c".into(), "d".into()]],
+            header_rows: 1,
+            confidence: 0.75,
+        });
+        let doc = Document {
+            title: None,
+            blocks: vec![b],
+        };
+        assert!(!render(&doc).contains("Low-confidence"));
     }
 
     #[test]

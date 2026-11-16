@@ -70,6 +70,18 @@ const MAX_FRAGMENT_GAP: f32 = 1.5;
 /// Two fragments belong to the same border line if their vertical centres are within this.
 const FRAGMENT_Y_TOLERANCE: f32 = 1.0;
 
+/// What one registered doubt costs a table's confidence — the same rate equation
+/// reconstruction pays per doubt.
+const DOUBT: f32 = 0.75;
+
+/// Below this, a table's grid should be treated as a sketch, not a reconstruction: the
+/// emitters say so under the table, and a reader repairing it should work from the page.
+///
+/// The threshold sits between one registered doubt (0.75) and two (0.5625): a single doubt
+/// is a flag worth carrying in the JSON, two independent ones mean the printed grid
+/// probably was not recovered and the warning earns its ink.
+pub const MIN_CONFIDENCE: f32 = 0.6;
+
 /// A reconstructed table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Table {
@@ -80,6 +92,8 @@ pub struct Table {
     pub header_rows: usize,
     /// Indices into the page's line list that were consumed.
     pub consumed: Vec<usize>,
+    /// How much to trust the grid — see the computation at the end of [`build`].
+    pub confidence: f32,
 }
 
 impl Table {
@@ -118,17 +132,28 @@ pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32, figures: &[Rect]) 
         // happens to align — the welded region then holds half a column of prose and
         // `build` rightly refuses it. The table is still there in the chain's head, so peel
         // rules off the tail until a prefix builds, and give what remains the same chance
-        // if it could stand as a group on its own.
+        // if it could stand as a group on its own. The figure can equally sit *above* the
+        // table — a framed plot whose border rules chain into the grid below it — and then
+        // no prefix builds at all, so a chain that refuses outright sheds its head rule and
+        // the tail gets the same chance.
         let mut rest: &[Rect] = &group;
         while rest.len() >= 2 && rest.iter().any(|r| r.width() >= min_width) {
             let built = (2..=rest.len())
                 .rev()
                 .find_map(|end| build(&rest[..end], lines, body_size, &mut used).map(|t| (t, end)));
-            let Some((table, end)) = built else {
-                break;
-            };
-            tables.push(table);
-            rest = &rest[end..];
+            match built {
+                Some((mut table, end)) => {
+                    // The word marks a turned page's seams rely on were synthesized before
+                    // the turn, so cells weld across gutters there more than anywhere else:
+                    // one more registered doubt.
+                    if page.turned {
+                        table.confidence *= DOUBT;
+                    }
+                    tables.push(table);
+                    rest = &rest[end..];
+                }
+                None => rest = &rest[1..],
+            }
         }
     }
 
@@ -164,16 +189,21 @@ struct Caption {
 /// happens to land between two rules must not part them; `Table` at the head of a line, with a
 /// numeral after it, is a caption or the opening of a sentence about one, and either way the
 /// rules on the two sides of it are not one tabular's.
+///
+/// Tokens are split on whitespace *within* words as well as between them. A caption set with a
+/// wide fixed space after its number — Scientific Reports writes `Table 1.␣␣The results …` —
+/// reaches here with the gap unmarked, so `1.` and `The` weld into the single word `1.  The`
+/// and no caption on the page ever matched.
 fn opens_a_caption(line: &Line) -> bool {
-    let mut words = line.words.iter().map(|w| w.text.as_str());
-    let Some(label) = words.next() else {
+    let mut tokens = line.words.iter().flat_map(|w| w.text.split_whitespace());
+    let Some(label) = tokens.next() else {
         return false;
     };
     let label = label.trim_end_matches(['.', ':']);
     if !(label.eq_ignore_ascii_case("table") || label.eq_ignore_ascii_case("tab")) {
         return false;
     }
-    words.next().is_some_and(is_a_table_number)
+    tokens.next().is_some_and(is_a_table_number)
 }
 
 /// Whether a word is a table's number: `9`, `9.`, `II`, `IV:`.
@@ -201,8 +231,25 @@ fn is_a_table_number(word: &str) -> bool {
 /// x-range of the plot below it, and testing x alone would have discarded the paper's largest
 /// table. Nor is the padded margin that [`crate::pipeline`] uses for stray labels right here — a
 /// table directly under a figure is adjacent to it, not part of it.
+///
+/// Total, but not to the decimal: a figure region is the tight bounding box of the drawn
+/// cluster, and the plot's own gridlines *are* part of that cluster's edge, so stroke-width
+/// rounding leaves them fractions of a point outside the box. One exosome-paper chart's
+/// gridlines ended 0.3 pt past the region, survived this filter, and laddered a rule chain
+/// straight through the figure that [`separated_by_a_figure`] would otherwise have cut — into
+/// the fragment-drawn table below, whose welded region then swallowed half a column of prose.
+/// One point of slack cannot admit a neighbouring table's rule; the gutter between a figure
+/// and a real table is an order of magnitude wider.
+const FIGURE_CONTAINMENT_SLACK: f32 = 1.0;
+
 fn inside_a_figure(rule: &Rect, figures: &[Rect]) -> bool {
-    figures.iter().any(|region| region.contains(rule))
+    let s = FIGURE_CONTAINMENT_SLACK;
+    figures.iter().any(|region| {
+        rule.x0 >= region.x0 - s
+            && rule.x1 <= region.x1 + s
+            && rule.y0 >= region.y0 - s
+            && rule.y1 <= region.y1 + s
+    })
 }
 
 /// Whether a whole figure sits in the gap between two rules.
@@ -528,11 +575,30 @@ fn build(rules: &[Rect], lines: &[Line], body_size: f32, used: &mut [bool]) -> O
         used[i] = true;
     }
 
+    // How much to trust the grid, on the same terms as equation confidence: 1.0 means
+    // "nothing looked wrong", and each shape of visible damage costs a quarter of what is
+    // left. A row reduced to a single filled cell is usually a wrapped printed cell's shard
+    // on its own baseline; a table where most rows fill at most half their columns never
+    // found the printed grid, only a coarse sketch of it. Both are what reconstruction
+    // failure looks like from outside, and the reader deserves the flag either way.
+    let filled = |row: &Vec<String>| row.iter().filter(|cell| !cell.trim().is_empty()).count();
+    let columns = rows.first().map_or(0, Vec::len);
+    let shards = rows.iter().filter(|row| filled(row) == 1).count();
+    let sparse = rows.iter().filter(|row| filled(row) * 2 <= columns).count();
+    let mut confidence = 1.0_f32;
+    if shards * 3 > rows.len() {
+        confidence *= DOUBT;
+    }
+    if sparse * 2 > rows.len() {
+        confidence *= DOUBT;
+    }
+
     Some(Table {
         bbox: region,
         header_rows: header,
         rows,
         consumed: members,
+        confidence,
     })
 }
 
@@ -555,6 +621,7 @@ fn column_boundaries(
     }
     let bins = (width / BIN).ceil() as usize + 1;
     let mut occupied = vec![0u32; bins];
+    let mut masks: Vec<Vec<bool>> = Vec::with_capacity(members.len());
 
     for &i in members {
         let mut row_mask = vec![false; bins];
@@ -565,13 +632,39 @@ fn column_boundaries(
                 *slot = true;
             }
         }
-        for (slot, hit) in occupied.iter_mut().zip(row_mask) {
-            *slot += u32::from(hit);
+        for (slot, hit) in occupied.iter_mut().zip(&row_mask) {
+            *slot += u32::from(*hit);
         }
+        masks.push(row_mask);
     }
 
     let min_gap = (body_size * MIN_COLUMN_GAP).max(2.0);
     let ceiling = (members.len() as f32 * MAX_SEPARATOR_OCCUPANCY).floor() as u32;
+
+    // A separator is a band the rows *avoid*, and the per-bin ceiling alone cannot say so.
+    // Prose welded into a candidate region defeats it: each line's word gaps land in
+    // different bins of a 6 pt band, every single bin stays under the ceiling, and yet
+    // nearly every row has ink somewhere inside the "gutter" — which is how half a column
+    // of an exosome paper's running text was once dealt out into five phantom columns.
+    //
+    // The run as a whole is still the wrong thing to count, because a real column's ragged
+    // edge pokes word-ends into the fringe of the empty run beside it — different rows to
+    // different depths, which is what ragged means. So the question is asked of windows: a
+    // run separates two columns if *some* gap-wide window inside it is touched by at most
+    // the few rows allowed to span it. A clean gutter has such a window in its middle
+    // whatever its fringes carry; scattered prose has none, because every window of it is
+    // inked by most of the rows.
+    let crossers = |lo: usize, hi: usize| -> u32 {
+        masks
+            .iter()
+            .filter(|mask| mask[lo..hi].iter().any(|&inked| inked))
+            .count() as u32
+    };
+    let window = (min_gap / BIN).ceil().max(1.0) as usize;
+    let separates = |lo: usize, hi: usize| -> bool {
+        hi - lo >= window && (lo..=hi - window).any(|s| crossers(s, s + window) <= ceiling)
+    };
+
     let mut columns = Vec::new();
     let mut start: Option<usize> = None;
     let mut gap_start: Option<usize> = None;
@@ -584,8 +677,9 @@ fn column_boundaries(
                 gap_start = None;
             }
             (false, Some(_), Some(g)) => {
-                // A gap ended. If it was wide enough, it separated two columns.
-                if (i - g) as f32 * BIN >= min_gap {
+                // A gap ended. If it holds a window the rows avoid, rather than merely
+                // never crowding any one bin of it, it separated two columns.
+                if separates(g, i) {
                     push_column(&mut columns, region.x0, start.take().unwrap(), g);
                     start = Some(i);
                 }
@@ -714,6 +808,7 @@ mod tests {
             width: 612.0,
             height: 792.0,
             rotation: 0,
+            turned: false,
             glyphs: Vec::new(),
             paths: rules,
             images: Vec::new(),
@@ -1338,5 +1433,98 @@ mod tests {
         let boundaries = [(60.0, 90.0), (100.0, 103.0), (130.0, 160.0)];
         let dropped = merge_sign_column(&mut rows, &boundaries, 1, 10.0);
         assert!(dropped.is_empty(), "a 27pt gap was treated as adjacency");
+    }
+
+    /// A chart's gridlines poke fractions of a point past the figure region built from its
+    /// ink. Demanding exact containment let those rules escape the figure and weld its frame
+    /// to a genuine table below — the shape that dealt a page of prose into phantom columns
+    /// on a pilot paper.
+    #[test]
+    fn a_rule_poking_just_past_a_figure_is_still_the_figures() {
+        let figure = Rect::from_corners(100.0, 100.0, 300.0, 250.0);
+        let gridline = Rect::from_corners(99.7, 120.0, 300.3, 120.6);
+        assert!(inside_a_figure(&gridline, &[figure]));
+        let free = Rect::from_corners(80.0, 120.0, 300.0, 120.6);
+        assert!(!inside_a_figure(&free, &[figure]));
+    }
+
+    /// Prose between two rules must not become a table. Scattered words keep every 1pt bin
+    /// under the separator ceiling — per-bin occupancy cannot tell a gutter from prose that
+    /// merely never crowds one spot — so the separator must also find a full gap-wide window
+    /// the rows avoid. Here every window of the candidate band is crossed by more rows than
+    /// the ceiling allows, and no table may be built.
+    #[test]
+    fn staggered_prose_between_rules_is_not_a_table() {
+        let page = page_with(vec![rule(100.0, 72.0, 404.0), rule(480.0, 72.0, 404.0)]);
+        // Ten short rows and eight full-width prose rows between one pair of rules — the
+        // exosome shape, where a welded region held half a column of running text. The
+        // prose rows carry ordinary word gaps in staggered pairs across 124..144, so every
+        // 1pt bin there is under the ceiling of six rows; yet every 6pt window is still
+        // inked by all eight prose rows, so no window is a band the rows avoid.
+        let mut lines: Vec<Line> = (0..10)
+            .map(|i| row(115.0 + 18.0 * i as f32, &[("short", 76.0, 110.0)]))
+            .collect();
+        for p in 0..8u32 {
+            let cut = 124.0 + 5.0 * (p / 2) as f32;
+            lines.push(row(
+                300.0 + 18.0 * p as f32,
+                &[("leftprose", 76.0, cut), ("rightprose", cut + 5.0, 400.0)],
+            ));
+        }
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert!(tables.is_empty(), "prose became a table: {tables:?}");
+    }
+
+    /// Scientific Reports sets `Table 1.␣␣The caption…` with an unmarked wide space, so the
+    /// number and the caption's first word weld into one token. The caption must still be
+    /// recognized from the welded word.
+    #[test]
+    fn a_caption_with_a_welded_number_still_opens() {
+        let caption = row(500.0, &[("Table", 76.0, 104.0), ("1.  The", 110.0, 150.0)]);
+        assert!(opens_a_caption(&caption));
+        let prose = row(500.0, &[("Table", 76.0, 104.0), ("legs", 110.0, 140.0)]);
+        assert!(!opens_a_caption(&prose));
+    }
+
+    /// A clean grid on an upright page is fully trusted.
+    #[test]
+    fn a_clean_table_has_full_confidence() {
+        let (page, lines) = booktabs();
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables[0].confidence, 1.0);
+    }
+
+    /// The word marks a turned page's seams rely on were synthesized before the turn, so a
+    /// table there carries one registered doubt even when its grid looks clean.
+    #[test]
+    fn a_turned_page_costs_a_table_one_doubt() {
+        let (mut page, lines) = booktabs();
+        page.turned = true;
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables[0].confidence, DOUBT);
+    }
+
+    /// Rows reduced to a single filled cell are wrapped printed cells emitted as shards, and
+    /// rows filling at most half their columns mean the printed grid was never found. Each
+    /// shape costs a doubt.
+    #[test]
+    fn shard_rows_cost_confidence() {
+        let page = page_with(vec![rule(100.0, 72.0, 400.0), rule(260.0, 72.0, 400.0)]);
+        // A header and six body shards, each body row filling one of the two columns:
+        // the shape a wrapped printed row leaves when its cells land on separate baselines.
+        let lines = vec![
+            row(115.0, &[("Model", 76.0, 110.0), ("BLEU", 200.0, 232.0)]),
+            row(135.0, &[("ByteNet", 76.0, 124.0)]),
+            row(155.0, &[("GNMT", 76.0, 112.0)]),
+            row(175.0, &[("ConvS2S", 76.0, 124.0)]),
+            row(195.0, &[("23.75", 200.0, 232.0)]),
+            row(215.0, &[("24.61", 200.0, 232.0)]),
+            row(235.0, &[("25.16", 200.0, 232.0)]),
+        ];
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables.len(), 1, "expected one table, got {tables:?}");
+        // Six of seven rows are shards, and the same six fill at most half the columns:
+        // both doubts fire.
+        assert!((tables[0].confidence - DOUBT * DOUBT).abs() < 1e-6);
     }
 }

@@ -82,6 +82,7 @@ mod tests {
         b.table = Some(TableData {
             rows: vec![vec!["a".into(), "b".into()], vec!["c".into(), "d".into()]],
             header_rows: 1,
+            confidence: 1.0,
         });
         let doc = Document {
             title: None,

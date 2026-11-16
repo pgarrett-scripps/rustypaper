@@ -1,0 +1,37 @@
+{
+  "_comment": "Markdown table-line counts (lines starting with '|') per paper: at release 0.2.4, and the verified-good count for the current converter. A count far above table_lines means prose is being dealt into tables again (the regression PR #13's rule-coalescing introduced: exosome printed 105 lines against 32 at 0.2.4); far below means real tables were lost. Refresh deliberately with eval/tests/test_table_lines.py --regen when a change to table detection is an intended improvement.",
+  "corpus": {
+    "adam.pdf": {"v024": 34, "table_lines": 41},
+    "bert.pdf": {"v024": 79, "table_lines": 88},
+    "biology.pdf": {"v024": 97, "table_lines": 113},
+    "gan.pdf": {"v024": 15, "table_lines": 15},
+    "imagenet.pdf": {"v024": 385, "table_lines": 386},
+    "medimaging.pdf": {"v024": 660, "table_lines": 660},
+    "metasurface.pdf": {"v024": 12, "table_lines": 0},
+    "numbertheory.pdf": {"v024": 4, "table_lines": 4},
+    "optics.pdf": {"v024": 1, "table_lines": 1},
+    "pinsage.pdf": {"v024": 27, "table_lines": 57},
+    "resnet.pdf": {"v024": 142, "table_lines": 139},
+    "sklearn.pdf": {"v024": 0, "table_lines": 0},
+    "statistics.pdf": {"v024": 0, "table_lines": 0},
+    "topological.pdf": {"v024": 29, "table_lines": 30},
+    "transformer.pdf": {"v024": 59, "table_lines": 59},
+    "unet.pdf": {"v024": 18, "table_lines": 18}
+  },
+  "pilot": {
+    "biology-antibiofouling.pdf": {"v024": 0, "table_lines": 0},
+    "biology-cgrp.pdf": {"v024": 0, "table_lines": 0},
+    "biology-dark-kinome.pdf": {"v024": 0, "table_lines": 0},
+    "biology-ebselen.pdf": {"v024": 0, "table_lines": 7},
+    "biology-ilf3.pdf": {"v024": 41, "table_lines": 20},
+    "biology-methylation.pdf": {"v024": 0, "table_lines": 0},
+    "chemistry-photocatalytic.pdf": {"v024": 0, "table_lines": 0},
+    "control-education-pmc7183109.pdf": {"v024": 0, "table_lines": 17},
+    "control-microbiology-pmc8208984.pdf": {"v024": 28, "table_lines": 23},
+    "medicine-exosome.pdf": {"v024": 32, "table_lines": 75},
+    "medicine-oxytetracycline.pdf": {"v024": 0, "table_lines": 77},
+    "medicine-radiofrequency.pdf": {"v024": 7, "table_lines": 97},
+    "medicine-vitamin-c.pdf": {"v024": 23, "table_lines": 25},
+    "network-beamforming.pdf": {"v024": 1, "table_lines": 1}
+  }
+}

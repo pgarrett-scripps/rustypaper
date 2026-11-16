@@ -228,6 +228,7 @@ pub(crate) fn normalize_rotation(page: &mut PageRaw) {
         page.width = h;
         page.height = w;
     }
+    page.turned = true;
 }
 
 #[cfg(test)]

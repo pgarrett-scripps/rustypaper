@@ -820,6 +820,7 @@ mod tests {
                     width: 612.0,
                     height: 792.0,
                     rotation: 0,
+                    turned: false,
                     glyphs: self.glyphs,
                     paths: Vec::new(),
                     images: Vec::new(),
