@@ -51,7 +51,9 @@ fn extract_from(backend: &impl PageSource, path: &Path) -> Result<DocRaw> {
     let mut pages = Vec::with_capacity(total);
 
     for index in 0..total {
-        pages.push(backend.page(index, &mut fonts)?);
+        let mut page = backend.page(index, &mut fonts)?;
+        crate::backend::normalize_rotation(&mut page);
+        pages.push(page);
     }
 
     let scanned = pages.iter().filter(|p| p.looks_scanned()).count();
@@ -132,7 +134,47 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
         crate::compress::compress(&mut document, level);
     }
 
+    for (index, glyphs) in silent_pages(&raw, &document) {
+        eprintln!(
+            "warning: {}: page {} carries {glyphs} text glyphs but produced no output",
+            path.display(),
+            index + 1
+        );
+    }
+
     Ok(document)
+}
+
+/// A page is below this many real glyphs before its silence is worth a warning: a page holding
+/// only a folio and a running head converts to nothing by design, not by defect.
+const SILENT_PAGE_MIN_GLYPHS: usize = 25;
+
+/// Pages that carried real text but contributed nothing to the document, as
+/// `(page index, glyph count)`.
+///
+/// This is the net under the whole pipeline rather than a check on any one pass: wherever a
+/// future pass loses a page — an angle filter, a furniture rule, a figure region grown too far —
+/// the loss is reported instead of silent. Three medical-journal pages of upright full-page
+/// tables converted to zero blocks for months before anything said so.
+fn silent_pages(raw: &DocRaw, document: &doc::Document) -> Vec<(usize, usize)> {
+    let mut populated = vec![false; raw.pages.len()];
+    for block in &document.blocks {
+        if let Some(flag) = populated.get_mut(block.page) {
+            *flag = true;
+        }
+    }
+    raw.pages
+        .iter()
+        .zip(populated)
+        .filter(|(page, populated)| !populated && !page.looks_scanned())
+        .map(|(page, _)| {
+            (
+                page.index,
+                page.glyphs.iter().filter(|g| !g.generated).count(),
+            )
+        })
+        .filter(|&(_, glyphs)| glyphs >= SILENT_PAGE_MIN_GLYPHS)
+        .collect()
 }
 
 /// Recovers each page's lines, split at its column gutters, and the column geometry it found.
