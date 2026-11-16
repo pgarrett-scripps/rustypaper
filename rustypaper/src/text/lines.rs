@@ -744,7 +744,7 @@ fn segment_words(page: &PageRaw, line: &mut Line) {
 
     for i in 0..line.glyphs.len() {
         let split = if marked {
-            line.glyphs[i].break_before
+            line.glyphs[i].break_before || (i > 0 && ratios[i - 1] > MARKED_LINE_SPLIT_RATIO)
         } else {
             i > 0 && ratios[i - 1] > threshold
         };
@@ -796,6 +796,17 @@ fn segment_words(page: &PageRaw, line: &mut Line) {
 /// pitch the producer actually set, every glyph positioned individually — and nothing the pen
 /// says about that line can be believed.
 const PEN_OVERLAP_DISTRUST_RATIO: f32 = 0.15;
+
+/// Even on a space-marked line, a gap this many ems wide is a word break.
+///
+/// The reader synthesizes break marks between glyphs *adjacent in the content stream*, so a
+/// line assembled from scattered text runs — a table row whose cells reach the stream column
+/// by column — is under-marked at exactly the seams between runs, and trusting the marks
+/// there welds cells together across half a page. No word contains a gap of this size, so
+/// the floor cannot split inside one, and a justified word space stretched to its worst is
+/// still nowhere near it; the small-gap inference that marks exist to suppress stays
+/// suppressed.
+const MARKED_LINE_SPLIT_RATIO: f32 = 4.0;
 
 /// Inter-glyph gaps for one line, as fractions of font size.
 ///
