@@ -205,18 +205,99 @@ pub fn spans(page: &PageRaw, fonts: &FontTable, lines: &[Line], line: usize) -> 
             // A single one-character word is a stray symbol, not a formula.
             last - first > 1 || target.words[first].text.chars().count() > 1
         })
-        .map(|(first, last)| {
-            let start = target.words[first].start;
-            let end = target.words[last - 1].end;
+        .filter_map(|(first, last)| {
+            let (start, end) = trim_prose(
+                page,
+                fonts,
+                target,
+                target.words[first].start,
+                target.words[last - 1].end,
+            );
+            if start >= end
+                || !target.glyphs[start..end]
+                    .iter()
+                    .any(|p| is_seed(page, fonts, p.index))
+            {
+                return None;
+            }
             let indices: Vec<usize> = target.glyphs[start..end].iter().map(|p| p.index).collect();
-            Span {
+            Some(Span {
                 line,
                 start,
                 end,
                 formula: build::build(page, &indices),
-            }
+            })
         })
         .collect()
+}
+
+/// Shrinks a span whose boundary glyphs are prose welded on by a missing word break.
+///
+/// Classification is word-level, and a `PageSource` that under-marks spaces fuses the word after
+/// a formula onto it — `C^{N\times 1}containing` arrives as one word — so the prose rides into
+/// the span and the maths swallows it: `$\phi \in C^{N\times 1} containing$`. The glyphs tell
+/// them apart where the words could not: a run of three or more alphabetic glyphs in a text
+/// face, at full size, flush against the span's edge, is prose. Two letters are not enough —
+/// paired indices like the `ab` of a tensor family sit at full size on a fragment line whose
+/// dominant size *is* the script size, and trimming them wounds the formula worse than keeping
+/// a welded `of` would wound the prose. A *script-size* run is left alone,
+/// because `x_{max}` sets `max` in a text face too and only its size says it is a subscript.
+/// Sentence punctuation beyond a trimmed tail goes with it, as does the hyphen of a compound:
+/// `$1 \times Q$-vector` keeps its hyphen on the prose side.
+fn trim_prose(
+    page: &PageRaw,
+    fonts: &FontTable,
+    target: &Line,
+    mut start: usize,
+    mut end: usize,
+) -> (usize, usize) {
+    let char_at = |at: usize| match page.glyphs[target.glyphs[at].index].text {
+        crate::ir::GlyphText::Char(c) => Some(c),
+        crate::ir::GlyphText::Expanded(_) => None,
+    };
+    let full_size_prose = |at: usize| {
+        let index = target.glyphs[at].index;
+        let glyph = &page.glyphs[index];
+        let is_letter = match glyph.text {
+            crate::ir::GlyphText::Char(c) => c.is_alphabetic() && c.is_ascii(),
+            // A ligature — `ffi`, `ti` — only ever comes from text.
+            crate::ir::GlyphText::Expanded(_) => true,
+        };
+        is_letter && glyph.size >= target.size * SCRIPT_SIZE_RATIO && !is_seed(page, fonts, index)
+    };
+
+    // Tail: the sentence's punctuation, then the welded word, then the hyphen that joined it.
+    let mut past_punctuation = end;
+    while past_punctuation > start
+        && char_at(past_punctuation - 1).is_some_and(|c| matches!(c, '.' | ',' | ';' | ':'))
+        && !is_seed(page, fonts, target.glyphs[past_punctuation - 1].index)
+    {
+        past_punctuation -= 1;
+    }
+    let mut run = past_punctuation;
+    while run > start && full_size_prose(run - 1) {
+        run -= 1;
+    }
+    if past_punctuation - run >= 3 {
+        if run > start
+            && char_at(run - 1) == Some('-')
+            && !is_seed(page, fonts, target.glyphs[run - 1].index)
+        {
+            run -= 1;
+        }
+        end = run;
+    }
+
+    // Head: the word the formula was welded onto the back of.
+    let mut head = start;
+    while head < end && full_size_prose(head) {
+        head += 1;
+    }
+    if head - start >= 3 && head < end {
+        start = head;
+    }
+
+    (start, end)
 }
 
 /// What a line offers as evidence that it is a display equation.
@@ -596,6 +677,88 @@ fn trailing_number(
     (Some(label), chars[open].0)
 }
 
+/// Audits a rendered equation and lowers `confidence` for the shapes mangling takes.
+///
+/// Reconstruction's own confidence scores what it *did*; this scores what it *produced*. The two
+/// disagree when the damage happened upstream — a limit line never lifted into the stack, a
+/// piecewise brace split across blocks — because every construct reconstruction then built was,
+/// locally, unambiguous. So the LaTeX itself is read for the wounds those failures leave: an
+/// unbalanced delimiter, a limit holding a bare `=` or `,` because its operand was consumed
+/// elsewhere, a body ending on a dangling relation, and a *numbered* equation with almost no body
+/// at all. Each finding multiplies confidence by the factor reconstruction uses for its own
+/// guesses, so an equation with several wounds falls under the threshold that swaps its LaTeX for
+/// a rendered crop.
+pub fn audit(latex: &str, number: Option<&str>, confidence: &mut f32) {
+    let mut findings = 0usize;
+
+    // An unbalanced delimiter: part of the formula was left on a line the lifter never claimed.
+    let unbalanced = |open: char, close: char| {
+        let mut depth = 0i32;
+        let mut escaped = false;
+        for c in latex.chars() {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == open {
+                depth += 1;
+            } else if c == close {
+                depth -= 1;
+            }
+        }
+        depth != 0
+    };
+    if unbalanced('{', '}') || unbalanced('(', ')') || unbalanced('[', ']') {
+        findings += 1;
+    }
+
+    // A limit whose operand went missing: `\sum_{=0}^{-1}` says the `n` and the `N` were
+    // consumed as something else's material.
+    if ["_{=", "^{=", "_{,", "^{,", "_{}", "^{}"]
+        .iter()
+        .any(|p| latex.contains(p))
+    {
+        findings += 1;
+    }
+
+    // A body ending on a relation has lost its right-hand side.
+    let body = latex.trim_end().trim_end_matches('.').trim_end();
+    if matches!(body.chars().last(), Some('=' | '<' | '>' | '+' | '×'))
+        || [
+            r"\approx", r"\leq", r"\geq", r"\neq", r"\sim", r"\propto", r"\times", r"\cdot",
+            r"\pm", r"\to", r"\mapsto",
+        ]
+        .iter()
+        .any(|r| body.ends_with(r))
+    {
+        findings += 1;
+    }
+
+    // A *numbered* equation is the paper's claim that a full display sits here, so a body with
+    // almost nothing in it is the stump of an equation whose rest was lost. Counted double: the
+    // LaTeX is nearly content-free, and whatever it was meant to say is gone.
+    if number.is_some() {
+        let mut alnum = 0usize;
+        let mut chars = latex.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                while chars.peek().is_some_and(char::is_ascii_alphabetic) {
+                    chars.next();
+                }
+            } else if c.is_alphanumeric() {
+                alnum += 1;
+            }
+        }
+        if alnum < 3 {
+            findings += 2;
+        }
+    }
+
+    for _ in 0..findings {
+        build::penalise(confidence);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,5 +1010,119 @@ mod tests {
         let lines = build_lines(&page);
         let found = display_at(&page, &fonts, &lines, 0, column).expect("display equation");
         assert_eq!(found.number, None);
+    }
+
+    /// The glyphs a span covers, read back as text.
+    fn span_text(page: &PageRaw, lines: &[Line], span: &Span) -> String {
+        lines[span.line].glyphs[span.start..span.end]
+            .iter()
+            .filter_map(|p| match page.glyphs[p.index].text {
+                GlyphText::Char(c) => Some(c),
+                GlyphText::Expanded(_) => None,
+            })
+            .collect()
+    }
+
+    /// Beamforming's shape, to the glyph: a missing word break fused `has` onto the maths and
+    /// the span swallowed it — `$T_b^{BF} has$ rank one`. The span must end where the maths
+    /// ends.
+    #[test]
+    fn a_welded_following_word_is_trimmed_from_a_span() {
+        let (page, fonts) = Builder::new()
+            .text("we set ", 72.0, 200.0)
+            .math("Tx", 107.0, 200.0, 10.0)
+            .text("has", 117.0, 200.0)
+            .text(" rank one", 132.0, 200.0)
+            .page();
+        let lines = build_lines(&page);
+        let found = spans(&page, &fonts, &lines, 0);
+        assert_eq!(found.len(), 1, "expected one span, got {found:?}");
+        assert_eq!(span_text(&page, &lines, &found[0]), "Tx");
+    }
+
+    /// The same weld in the other direction leaves prose at the span's head.
+    #[test]
+    fn a_welded_preceding_word_is_trimmed_from_a_span() {
+        let (page, fonts) = Builder::new()
+            .text("word ", 72.0, 200.0)
+            .text("has", 95.0, 200.0)
+            .math("xy", 110.0, 200.0, 10.0)
+            .text(" tail words", 120.0, 200.0)
+            .page();
+        let lines = build_lines(&page);
+        let found = spans(&page, &fonts, &lines, 0);
+        assert_eq!(found.len(), 1, "expected one span, got {found:?}");
+        assert_eq!(span_text(&page, &lines, &found[0]), "xy");
+    }
+
+    /// `$1 \times Q$-vector`: the hyphen that joined the compound goes with the prose.
+    #[test]
+    fn a_compound_keeps_its_hyphen_on_the_prose_side() {
+        let (page, fonts) = Builder::new()
+            .text("a ", 72.0, 200.0)
+            .math("1×Q", 80.0, 200.0, 10.0)
+            .text("-vector", 95.0, 200.0)
+            .text(" of weights", 130.0, 200.0)
+            .page();
+        let lines = build_lines(&page);
+        let found = spans(&page, &fonts, &lines, 0);
+        assert_eq!(found.len(), 1, "expected one span, got {found:?}");
+        assert_eq!(span_text(&page, &lines, &found[0]), "1×Q");
+    }
+
+    /// Two full-size text letters flush against the maths are as likely a pair of indices —
+    /// the `ab` of a tensor family on a line whose dominant size is the script size — as a
+    /// welded word, so they stay inside the span.
+    #[test]
+    fn a_two_letter_tail_is_not_mistaken_for_prose() {
+        let (page, fonts) = Builder::new()
+            .text("some words ", 72.0, 200.0)
+            .math("xy", 127.0, 200.0, 10.0)
+            .text("ab", 137.0, 200.0)
+            .text(" more prose here", 150.0, 200.0)
+            .page();
+        let lines = build_lines(&page);
+        let found = spans(&page, &fonts, &lines, 0);
+        assert_eq!(found.len(), 1, "expected one span, got {found:?}");
+        assert_eq!(span_text(&page, &lines, &found[0]), "xyab");
+    }
+
+    #[test]
+    fn an_unbalanced_delimiter_costs_confidence() {
+        let mut confidence = 1.0;
+        audit(r"\{ (x", None, &mut confidence);
+        assert!(confidence < 1.0);
+    }
+
+    /// Equation 4 of the pilot paper, before the limit fix: the `\sum`'s operands were consumed
+    /// as scripts of the `=` beside it.
+    #[test]
+    fn a_limit_missing_its_operand_costs_confidence() {
+        let mut confidence = 1.0;
+        audit(r"hTb = Nn\sum_{=0}^{-1} hnxb", None, &mut confidence);
+        assert!(confidence < 1.0);
+    }
+
+    #[test]
+    fn a_dangling_relation_costs_confidence() {
+        let mut confidence = 1.0;
+        audit(r"x \approx", None, &mut confidence);
+        assert!(confidence < 1.0);
+    }
+
+    /// Equation 10 of the pilot paper came out as `R \approx .` at confidence 1.0. A numbered
+    /// equation with no body is a stump, and it must fall under the crop threshold.
+    #[test]
+    fn a_numbered_stump_falls_below_the_crop_threshold() {
+        let mut confidence = 1.0;
+        audit(r"R \approx .", Some("10"), &mut confidence);
+        assert!(confidence < MIN_CONFIDENCE, "got {confidence}");
+    }
+
+    #[test]
+    fn a_clean_equation_is_not_audited_down() {
+        let mut confidence = 1.0;
+        audit(r"E = mc^{2}", Some("1"), &mut confidence);
+        assert_eq!(confidence, 1.0);
     }
 }

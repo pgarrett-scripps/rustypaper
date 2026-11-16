@@ -99,7 +99,17 @@ pub struct MathData {
     /// The equation number as printed, if there is one.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub number: Option<String>,
-    /// How much to trust the reconstruction; 1.0 when nothing had to be guessed.
+    /// How much to trust `latex`: the probability-like score left after every doubt the
+    /// pipeline could register about this equation.
+    ///
+    /// It starts at 1.0 and is multiplied by 0.75 once for each: a construct reconstruction had
+    /// to guess at (a radical's reach, a glyph with no LaTeX name, a run of script-size glyphs
+    /// it could not attach to a base), and each wound the finished LaTeX shows (an unbalanced
+    /// delimiter, a limit missing its operand, a body ending on a dangling relation, a numbered
+    /// equation with almost no body — that last counted double). So 1.0 means "nothing looked
+    /// wrong", not "verified correct"; below [`crate::math::MIN_CONFIDENCE`] (0.55) the
+    /// equation is cropped to a picture instead when assets are enabled, and any value under
+    /// 1.0 is a flag that the LaTeX deserves a human or model re-read against the page.
     pub confidence: f32,
 }
 
@@ -781,12 +791,42 @@ fn is_heading(group: &[&Line], text: &str, stats: Stats, column_width: f32) -> b
         return false;
     }
 
+    // A short line that is mostly mathematics is a piece of a display equation the lifter could
+    // not place — the rows of a piecewise definition, say — never a heading, however large its
+    // glyphs: a grown brace is drawn taller than body size, which is exactly what the size test
+    // below rewards. Beamforming's `with $\{ ( )$` became a `####` this way. Numbered headings
+    // stay, since `3.2 Bounds on $\epsilon$` is a heading about mathematics, not mathematics.
+    if !numbered_heading(text) && mostly_math(text) {
+        return false;
+    }
+
     // Numbering is decisive; otherwise the line has to stand out as larger or bold, because at
     // body size and body weight a short line is far more likely to be the last line of a
     // paragraph than a heading.
     numbered_heading(text)
         || group[0].size >= stats.body_size * HEADING_SIZE_RATIO
         || group.iter().all(|l| l.bold)
+}
+
+/// Whether at least half of a line's non-space characters sit inside `$...$` spans.
+fn mostly_math(text: &str) -> bool {
+    let mut inside = false;
+    let mut math = 0usize;
+    let mut total = 0usize;
+    for c in text.chars() {
+        if c == '$' {
+            inside = !inside;
+            continue;
+        }
+        if c.is_whitespace() {
+            continue;
+        }
+        total += 1;
+        if inside {
+            math += 1;
+        }
+    }
+    total > 0 && math * 2 >= total
 }
 
 /// `1 Introduction`, `3.2 Ablation studies`, `A.1 Proofs`.
@@ -1950,5 +1990,22 @@ mod tests {
         assert_eq!(numbering_depth("3.2 Ablation"), Some(2));
         assert_eq!(numbering_depth("3.2.1 Detail"), Some(3));
         assert_eq!(numbering_depth("Introduction"), None);
+    }
+
+    /// A row of a piecewise definition the lifter could not place arrives as a short line, mostly
+    /// `$...$`, at grown-delimiter size — everything the size test rewards. Beamforming's
+    /// `with $\{ ( )$` became a `####` this way. The same line as prose stays a heading.
+    #[test]
+    fn a_line_of_mathematics_is_not_a_heading() {
+        let l = line(r"with $\{ ( )$", 100.0, 12.0, 57.0, 180.0);
+        assert!(!is_heading(&[&l], r"with $\{ ( )$", stats(), 240.0));
+        assert!(is_heading(&[&l], "with some words", stats(), 240.0));
+        // A numbered heading about mathematics is still a heading.
+        assert!(is_heading(
+            &[&l],
+            r"3.2 Bounds on $\epsilon$",
+            stats(),
+            240.0
+        ));
     }
 }
