@@ -2,5 +2,6 @@
 
 pub mod columns;
 pub mod furniture;
+pub mod linenumbers;
 pub mod order;
 pub mod stats;
