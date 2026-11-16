@@ -89,6 +89,7 @@ pub fn convert_with(path: impl AsRef<Path>, options: &Options) -> Result<doc::Do
     // and is the one change here with real headroom left in it.
     let (mut pages, bands) = build_pages(&raw);
     layout::furniture::strip(&mut pages, &heights);
+    layout::linenumbers::strip(&mut pages);
 
     // Figure regions are found once and used twice: table detection needs them to know which
     // horizontal rules belong to a plot rather than to a tabular, and `attach_figures` needs the

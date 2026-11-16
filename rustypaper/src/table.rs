@@ -55,6 +55,21 @@ const MIN_COLUMNS: usize = 2;
 /// demanding that no row cross a separator lets one such row erase every column in the table.
 const MAX_SEPARATOR_OCCUPANCY: f32 = 0.34;
 
+/// Fragments of one border line sit at most this far apart horizontally, in points.
+///
+/// Word exports and journal production systems draw a table grid cell by cell: each border
+/// arrives as a row of short rules, abutting or overlapping by fractions of a point, and no
+/// single rule spans the table. Every fragment is then narrower than
+/// [`MIN_TABLE_RULE_WIDTH`] and the whole table vanishes — the shape that lost every table
+/// of two papers in the peer-review pilot. The tolerance is deliberately tiny: real
+/// separations — a column gutter between side-by-side tables, the trimmed gap between a
+/// pair of `\cmidrule`s — are several points at least, and a dashed decorative rule should
+/// stay dashed.
+const MAX_FRAGMENT_GAP: f32 = 1.5;
+
+/// Two fragments belong to the same border line if their vertical centres are within this.
+const FRAGMENT_Y_TOLERANCE: f32 = 1.0;
+
 /// A reconstructed table.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Table {
@@ -82,13 +97,14 @@ impl Table {
 /// `lines` are read twice: for the cells, and for the captions that say where one table ends and
 /// the next begins — see [`captioned_between`].
 pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32, figures: &[Rect]) -> Vec<Table> {
-    let mut rules: Vec<Rect> = page
+    let rules: Vec<Rect> = page
         .paths
         .iter()
         .filter(|p| p.kind == PathKind::HorizontalRule)
         .map(|p| p.bbox)
         .filter(|bbox| !inside_a_figure(bbox, figures))
         .collect();
+    let mut rules = coalesce_fragments(rules);
     rules.sort_by(|a, b| a.y0.total_cmp(&b.y0));
 
     let captions = caption_lines(lines);
@@ -96,9 +112,23 @@ pub fn detect(page: &PageRaw, lines: &[Line], body_size: f32, figures: &[Rect]) 
     let mut tables = Vec::new();
     let mut used: Vec<bool> = vec![false; lines.len()];
 
+    let min_width = body_size * MIN_TABLE_RULE_WIDTH;
     for group in group_rules(&rules, body_size, figures, &captions) {
-        if let Some(table) = build(&group, lines, body_size, &mut used) {
+        // A chain can grow past a table's bottom rule into whatever rules a figure below
+        // happens to align — the welded region then holds half a column of prose and
+        // `build` rightly refuses it. The table is still there in the chain's head, so peel
+        // rules off the tail until a prefix builds, and give what remains the same chance
+        // if it could stand as a group on its own.
+        let mut rest: &[Rect] = &group;
+        while rest.len() >= 2 && rest.iter().any(|r| r.width() >= min_width) {
+            let built = (2..=rest.len())
+                .rev()
+                .find_map(|end| build(&rest[..end], lines, body_size, &mut used).map(|t| (t, end)));
+            let Some((table, end)) = built else {
+                break;
+            };
             tables.push(table);
+            rest = &rest[end..];
         }
     }
 
@@ -285,6 +315,148 @@ fn aligned(a: &Rect, b: &Rect) -> bool {
     overlap_fraction(a, b) >= MIN_RULE_OVERLAP && shorter / longer.max(1.0) >= MIN_RULE_WIDTH_RATIO
 }
 
+/// Joins the fragments of a border line drawn cell by cell into one rule.
+///
+/// Sorting by y then x puts the fragments of one border next to each other, so a single
+/// pass merges every run of collinear, abutting fragments — see [`MAX_FRAGMENT_GAP`] for
+/// why the gap allowance is well under any real separation.
+fn coalesce_fragments(mut rules: Vec<Rect>) -> Vec<Rect> {
+    rules.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
+
+    let mut out: Vec<Rect> = Vec::with_capacity(rules.len());
+    for rule in rules {
+        if let Some(last) = out.last_mut() {
+            let last_centre = (last.y0 + last.y1) * 0.5;
+            let centre = (rule.y0 + rule.y1) * 0.5;
+            if (centre - last_centre).abs() <= FRAGMENT_Y_TOLERANCE
+                && rule.x0 - last.x1 <= MAX_FRAGMENT_GAP
+            {
+                last.x1 = last.x1.max(rule.x1);
+                last.y0 = last.y0.min(rule.y0);
+                last.y1 = last.y1.max(rule.y1);
+                continue;
+            }
+        }
+        out.push(rule);
+    }
+    out
+}
+
+/// The characters a page uses for a minus sign: the hyphen, U+2212 MINUS SIGN, and the
+/// dashes maths and Word fonts stand in for it.
+fn is_sign(c: char) -> bool {
+    matches!(c, '-' | '\u{2212}' | '\u{2013}' | '\u{2014}')
+}
+
+/// Reattaches a detached minus to its number within one cell, and writes it as `-`.
+///
+/// A negative value often reaches the page as two text runs — the sign, then the digits a
+/// word-space later — and joining the cell's words with spaces then prints `− 43.801`:
+/// subtraction, to any reader downstream. A sign is joined only where nothing numeric
+/// precedes it in the cell, so `12 – 15` stays the range it is, and only when digits
+/// follow, so a lone placeholder dash is left alone.
+fn repair_cell(cell: &str) -> String {
+    let chars: Vec<char> = cell.chars().collect();
+    let mut out = String::with_capacity(cell.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let at_boundary = out.is_empty() || out.ends_with([' ', '(', '[']);
+        if is_sign(c) && at_boundary {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] == ' ' {
+                j += 1;
+            }
+            let digits_follow = chars.get(j).is_some_and(|d| {
+                d.is_ascii_digit()
+                    || (*d == '.' && chars.get(j + 1).is_some_and(char::is_ascii_digit))
+            });
+            let previous_token = out
+                .trim_end()
+                .chars()
+                .rev()
+                .take_while(|ch| *ch != ' ')
+                .collect::<String>();
+            // A numeric token right before the sign makes it a range (`12 – 15`) — unless
+            // that token ends in a list separator, as in an interval `[-141.860, − 76.891]`,
+            // where the sign belongs to the value after the comma.
+            // `previous_token` is collected back to front, so its first character is the
+            // one written last.
+            let range_so_far = previous_token.chars().any(|ch| ch.is_ascii_digit())
+                && !previous_token.starts_with([',', ';']);
+            if digits_follow && !range_so_far {
+                out.push('-');
+                i = j;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Folds a column that holds nothing but minus signs into the number column beside it.
+///
+/// Right-aligned numbers sometimes set their signs far enough left that the whitespace
+/// profile cuts a separator between sign and digits, and the signs become a column of
+/// their own — a reader of the number column then sees every negative value as positive.
+/// The merge is deliberately narrow, because tables also use a lone dash as a *placeholder*
+/// for a missing value, and folding a placeholder column into its neighbour would invent
+/// negative numbers: every non-empty cell must be a single sign whose right neighbour
+/// starts with a digit, the column must be empty throughout the header, and both the sign
+/// column and its distance to the digits must be narrower than `body_size` says a real
+/// column and gap would be.
+fn merge_sign_column(
+    rows: &mut [Vec<String>],
+    boundaries: &[(f32, f32)],
+    header_rows: usize,
+    body_size: f32,
+) -> Vec<usize> {
+    let columns = rows.first().map_or(0, Vec::len);
+    let mut dropped = Vec::new();
+
+    for c in 0..columns.saturating_sub(1) {
+        let (lo, hi) = boundaries[c];
+        let narrow = hi - lo <= body_size * 1.5;
+        let adjacent = boundaries[c + 1].0 - hi <= body_size * 1.5;
+        if !narrow || !adjacent {
+            continue;
+        }
+
+        let mut signs = 0usize;
+        let mut sign_column = true;
+        for (r, row) in rows.iter().enumerate() {
+            let cell = row[c].trim();
+            if cell.is_empty() {
+                continue;
+            }
+            let lone_sign = cell.chars().count() == 1 && cell.chars().all(is_sign);
+            let number_beside = row[c + 1]
+                .trim_start()
+                .starts_with(|ch: char| ch.is_ascii_digit() || ch == '.');
+            if r < header_rows || !lone_sign || !number_beside {
+                sign_column = false;
+                break;
+            }
+            signs += 1;
+        }
+        if !sign_column || signs == 0 {
+            continue;
+        }
+
+        for row in rows.iter_mut() {
+            if !row[c].trim().is_empty() {
+                row[c] = String::new();
+                row[c + 1] = format!("-{}", row[c + 1].trim_start());
+            }
+        }
+        dropped.push(c);
+    }
+
+    dropped
+}
+
 /// Builds a table from a group of rules and the lines they enclose.
 fn build(rules: &[Rect], lines: &[Line], body_size: f32, used: &mut [bool]) -> Option<Table> {
     let top = rules.first()?.y0;
@@ -320,7 +492,7 @@ fn build(rules: &[Rect], lines: &[Line], body_size: f32, used: &mut [bool]) -> O
         return None;
     }
 
-    let rows: Vec<Vec<String>> = members
+    let mut rows: Vec<Vec<String>> = members
         .iter()
         .map(|&i| row_cells(&lines[i], &boundaries))
         .collect();
@@ -333,13 +505,32 @@ fn build(rules: &[Rect], lines: &[Line], body_size: f32, used: &mut [bool]) -> O
         return None;
     }
 
+    let header = header_rows(rules, lines, &members);
+
+    for row in &mut rows {
+        for cell in row.iter_mut() {
+            *cell = repair_cell(cell);
+        }
+    }
+    let dropped = merge_sign_column(&mut rows, &boundaries, header, body_size);
+    if !dropped.is_empty() {
+        for row in &mut rows {
+            let mut index = 0;
+            row.retain(|_| {
+                let keep = !dropped.contains(&index);
+                index += 1;
+                keep
+            });
+        }
+    }
+
     for &i in &members {
         used[i] = true;
     }
 
     Some(Table {
         bbox: region,
-        header_rows: header_rows(rules, lines, &members),
+        header_rows: header,
         rows,
         consumed: members,
     })
@@ -1045,5 +1236,107 @@ mod tests {
         assert_eq!(tables.len(), 1, "the caption below split the table above");
         assert_eq!(tables[0].rows.len(), 3);
         assert_eq!(tables[0].header_rows, 1);
+    }
+
+    /// A grid drawn cell by cell: every border is three abutting fragments, none wide
+    /// enough to pass `MIN_TABLE_RULE_WIDTH` on its own. Coalescing must recover it.
+    #[test]
+    fn a_grid_of_border_fragments_is_detected() {
+        let page = page_with(vec![
+            rule(100.0, 72.0, 180.0),
+            rule(100.0, 179.8, 290.0),
+            rule(100.0, 289.8, 400.0),
+            rule(120.0, 72.0, 180.0),
+            rule(120.0, 179.8, 290.0),
+            rule(120.0, 289.8, 400.0),
+            rule(170.0, 72.0, 180.0),
+            rule(170.0, 179.8, 290.0),
+            rule(170.0, 289.8, 400.0),
+        ]);
+        let lines = vec![
+            row(115.0, &[("name", 80.0, 110.0), ("value", 200.0, 230.0)]),
+            row(140.0, &[("alpha", 80.0, 112.0), ("3.2", 200.0, 220.0)]),
+            row(160.0, &[("beta", 80.0, 108.0), ("4.7", 200.0, 220.0)]),
+        ];
+        let tables = detect(&page, &lines, 10.0, &[]);
+        assert_eq!(tables.len(), 1, "the fragmented grid was lost: {tables:?}");
+        assert_eq!(tables[0].rows.len(), 3);
+        assert_eq!(tables[0].header_rows, 1);
+    }
+
+    /// Fragments separated by real gaps — a dashed rule, side-by-side tables — stay apart.
+    #[test]
+    fn fragments_with_real_gaps_do_not_coalesce() {
+        let coalesced = coalesce_fragments(vec![
+            Rect::from_corners(72.0, 100.0, 100.0, 100.6),
+            Rect::from_corners(110.0, 100.0, 138.0, 100.6),
+        ]);
+        assert_eq!(coalesced.len(), 2, "a 10pt gap was bridged");
+    }
+
+    /// The sign variants a cell can carry, and the ranges and placeholders it must keep.
+    #[test]
+    fn a_detached_sign_rejoins_its_number() {
+        assert_eq!(repair_cell("\u{2212} 43.801"), "-43.801");
+        assert_eq!(
+            repair_cell("156.907 (\u{2212} 43.801)"),
+            "156.907 (-43.801)"
+        );
+        assert_eq!(repair_cell("\u{2013}3.2"), "-3.2");
+        assert_eq!(repair_cell("- 0.8"), "-0.8");
+        assert_eq!(repair_cell("12 \u{2013} 15"), "12 \u{2013} 15");
+        assert_eq!(repair_cell("3\u{2013}5"), "3\u{2013}5");
+        assert_eq!(repair_cell("-"), "-");
+        assert_eq!(repair_cell("Mann\u{2013}Whitney"), "Mann\u{2013}Whitney");
+        // A sign after a list separator belongs to the next value, not a range.
+        assert_eq!(
+            repair_cell("[\u{2212}141.860, \u{2212} 76.891]"),
+            "[-141.860, -76.891]"
+        );
+    }
+
+    /// A column of bare signs beside a number column folds into it.
+    #[test]
+    fn a_sign_column_folds_into_its_numbers() {
+        let mut rows = vec![
+            vec!["CI".to_owned(), String::new(), "x".to_owned()],
+            vec!["a".to_owned(), "-".to_owned(), "1.1".to_owned()],
+            vec!["b".to_owned(), String::new(), "2.5".to_owned()],
+            vec!["c".to_owned(), "-".to_owned(), "7.4".to_owned()],
+        ];
+        let boundaries = [(60.0, 90.0), (100.0, 103.0), (110.0, 140.0)];
+        let dropped = merge_sign_column(&mut rows, &boundaries, 1, 10.0);
+        assert_eq!(dropped, [1]);
+        assert_eq!(rows[1][2], "-1.1");
+        assert_eq!(rows[2][2], "2.5");
+        assert_eq!(rows[3][2], "-7.4");
+    }
+
+    /// A placeholder-dash column has a header of its own, and folding it would invent
+    /// negative numbers — it must survive untouched.
+    #[test]
+    fn a_placeholder_dash_column_is_not_a_sign_column() {
+        let mut rows = vec![
+            vec!["name".to_owned(), "run".to_owned(), "x".to_owned()],
+            vec!["a".to_owned(), "-".to_owned(), "1.1".to_owned()],
+            vec!["b".to_owned(), "-".to_owned(), "2.5".to_owned()],
+        ];
+        let boundaries = [(60.0, 90.0), (100.0, 103.0), (110.0, 140.0)];
+        let dropped = merge_sign_column(&mut rows, &boundaries, 1, 10.0);
+        assert!(dropped.is_empty(), "a headed column was folded away");
+        assert_eq!(rows[1][2], "1.1");
+    }
+
+    /// A sign column a full column gap from its digits is a column, not a stranded sign.
+    #[test]
+    fn a_distant_dash_column_is_not_merged() {
+        let mut rows = vec![
+            vec!["h".to_owned(), String::new(), "x".to_owned()],
+            vec!["a".to_owned(), "-".to_owned(), "1.1".to_owned()],
+            vec!["b".to_owned(), "-".to_owned(), "2.5".to_owned()],
+        ];
+        let boundaries = [(60.0, 90.0), (100.0, 103.0), (130.0, 160.0)];
+        let dropped = merge_sign_column(&mut rows, &boundaries, 1, 10.0);
+        assert!(dropped.is_empty(), "a 27pt gap was treated as adjacency");
     }
 }
