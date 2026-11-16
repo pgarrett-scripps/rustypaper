@@ -132,6 +132,104 @@ pub(crate) fn resolve_size(reported: f32, bbox: &Rect, angle: f32) -> f32 {
     }
 }
 
+// ---- page-frame normalisation ------------------------------------------------------------------
+
+/// How far off a quarter turn a glyph may sit and still count toward that quarter turn's bucket.
+/// The same 5° that line building uses to call a glyph horizontal.
+const CARDINAL_TOLERANCE_RADIANS: f32 = 0.0873;
+
+/// Fewer sideways glyphs than this cannot turn a page: an arXiv margin stamp is ~40 glyphs but
+/// always shares its page with a body of upright text, so it never outnumbers; this floor keeps
+/// a nearly blank page (a stamp beside a lone page number) from being rotated on no evidence.
+const MIN_DOMINANT_ROTATED: usize = 20;
+
+/// Turns a page upright when its text is predominantly set at a quarter turn.
+///
+/// Two document shapes arrive this way: a landscape table drawn sideways on a portrait page
+/// (`/Rotate 0`, every glyph at ±90°), and a page whose content is upright in user space but
+/// carries a `/Rotate` the backend has applied, leaving every glyph angled in display space.
+/// Downstream, line building drops any glyph more than 5° off horizontal — the right call for a
+/// margin stamp interleaved with body text, and the wrong one when the sideways text *is* the
+/// page, which then converts to nothing.
+///
+/// The page is only turned when one quarter-turn bucket strictly outnumbers the upright glyphs,
+/// so a stamp or sideways table header on an ordinary page changes nothing. After the turn the
+/// formerly upright minority is sideways and is dropped as a stamp would be: that minority is
+/// page furniture on every page in evidence, and interleaving it would be the garbage the angle
+/// filter exists to prevent.
+pub(crate) fn normalize_rotation(page: &mut PageRaw) {
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    /// A point map in y-down page space: `(x, y, old_width, old_height)` to the turned point.
+    type PointMap = fn(f32, f32, f32, f32) -> (f32, f32);
+
+    // Bucket text by nearest quarter turn: 0 upright, 1 at +90°, 2 flipped, 3 at -90°.
+    let mut counts = [0usize; 4];
+    for glyph in page.glyphs.iter().filter(|g| !g.generated) {
+        if !glyph.angle.is_finite() {
+            continue;
+        }
+        let quarters = glyph.angle / FRAC_PI_2;
+        if (quarters - quarters.round()).abs() * FRAC_PI_2 <= CARDINAL_TOLERANCE_RADIANS {
+            counts[(quarters.round() as i32).rem_euclid(4) as usize] += 1;
+        }
+    }
+    let (dominant, &count) = counts
+        .iter()
+        .enumerate()
+        .skip(1)
+        .max_by_key(|(_, &n)| n)
+        .expect("three rotated buckets");
+    if count <= counts[0] || count < MIN_DOMINANT_ROTATED {
+        return;
+    }
+
+    // The frame turn that brings the dominant bucket to 0, as a point map in y-down page space
+    // and the angle it adds to every direction. `w`/`h` are the extent *before* the turn.
+    let (w, h) = (page.width, page.height);
+    let (map, delta): (PointMap, f32) = match dominant {
+        1 => (|x, y, w, _h| (y, w - x), -FRAC_PI_2),
+        2 => (|x, y, w, h| (w - x, h - y), PI),
+        _ => (|x, y, _w, h| (h - y, x), FRAC_PI_2),
+    };
+    let map_rect = |r: &Rect| {
+        let (ax, ay) = map(r.x0, r.y0, w, h);
+        let (bx, by) = map(r.x1, r.y1, w, h);
+        Rect::from_corners(ax, ay, bx, by)
+    };
+
+    for glyph in &mut page.glyphs {
+        let (x, y) = map(glyph.origin.x, glyph.origin.y, w, h);
+        glyph.origin = crate::ir::Point::new(x, y);
+        glyph.bbox = map_rect(&glyph.bbox);
+        let turned = glyph.angle + delta;
+        glyph.angle = if turned > PI {
+            turned - 2.0 * PI
+        } else if turned <= -PI {
+            turned + 2.0 * PI
+        } else {
+            turned
+        };
+    }
+    for path in &mut page.paths {
+        path.bbox = map_rect(&path.bbox);
+        if dominant != 2 {
+            path.kind = match path.kind {
+                PathKind::HorizontalRule => PathKind::VerticalRule,
+                PathKind::VerticalRule => PathKind::HorizontalRule,
+                other => other,
+            };
+        }
+    }
+    for image in &mut page.images {
+        image.bbox = map_rect(&image.bbox);
+    }
+    if dominant != 2 {
+        page.width = h;
+        page.height = w;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +284,113 @@ mod tests {
             clip_to_page(Rect::from_corners(f32::NAN, 0.0, 10.0, 10.0), 595.0, 842.0),
             None
         );
+    }
+
+    fn glyph_at(x: f32, y: f32, angle: f32) -> crate::ir::Glyph {
+        crate::ir::Glyph {
+            advance: 5.0,
+            text: crate::ir::GlyphText::Char('a'),
+            bbox: Rect::from_corners(x, y - 8.0, x + 5.0, y),
+            origin: crate::ir::Point::new(x, y),
+            font: crate::ir::FontId(0),
+            size: 10.0,
+            angle,
+            flags: Default::default(),
+            color: Default::default(),
+            generated: false,
+        }
+    }
+
+    fn sideways_page() -> PageRaw {
+        // 30 glyphs reading bottom-to-top (a landscape table on a portrait page), 3 upright.
+        let mut page = PageRaw {
+            width: 600.0,
+            height: 800.0,
+            ..Default::default()
+        };
+        for i in 0..30 {
+            page.glyphs.push(glyph_at(
+                100.0,
+                700.0 - 20.0 * i as f32,
+                -std::f32::consts::FRAC_PI_2,
+            ));
+        }
+        for i in 0..3 {
+            page.glyphs
+                .push(glyph_at(300.0 + 6.0 * i as f32, 790.0, 0.0));
+        }
+        page.paths.push(crate::ir::PathItem {
+            bbox: Rect::from_corners(100.0, 100.0, 100.5, 700.0),
+            kind: PathKind::VerticalRule,
+            thickness: 0.5,
+            color: Default::default(),
+            filled: true,
+            stroked: false,
+        });
+        page
+    }
+
+    #[test]
+    fn a_predominantly_sideways_page_is_turned_upright() {
+        let mut page = sideways_page();
+        normalize_rotation(&mut page);
+
+        // The frame is landscape now and the table text reads left to right.
+        assert_eq!((page.width, page.height), (800.0, 600.0));
+        assert!((page.glyphs[0].angle).abs() < 1e-4);
+        // A point map check: origin (100, 700) under (x, y) -> (h - y, x) with h = 800.
+        assert_eq!(
+            (page.glyphs[0].origin.x, page.glyphs[0].origin.y),
+            (100.0, 100.0)
+        );
+        // The table's column separator turned with it.
+        assert_eq!(page.paths[0].kind, PathKind::HorizontalRule);
+        // The upright minority is sideways now, where line building will set it aside.
+        let last = page.glyphs.last().expect("glyphs survive");
+        assert!((last.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+    }
+
+    #[test]
+    fn a_margin_stamp_does_not_turn_the_page() {
+        // The usual arXiv shape: a body of upright text and a sideways stamp.
+        let mut page = PageRaw {
+            width: 600.0,
+            height: 800.0,
+            ..Default::default()
+        };
+        for i in 0..40 {
+            page.glyphs
+                .push(glyph_at(72.0 + 6.0 * i as f32, 400.0, 0.0));
+        }
+        for i in 0..25 {
+            page.glyphs.push(glyph_at(
+                20.0,
+                700.0 - 10.0 * i as f32,
+                std::f32::consts::FRAC_PI_2,
+            ));
+        }
+        let before = page.clone();
+        normalize_rotation(&mut page);
+        assert_eq!(page.glyphs, before.glyphs);
+        assert_eq!((page.width, page.height), (600.0, 800.0));
+    }
+
+    #[test]
+    fn an_upside_down_page_keeps_its_extent() {
+        let mut page = sideways_page();
+        for glyph in &mut page.glyphs {
+            glyph.angle = std::f32::consts::PI;
+        }
+        normalize_rotation(&mut page);
+        assert_eq!((page.width, page.height), (600.0, 800.0));
+        assert!(page.glyphs[0].angle.abs() < 1e-4);
+        // (100, 700) under (x, y) -> (w - x, h - y).
+        assert_eq!(
+            (page.glyphs[0].origin.x, page.glyphs[0].origin.y),
+            (500.0, 100.0)
+        );
+        // A half turn leaves a vertical rule vertical.
+        assert_eq!(page.paths[0].kind, PathKind::VerticalRule);
     }
 
     #[test]

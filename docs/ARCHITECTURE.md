@@ -124,6 +124,25 @@ extent measured *across* the baseline; taking the larger dimension would report 
 make a margin stamp look like display type. Rotated glyphs are excluded from running text;
 sideways table headers are excluded by the same rule and are not yet handled.
 
+### The rule that drops a stamp can drop a whole page
+
+Excluding rotated glyphs is the right call only while they are a minority. Two medical-journal
+papers in the peer-review pilot each drew a full-page table *sideways* on a portrait page, and a
+page under a non-zero catalog `/Rotate` with upright content ends up the same way once the
+backend applies the rotation to its geometry: every glyph on the page is a quarter turn off
+horizontal, the angle filter discards them all, and the page converts to zero blocks with no
+warning. Three pages of ~300 words each were silently absent for as long as anyone had used the
+converter on those papers.
+
+The fix is above the filter, not in it: `backend::normalize_rotation` turns a page's whole frame
+upright when one quarter-turn bucket of text strictly outnumbers the upright glyphs — points,
+boxes, angles, rule orientations and the page extent together, so every downstream pass sees an
+ordinary page. Interleaving rotated glyphs into upright text by baseline remains as wrong as it
+always was, so the filter stays; it now only ever discards a minority. And because the next
+silent loss will come from some other pass, the pipeline ends with a net under all of them:
+any page that carried real text but contributed no block to the document gets a per-page
+warning on stderr.
+
 ### De-hyphenation cannot key off the hyphen alone
 
 A hyphen at a line break says the word continues, but not what it becomes: `learn-` + `ing` is

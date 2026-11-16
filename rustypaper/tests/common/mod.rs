@@ -56,6 +56,34 @@ pub fn one_page(content: &str, width: f32, height: f32) -> Vec<u8> {
     assemble_pdf(&objects)
 }
 
+/// Like [`one_page`], with a catalog `/Rotate` on the page: how a scanned-and-reflowed or
+/// landscape-inserted page declares which way a viewer should turn it.
+pub fn one_page_rotated(content: &str, width: f32, height: f32, rotate: i32) -> Vec<u8> {
+    let objects = vec![
+        "<</Type /Catalog /Pages 2 0 R>>".to_owned(),
+        "<</Type /Pages /Kids [3 0 R] /Count 1>>".to_owned(),
+        format!(
+            "<</Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] /Rotate {rotate} \
+             /Resources <</Font <</F1 5 0 R /F2 6 0 R>>>> /Contents 4 0 R>>"
+        ),
+        format!(
+            "<</Length {}>>\nstream\n{content}\nendstream",
+            content.len() + 1
+        ),
+        "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding>>"
+            .to_owned(),
+        "<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>"
+            .to_owned(),
+    ];
+    assemble_pdf(&objects)
+}
+
+/// One text run rotated 90° counter-clockwise in user space, reading bottom-to-top: how a
+/// landscape table's rows arrive on a portrait page.
+pub fn text_sideways(font: u8, size: f32, x: f32, y: f32, text: &str) -> String {
+    format!("BT\n/F{font} {size} Tf\n0 1 -1 0 {x} {y} Tm\n({text})Tj\nET\n")
+}
+
 /// A filled rectangle in the content stream: how both `\toprule` and a Word table's cell
 /// borders arrive on a page.
 pub fn filled_rect(x: f32, y: f32, w: f32, h: f32) -> String {

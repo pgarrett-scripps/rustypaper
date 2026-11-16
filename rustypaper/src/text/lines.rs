@@ -252,8 +252,11 @@ pub fn build_lines(page: &PageRaw) -> Vec<Line> {
 ///
 /// Rotated glyphs are excluded. Every arXiv preprint carries a sideways stamp down the left
 /// margin, and interleaving it with body text by baseline produces exactly the garbage that
-/// makes naive extractors unusable. Sideways table headers are excluded by the same rule and are
-/// not yet handled; [`rotated_glyphs`] makes what was set aside inspectable rather than silent.
+/// makes naive extractors unusable. A page whose text is *predominantly* sideways — a landscape
+/// table, or an upright page under a catalog `/Rotate` — is turned upright before it reaches
+/// here (`backend::normalize_rotation`), so this filter only ever discards a minority: stamps,
+/// and sideways table headers, which are not yet handled. [`rotated_glyphs`] makes what was set
+/// aside inspectable rather than silent.
 fn is_layout_relevant(glyph: &Glyph) -> bool {
     is_horizontal(glyph)
 }
