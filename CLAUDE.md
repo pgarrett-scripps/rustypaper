@@ -35,10 +35,10 @@ Current, over the fifteen scorable papers:
 
 | prose bigram | equation recall | equation fidelity | tables | references | sections | corpus tests |
 | --- | --- | --- | --- | --- | --- | --- |
-| 0.900 | 0.565 | 0.677 | 62/90 | 971/1174 | 206/264 | 52/52 |
+| 0.901 | 0.573 | 0.674 | 64/90 | 972/1174 | 206/264 | 52/52 |
 
 The honest places to work next: equation detection on the templates still under half
-(metasurface 0.261, optics 0.353), imagenet's tables (9/26), topological's bibliography (163/368
+(metasurface 0.261, optics 0.474), imagenet's tables (9/26), topological's bibliography (163/368
 — the rest never reaches refs.rs, a column-extraction gap), and the subsection level of the
 section map (bold-at-body-size headings). The corpus converts in 1.5 s and 61 MB of resident
 memory.
