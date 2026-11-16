@@ -162,6 +162,18 @@ Maths reconstruction reported confidence 1.0 for every formula until a guessed r
 and an unnameable glyph were made to lower it. A score that is always 1.0 is worse than no score,
 because the image fallback it gates never fires.
 
+The same lesson repeated at a second level. An IEEE paper's summations came out visibly mangled —
+limits detached, subscripts flattened, one equation reduced to `R \approx .` — and all eleven of
+its equations still scored 1.0, because reconstruction scores the decisions it *made*, and the
+damage had happened upstream: the lifter never claimed the limit lines, so every construct the
+builder then saw was, locally, unambiguous. The fix is an audit of the *product*: the rendered
+LaTeX is read back for the wounds mangling leaves — an unbalanced delimiter, a limit holding a
+bare `=` or `,`, a body ending on a dangling relation, a numbered equation with almost no body —
+and each finding costs the same 0.75 factor as a reconstruction guess. What `confidence` measures
+is therefore "how much looked wrong", from either direction, not "how likely correct": 1.0 means
+no doubt was registered, and anything lower marks the equation for a later re-read. Where a rule
+cannot recover the structure, an honestly low number is itself the deliverable.
+
 ## Findings from widening the corpus
 
 The corpus began as four machine-learning preprints in two conference templates. Adding pure
@@ -328,10 +340,12 @@ equations are never identified as such, and the ones that are come out around ha
 The confidence score is still the weaker signal of the two it reports. Across the corpus the
 converter emits 357 display equations at a mean confidence of 0.85, of which 42 fall below the
 0.55 fallback threshold — so the image fallback does now fire, where at first it never did.
-Confidence still reflects two specific snags, a guessed radical extent and an unnameable glyph,
-and none of the ways detection goes wrong: an equation that was never recognised as one has no
-confidence to be low. **A score that is always high is worse than no score**, because it
-silently disables the safety mechanism built on it.
+Confidence at the time reflected only two specific snags, a guessed radical extent and an
+unnameable glyph; the audit described under "Confidence has to cost something" has since widened
+it to the wounds visible in the rendered LaTeX itself. It still reflects none of the ways
+detection goes wrong: an equation that was never recognised as one has no confidence to be low.
+**A score that is always high is worse than no score**, because it silently disables the safety
+mechanism built on it.
 
 ### Four ways a display equation hid, and what each was worth
 

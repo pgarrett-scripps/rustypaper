@@ -222,12 +222,18 @@ fn split_fraction(items: &[Item], rules: &[Rect], confidence: &mut f32) -> Optio
 fn horizontal(items: &[Item], rules: &[Rect], confidence: &mut f32) -> Node {
     let size = dominant_size(items);
     let baseline = dominant_baseline(items, size);
+    let limit_of = claim_limits(items, size);
 
     let mut nodes: Vec<Node> = Vec::new();
     let mut text = String::new();
+    let mut lowered = 0usize;
     let mut i = 0;
 
     while i < items.len() {
+        if limit_of[i].is_some() {
+            i += 1;
+            continue;
+        }
         let item = items[i];
 
         // A radical claims everything under its overline, which extends to its right.
@@ -256,18 +262,30 @@ fn horizontal(items: &[Item], rules: &[Rect], confidence: &mut f32) -> Node {
         // A large operator claims the material directly above and below it.
         if is_large_operator(&item, size) {
             flush(&mut nodes, &mut text);
-            let (above, below, consumed) = operator_limits(items, i);
+            let claimed = |side: f32| -> Vec<Item> {
+                items
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, it)| {
+                        limit_of[j] == Some(i)
+                            && (it.bbox.center_y() - item.bbox.center_y()).signum() == side
+                    })
+                    .map(|(_, it)| *it)
+                    .collect()
+            };
+            let above = claimed(-1.0);
+            let below = claimed(1.0);
             nodes.push(Node::Operator {
                 symbol: symbol_text(item.ch),
-                above: above.map(|a| Box::new(region(&a, rules, confidence))),
-                below: below.map(|b| Box::new(region(&b, rules, confidence))),
+                above: (!above.is_empty()).then(|| Box::new(region(&above, rules, confidence))),
+                below: (!below.is_empty()).then(|| Box::new(region(&below, rules, confidence))),
             });
-            i = consumed;
+            i += 1;
             continue;
         }
 
         // Otherwise: baseline character, possibly carrying scripts.
-        let (sup, sub, next) = scripts(items, i, baseline, size);
+        let (sup, sub, next) = scripts(items, i, baseline, size, &limit_of);
         if sup.is_some() || sub.is_some() {
             flush(&mut nodes, &mut text);
             nodes.push(Node::Scripted {
@@ -284,6 +302,14 @@ fn horizontal(items: &[Item], rules: &[Rect], confidence: &mut f32) -> Node {
             penalise(confidence);
         }
 
+        // Smaller-than-body, script-displaced material reaching this branch has lost its base:
+        // it is being written onto the baseline, flattened. One glyph can be an honest stray; a
+        // run of them is a script the pass failed to attach — which is how scripts set *near*
+        // body size slip past [`SCRIPT_MAX_SIZE_RATIO`] and come out as `hTb` for `h^T_b`.
+        if item.size < size - 0.3 && (baseline - item.baseline).abs() > size * SCRIPT_MIN_OFFSET {
+            lowered += 1;
+        }
+
         // Plain character. Insert a space where the typesetting left one.
         if i > 0 {
             let gap = item.bbox.x0 - items[i - 1].bbox.x1;
@@ -296,6 +322,9 @@ fn horizontal(items: &[Item], rules: &[Rect], confidence: &mut f32) -> Node {
     }
 
     flush(&mut nodes, &mut text);
+    if lowered >= 2 {
+        penalise(confidence);
+    }
 
     match nodes.len() {
         0 => Node::Row(Vec::new()),
@@ -311,19 +340,32 @@ fn flush(nodes: &mut Vec<Node>, text: &mut String) {
 }
 
 /// The scripts attached to the glyph at `i`, and the index to continue from.
+///
+/// An item already claimed as an operator's limit ends the scan: a lower limit is set small
+/// and below the baseline exactly like a subscript, and before this check the `=` ahead of a
+/// `\sum` stole the sum's own limits as its scripts.
 fn scripts(
     items: &[Item],
     i: usize,
     baseline: f32,
     size: f32,
+    limit_of: &[Option<usize>],
 ) -> (Option<Vec<Item>>, Option<Vec<Item>>, usize) {
+    // A script-size base takes no scripts. A full-size glyph followed by smaller, displaced
+    // material is a base and its scripts; a script-size glyph reaching here is an orphan whose
+    // own base is missing — a limit row separated from its operator, a subscript whose anchor
+    // fell outside the region. Chaining its neighbours onto it turns the flat-but-readable
+    // `n=0` into the confidently wrong `n_{=0}`.
+    if items[i].size <= size * SCRIPT_MAX_SIZE_RATIO {
+        return (None, None, i + 1);
+    }
     let mut sup: Vec<Item> = Vec::new();
     let mut sub: Vec<Item> = Vec::new();
     let mut j = i + 1;
 
     while j < items.len() {
         let next = items[j];
-        if next.size > size * SCRIPT_MAX_SIZE_RATIO {
+        if limit_of[j].is_some() || next.size > size * SCRIPT_MAX_SIZE_RATIO {
             break;
         }
         let offset = baseline - next.baseline;
@@ -369,34 +411,39 @@ fn is_large_operator(item: &Item, size: f32) -> bool {
         && item.bbox.height() > size * 1.1
 }
 
-/// The material a large operator carries above and below it.
-fn operator_limits(items: &[Item], i: usize) -> (Option<Vec<Item>>, Option<Vec<Item>>, usize) {
-    let operator = items[i];
-    let mut above = Vec::new();
-    let mut below = Vec::new();
-    let mut j = i + 1;
+/// How much wider than the operator's own box a limit may reach, as a fraction of its size.
+const LIMIT_SLACK: f32 = 0.3;
 
-    while j < items.len() {
-        let next = items[j];
-        // A limit sits within the operator's horizontal span, not after it.
-        if next.bbox.x0 > operator.bbox.x1 {
-            break;
+/// Which large operator, if any, each item is a limit of.
+///
+/// Decided in one pass *before* the horizontal walk, because items are sorted by `x0` and a
+/// limit wider than its operator starts to the operator's left: the `N − 1` over beamforming's
+/// `\sum` sorts ahead of the sign, so a scan forward from the operator finds its own limits
+/// already consumed as baseline text. Membership is geometric and symmetric — the item's centre
+/// falls within the operator's horizontal span (with a little slack for a wide limit) and lies
+/// above or below the operator's box.
+fn claim_limits(items: &[Item], size: f32) -> Vec<Option<usize>> {
+    let mut claim: Vec<Option<usize>> = vec![None; items.len()];
+    for (k, op) in items.iter().enumerate() {
+        if !is_large_operator(op, size) {
+            continue;
         }
-        if next.bbox.center_y() < operator.bbox.y0 {
-            above.push(next);
-        } else if next.bbox.center_y() > operator.bbox.y1 {
-            below.push(next);
-        } else {
-            break;
+        let slack = op.size * LIMIT_SLACK;
+        for (j, item) in items.iter().enumerate() {
+            if j == k || claim[j].is_some() || is_large_operator(item, size) {
+                continue;
+            }
+            let cx = item.bbox.center_x();
+            if cx < op.bbox.x0 - slack || cx > op.bbox.x1 + slack {
+                continue;
+            }
+            let cy = item.bbox.center_y();
+            if cy < op.bbox.y0 || cy > op.bbox.y1 {
+                claim[j] = Some(k);
+            }
         }
-        j += 1;
     }
-
-    (
-        (!above.is_empty()).then_some(above),
-        (!below.is_empty()).then_some(below),
-        j.max(i + 1),
-    )
+    claim
 }
 
 fn symbol_text(c: char) -> String {
@@ -407,7 +454,14 @@ fn symbol_text(c: char) -> String {
     }
 }
 
-/// The size most of the material is set at, weighted by glyph width.
+/// The size the formula's *baseline* material is set at.
+///
+/// Weighted by glyph width, but the heaviest bucket does not simply win. A formula can carry
+/// as much ink in its scripts as on its baseline — `h^T b = \sum_{n=0}^{N-1} h_n x_n f_n` is
+/// half script-size glyphs by width — and when the script bucket won, nothing was small
+/// relative to the "dominant" size, so nothing was a script and the whole equation flattened.
+/// TeX always sets scripts *smaller* than the material they hang off, so among the buckets
+/// with substantial weight, the largest size is the baseline's.
 fn dominant_size(items: &[Item]) -> f32 {
     let mut buckets: Vec<(f32, f32)> = Vec::new();
     for item in items {
@@ -420,10 +474,12 @@ fn dominant_size(items: &[Item]) -> f32 {
             None => buckets.push((item.size, weight)),
         }
     }
+    let heaviest = buckets.iter().map(|&(_, w)| w).fold(0.0f32, f32::max);
     buckets
         .iter()
-        .max_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(s, _)| *s)
+        .filter(|&&(_, w)| w >= heaviest * 0.5)
+        .max_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|&(s, _)| s)
         .unwrap_or(10.0)
 }
 
@@ -772,5 +828,105 @@ mod tests {
     fn an_empty_formula_is_handled() {
         let page = page_of(Vec::new(), Vec::new());
         assert_eq!(build_all(&page).root, Node::Row(Vec::new()));
+    }
+
+    /// Beamforming's equation 4, to scale: the upper limit `N−1` is wider than the `∑` under it
+    /// and starts to its *left*, so an x-sorted walk reaches `N` before the operator. Scanned
+    /// forward from the preceding `=`, the limits were taken as that glyph's scripts and the
+    /// equation came out `= Nn\sum_{=0}^{-1}`.
+    #[test]
+    fn a_wide_limit_starting_left_of_the_operator_is_claimed() {
+        let mut sigma = glyph('∑', 290.65, 245.1, 10.96);
+        sigma.bbox = Rect::from_corners(290.65, 229.8, 305.24, 245.14);
+        let upper = |c, x| glyph(c, x, 226.6, 7.97);
+        let lower = |c, x| glyph(c, x, 253.2, 7.97);
+        let page = page_of(
+            vec![
+                glyph('=', 277.8, 240.2, 10.9),
+                sigma,
+                upper('N', 289.1),
+                upper('−', 293.2),
+                upper('1', 297.3),
+                lower('n', 290.2),
+                lower('=', 294.3),
+                lower('0', 298.4),
+                glyph('h', 309.5, 240.2, 10.9),
+            ],
+            Vec::new(),
+        );
+        let latex = super::super::latex::render(&build_all(&page).root);
+        assert!(latex.contains(r"\sum"), "no operator in {latex:?}");
+        assert!(latex.contains("{n=0}"), "lower limit lost in {latex:?}");
+        assert!(latex.contains("{N-1}"), "upper limit lost in {latex:?}");
+    }
+
+    /// A formula can carry as much ink in its scripts as on its baseline — beamforming's
+    /// channel sums do. When the script-size bucket outweighed the body's, dominant size came
+    /// out 8pt, nothing was "smaller than dominant", and the whole equation flattened.
+    #[test]
+    fn heavy_scripts_do_not_outvote_the_baseline() {
+        let page = page_of(
+            vec![
+                glyph('h', 100.0, 200.0, 10.0),
+                glyph('b', 105.2, 202.0, 8.0),
+                glyph('x', 110.0, 200.0, 10.0),
+                glyph('b', 115.2, 202.0, 8.0),
+                glyph(',', 119.4, 202.0, 8.0),
+                glyph('n', 123.6, 202.0, 8.0),
+            ],
+            Vec::new(),
+        );
+        let latex = super::super::latex::render(&build_all(&page).root);
+        assert!(
+            latex.contains('_') && latex.contains("b,n"),
+            "subscripts flattened: {latex:?}"
+        );
+        assert!(!latex.contains("hb"), "subscripts flattened: {latex:?}");
+    }
+
+    /// Scripts set *near* body size slip past [`SCRIPT_MAX_SIZE_RATIO`] and are written onto
+    /// the baseline. The structure is beyond recovery, but a run of displaced smaller glyphs
+    /// in the plain text is evidence of it, and the confidence must say so.
+    #[test]
+    fn a_flattened_script_run_lowers_confidence() {
+        let page = page_of(
+            vec![
+                glyph('x', 100.0, 200.0, 10.0),
+                glyph('a', 105.0, 202.0, 9.5),
+                glyph('b', 110.0, 202.0, 9.5),
+            ],
+            Vec::new(),
+        );
+        let formula = build_all(&page);
+        assert!(
+            formula.confidence < 1.0,
+            "a flattened script run must cost confidence"
+        );
+    }
+
+    /// A limit row stranded on its own fragment line — `n=0` with its operator elsewhere —
+    /// starts the walk at a script-size glyph. That glyph is an orphan, not a base: letting it
+    /// collect its neighbours as subscripts turns `n=0` into `n_{=0}`.
+    #[test]
+    fn an_orphan_script_run_is_not_its_own_base() {
+        let page = page_of(
+            vec![
+                glyph('n', 100.0, 203.0, 8.0),
+                glyph('=', 104.0, 203.0, 8.0),
+                glyph('0', 108.0, 203.0, 8.0),
+                glyph('y', 115.0, 200.0, 10.0),
+                glyph('x', 120.0, 200.0, 10.0),
+                glyph('z', 125.0, 200.0, 10.0),
+                glyph('w', 130.0, 200.0, 10.0),
+            ],
+            Vec::new(),
+        );
+        let formula = build_all(&page);
+        let latex = super::super::latex::render(&formula.root);
+        assert!(
+            !latex.contains("_{="),
+            "the orphan run chained onto itself: {latex}"
+        );
+        assert!(latex.contains("n=0"), "the run should stay flat: {latex}");
     }
 }

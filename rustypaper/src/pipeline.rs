@@ -281,6 +281,8 @@ fn lift_equations(
                 if latex.trim().is_empty() {
                     continue;
                 }
+                let mut confidence = found.formula.confidence;
+                math::audit(&latex, found.number.as_deref(), &mut confidence);
                 for &line in &found.lines {
                     is_display[line] = true;
                 }
@@ -294,7 +296,7 @@ fn lift_equations(
                     doc::MathData {
                         latex,
                         number: found.number,
-                        confidence: found.formula.confidence,
+                        confidence,
                     },
                 ));
             }
@@ -672,25 +674,38 @@ fn apply_inline_math(
         return;
     }
 
+    // A span that renders to nothing leaves its words as they were.
+    let spans: Vec<(math::Span, String)> = spans
+        .into_iter()
+        .filter_map(|s| {
+            let latex = math::latex::render(&s.formula.root);
+            (!latex.trim().is_empty()).then_some((s, latex))
+        })
+        .collect();
+
     let line = &mut lines[index];
     let mut rebuilt: Vec<text::lines::Word> = Vec::with_capacity(line.words.len());
+    let mut emitted = vec![false; spans.len()];
 
     for word in &line.words {
-        // A word belongs to a span when its glyphs fall inside it.
-        let covering = spans
-            .iter()
-            .find(|s| word.start >= s.start && word.end <= s.end);
-        match covering {
-            Some(span) => {
-                // Emit the formula once, at its first word.
-                if rebuilt.last().is_some_and(|w| w.start >= span.start) {
-                    continue;
+        // A word belongs to a span when their glyph ranges overlap — not only when the span
+        // covers it. A trimmed span can end *inside* a word, where a missing space mark welded
+        // the following prose onto the formula, and that prose must come out the far side as a
+        // word of its own rather than ride into the `$...$`.
+        let mut cursor = word.start;
+        let mut touched = false;
+        for (at, (span, latex)) in spans.iter().enumerate() {
+            if span.start >= word.end || span.end <= word.start {
+                continue;
+            }
+            touched = true;
+            if cursor < span.start {
+                if let Some(prose) = partial_word(page, line, cursor, span.start) {
+                    rebuilt.push(prose);
                 }
-                let latex = math::latex::render(&span.formula.root);
-                if latex.trim().is_empty() {
-                    rebuilt.push(word.clone());
-                    continue;
-                }
+            }
+            // Emit the formula once, at the first word it touches.
+            if !std::mem::replace(&mut emitted[at], true) {
                 rebuilt.push(text::lines::Word {
                     bbox: word.bbox,
                     text: format!("${latex}$"),
@@ -701,11 +716,51 @@ fn apply_inline_math(
                     scripts: Vec::new(),
                 });
             }
-            None => rebuilt.push(word.clone()),
+            cursor = cursor.max(span.end);
+        }
+        if !touched {
+            rebuilt.push(word.clone());
+        } else if cursor < word.end {
+            if let Some(prose) = partial_word(page, line, cursor, word.end) {
+                rebuilt.push(prose);
+            }
         }
     }
 
     line.words = rebuilt;
+}
+
+/// Builds a word from part of a line's glyph range: the prose remainder of a word that a
+/// trimmed maths span started or ended inside.
+fn partial_word(
+    page: &ir::PageRaw,
+    line: &text::lines::Line,
+    start: usize,
+    end: usize,
+) -> Option<text::lines::Word> {
+    let mut text = String::new();
+    let mut bbox: Option<ir::Rect> = None;
+    for placed in &line.glyphs[start..end] {
+        let glyph = page.glyphs.get(placed.index)?;
+        match glyph.text {
+            ir::GlyphText::Char(c) if c.is_whitespace() => continue,
+            ir::GlyphText::Char(c) => text.push(c),
+            ir::GlyphText::Expanded(e) => {
+                text.push_str(page.expansions.get(e as usize).map_or("", String::as_str));
+            }
+        }
+        bbox = Some(match bbox {
+            Some(b) => b.union(&glyph.bbox),
+            None => glyph.bbox,
+        });
+    }
+    (!text.is_empty()).then(|| text::lines::Word {
+        bbox: bbox.unwrap_or(line.bbox),
+        text,
+        start,
+        end,
+        scripts: Vec::new(),
+    })
 }
 
 /// Puts the lifted tables and equations back into the document.
@@ -830,7 +885,22 @@ fn attach_figures(
     let mut swallowed: Vec<(usize, ir::Rect)> = Vec::new();
 
     for (index, regions) in figures.iter().enumerate() {
-        for &region in regions {
+        // Two figures stacked in one column, close enough to merge into one region, swallow the
+        // upper one's caption — and that caption then sits strictly *inside* the region, which
+        // a real caption never does. Beamforming's Fig. 5 lost its caption to Fig. 6 this way.
+        // Split the region at each interior caption and let the parts claim their own.
+        let captions: Vec<ir::Rect> = document
+            .blocks
+            .iter()
+            .filter(|b| b.page == index && b.kind == doc::BlockKind::Caption)
+            .map(|b| b.bbox)
+            .collect();
+        let regions: Vec<ir::Rect> = regions
+            .iter()
+            .flat_map(|r| split_at_captions(&captions, *r))
+            .collect();
+
+        for region in regions {
             counter += 1;
             swallowed.push((index, region));
 
@@ -861,6 +931,37 @@ fn attach_figures(
 
     drop_text_inside_figures(document, &swallowed);
     Ok(())
+}
+
+/// Splits a figure region at the topmost caption sitting strictly inside it, recursively.
+///
+/// Both parts must keep the extent a figure needs — the same floor figure detection itself
+/// applies — or the caption is near an edge rather than between two figures, and the region is
+/// left whole.
+fn split_at_captions(captions: &[ir::Rect], region: ir::Rect) -> Vec<ir::Rect> {
+    const MIN_PART: f32 = 36.0;
+    let Some(caption) = captions
+        .iter()
+        .filter(|c| {
+            c.x_overlap(&region) > 0.0
+                && c.y0 - region.y0 >= MIN_PART
+                && region.y1 - c.y1 >= MIN_PART
+        })
+        .min_by(|a, b| a.y0.total_cmp(&b.y0))
+    else {
+        return vec![region];
+    };
+    let top = ir::Rect {
+        y1: caption.y0,
+        ..region
+    };
+    let bottom = ir::Rect {
+        y0: caption.y1,
+        ..region
+    };
+    let mut parts = vec![top];
+    parts.extend(split_at_captions(captions, bottom));
+    parts
 }
 
 /// Removes short text that lives inside a figure.
@@ -1364,5 +1465,33 @@ mod tests {
         assert!(!is_author_byline(
             "the method of Smith1, as refined by Jones2 and Brown3, was applied to all samples"
         ));
+    }
+
+    /// Beamforming's figures 5 and 6, stacked in one column, merged into a single drawn region
+    /// with figure 5's caption in its *interior* — so figure 6's caption, nearer the region's
+    /// bottom edge, won `caption_for` and figure 5 had none. A caption splits the region.
+    #[test]
+    fn a_region_is_split_at_an_interior_caption() {
+        let captions = vec![
+            rect(50.0, 224.0, 250.0, 246.0),
+            rect(50.0, 356.0, 250.0, 380.0),
+        ];
+        let parts = split_at_captions(&captions, rect(40.0, 10.0, 260.0, 356.0));
+        assert_eq!(
+            parts,
+            vec![
+                rect(40.0, 10.0, 260.0, 224.0),
+                rect(40.0, 246.0, 260.0, 356.0)
+            ]
+        );
+    }
+
+    /// A caption at a region's edge is the region's own caption, not a split point: splitting
+    /// there would shave slivers off every ordinary figure.
+    #[test]
+    fn a_caption_at_the_edge_leaves_the_region_whole() {
+        let captions = vec![rect(50.0, 330.0, 250.0, 352.0)];
+        let region = rect(40.0, 10.0, 260.0, 356.0);
+        assert_eq!(split_at_captions(&captions, region), vec![region]);
     }
 }
